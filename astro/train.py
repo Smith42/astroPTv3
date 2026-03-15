@@ -43,7 +43,7 @@ from smolvlm.train.train import (
 )
 from smolvlm.train.smolvlm_trainer import SmolVLMTrainer
 
-from astro.data import GalaxySmolVLMDataset, galaxy_collate_fn
+from astro.data import GalaxySmolVLMDataset, PackingIterableDataset, galaxy_collate_fn
 
 logger = logging.getLogger(__name__)
 
@@ -84,26 +84,28 @@ def _make_data_module(processor, data_args: AstroDataArguments, training_args: T
     img_size    = data_args.astro_image_target_size
     buf_size    = data_args.astro_buffer_size
     max_samples = data_args.astro_max_samples or None
+    packed      = getattr(data_args, "packed", False)
+    max_length  = training_args.model_max_length
 
-    train_dataset = GalaxySmolVLMDataset(
-        processor=processor,
-        split=train_split,
-        use_crop=True,
-        max_samples=max_samples,
-        buffer_size=buf_size,
-        image_target_size=img_size,
-    )
-
-    eval_dataset = None
-    if eval_split:
-        eval_dataset = GalaxySmolVLMDataset(
+    def _make_galaxy_ds(split, buffer, cap):
+        ds = GalaxySmolVLMDataset(
             processor=processor,
-            split=eval_split,
+            split=split,
             use_crop=True,
-            max_samples=min(max_samples or 2000, 2000),   # cap eval at 2 K
-            buffer_size=0,          # deterministic
+            max_samples=cap,
+            buffer_size=buffer,
             image_target_size=img_size,
+            max_length=max_length,
         )
+        if packed:
+            ds = PackingIterableDataset(ds, max_length=max_length)
+        return ds
+
+    train_dataset = _make_galaxy_ds(train_split, buf_size, max_samples)
+    eval_dataset  = (
+        _make_galaxy_ds(eval_split, 0, min(max_samples or 2000, 2000))
+        if eval_split else None
+    )
 
     collator = partial(
         galaxy_collate_fn,
@@ -131,6 +133,15 @@ def train():
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     set_seed(training_args.seed)
+
+    # Sequence packing + diagonal block attention (matches smolvlm2/train.py logic)
+    packed = getattr(data_args, "packed", False)
+    if packed and model_args.apply_diagonal_block_attention:
+        from smolvlm.model.varlen_packing import apply_varlen_patch
+        apply_varlen_patch()
+        logger.info("Varlen flash-attention patch applied for packed sequences.")
+    elif packed and not model_args.apply_diagonal_block_attention:
+        logger.warning("Packing enabled WITHOUT diagonal block attention — cross-example attention leakage possible.")
 
     # Derive tune_* flags from LR values (same logic as smolvlm2/train.py)
     training_args.tune_language_model = training_args.language_model_lr > 1e-9

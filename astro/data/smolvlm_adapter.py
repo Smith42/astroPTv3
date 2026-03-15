@@ -201,10 +201,14 @@ class GalaxySmolVLMDataset(IterableDataset):
         max_samples: Optional[int] = None,
         buffer_size: int = 1000,
         image_target_size: int = 256,
+        max_length: Optional[int] = None,
     ):
         super().__init__()
         self.processor = processor
         self.image_target_size = image_target_size
+        self.max_length = max_length or getattr(
+            processor.tokenizer, "model_max_length", None
+        )
         self._galaxy_ds = GalaxyIterableDataset(
             split=split,
             use_crop=use_crop,
@@ -251,6 +255,13 @@ class GalaxySmolVLMDataset(IterableDataset):
 
         input_ids      = encoded["input_ids"][0]
         attention_mask = encoded["attention_mask"][0]
+
+        if self.max_length and input_ids.size(0) > self.max_length:
+            raise ValueError(
+                f"Sequence length {input_ids.size(0)} exceeds max_length {self.max_length} "
+                f"for galaxy {item.get('dr8_id')} — skipping."
+            )
+
         labels         = _mask_non_assistant_tokens(input_ids, self.processor.tokenizer)
 
         out: Dict[str, torch.Tensor] = {

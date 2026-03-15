@@ -50,6 +50,9 @@ python astro/train.py \
     --gradient_checkpointing true \
     --disable_flash_attn2    false \
     \
+    --packed                     true \
+    --apply_diagonal_block_attention true \
+    \
     --model_max_length   2048 \
     --dataloader_num_workers 4 \
     \
