@@ -11,11 +11,11 @@ Patch pipeline
 3. Normalise pixel values to [0, 1] by dividing by 255 (matches original AstroPT).
 4. Apply spiral ordering (matches original AstroPT — improves spatial locality).
 5. Return:
-     patches_in     = patches[:-1]   shape (1023, 768)  ← model input
-     patches_target = patches[1:]    shape (1023, 768)  ← regression target
+     patches  shape (1024, 768)  — full patch sequence
 
-This is purely self-supervised: no metadata labels needed, every galaxy trains
-the model.
+The autoregressive split (patches_in / patches_target) and modality boundary
+tokens (<galaxy_start> etc.) are handled inside AstroPatchModel.forward so
+the dataset stays modality-agnostic.
 
 Usage
 -----
@@ -23,8 +23,7 @@ Usage
 
     ds = GalaxyPatchDataset(split="validation")
     item = next(iter(ds))
-    item["patches_in"].shape      # (1023, 768)
-    item["patches_target"].shape  # (1023, 768)
+    item["patches"].shape      # (1024, 768)
 """
 
 from __future__ import annotations
@@ -211,7 +210,6 @@ class GalaxyPatchDataset(IterableDataset):
             raise ValueError("NaN in patches")
 
         return {
-            "dr8_id":         row["dr8_id"],
-            "patches_in":     patches[:-1],    # (N-1, 768) — input
-            "patches_target": patches[1:],     # (N-1, 768) — target
+            "dr8_id": row["dr8_id"],
+            "patches": patches,    # (1024, 768) — full sequence; split handled in model
         }

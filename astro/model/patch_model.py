@@ -8,17 +8,28 @@ patch space, and Huber loss is computed against shifted targets.
 
 Architecture
 ------------
-    patches_in  (B, 1023, 768)  — 512×512 image → 1024 patches of 16×16×3, input is [:-1]
+    patches  (B, 1024, 768)  — 512×512 image → 1024 patches of 16×16×3
          │
     patch_projector  [Linear(patch_dim → hidden_dim)]
+         │
+    prepend <galaxy_start> embed, drop last projected patch
+         ↓
+    [<galaxy_start>, proj(p0), proj(p1), ..., proj(p1022)]  (B, 1024, hidden_dim)
          │
     SmolLM transformer  [LlamaModel, causal, via inputs_embeds]
          │
     regression_head  [Linear(hidden_dim → patch_dim)]
          │
-    preds  (B, 1023, 768)
+    preds  (B, 1024, patch_dim)
          │
-    Huber loss vs patches_target  (B, 1023, 768)
+    Huber loss vs patches  (B, 1024, 768)  — predicts p0…p1023
+
+Boundary tokens
+---------------
+    Index 0: <galaxy_start>    (prepended before first galaxy patch)
+    Index 1: <galaxy_end>      (appended after last galaxy patch — future use)
+    Index 2: <spectrum_start>  (future multimodal use)
+    Index 3: <spectrum_end>    (future multimodal use)
 
 Stage 1 (connector warmup): freeze transformer, train projector + head only.
 Stage 2 (full pretraining): unfreeze transformer.
@@ -46,6 +57,12 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 
 PATCH_DIM = 16 * 16 * 3   # 768  — matches GalaxyPatchDataset default
+
+# Boundary token indices (shared nn.Embedding of size 4)
+GALAXY_START   = 0
+GALAXY_END     = 1
+SPECTRUM_START = 2
+SPECTRUM_END   = 3
 
 
 @dataclass
@@ -87,12 +104,11 @@ class AstroPatchModel(nn.Module):
 
         hidden_dim = self.transformer.config.hidden_size
 
-        # Input projection: raw patches → transformer embedding space
-        self.patch_projector = nn.Sequential(
-            nn.Linear(patch_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim),
-        )
+        # Input projection: raw patches → transformer embedding space (single linear, matches original AstroPT)
+        self.patch_projector = nn.Linear(patch_dim, hidden_dim)
+
+        # Modality boundary tokens: galaxy_start/end, spectrum_start/end
+        self.boundary_tokens = nn.Embedding(4, hidden_dim)
 
         # Output regression head: hidden states → patch space
         self.regression_head = nn.Linear(hidden_dim, patch_dim, bias=True)
@@ -123,27 +139,34 @@ class AstroPatchModel(nn.Module):
 
     def forward(
         self,
-        patches_in:     torch.Tensor,                    # (B, N-1, patch_dim)
-        patches_target: Optional[torch.Tensor] = None,  # (B, N-1, patch_dim)
-        **kwargs,                                        # absorb extra Trainer kwargs
+        patches: torch.Tensor,              # (B, N, patch_dim)  full patch sequence
+        **kwargs,                           # absorb extra Trainer kwargs
     ) -> PatchModelOutput:
+        B = patches.shape[0]
 
-        # Project patches into transformer embedding space
-        embeds = self.patch_projector(patches_in)   # (B, N-1, hidden_dim)
+        # Project all patches into transformer embedding space
+        proj = self.patch_projector(patches)   # (B, N, hidden_dim)
+
+        # Prepend <galaxy_start> boundary token, drop the last projected patch.
+        # Input:  [<galaxy_start>, proj(p0), ..., proj(p_{N-2})]  length N
+        # Target: [p0,             p1,       ..., p_{N-1}       ]  length N
+        galaxy_start = self.boundary_tokens(
+            torch.full((B, 1), GALAXY_START, dtype=torch.long, device=patches.device)
+        )  # (B, 1, hidden_dim)
+        embeds = torch.cat([galaxy_start, proj[:, :-1, :]], dim=1)  # (B, N, hidden_dim)
 
         # Run the causal transformer — pass inputs_embeds to bypass token embedding
         transformer_out = self.transformer(
             inputs_embeds=embeds,
             use_cache=False,
         )
-        hidden = transformer_out.last_hidden_state  # (B, N-1, hidden_dim)
+        hidden = transformer_out.last_hidden_state  # (B, N, hidden_dim)
 
         # Regress back to patch space
-        preds = self.regression_head(hidden)        # (B, N-1, patch_dim)
+        preds = self.regression_head(hidden)        # (B, N, patch_dim)
 
-        loss = None
-        if patches_target is not None:
-            loss = F.huber_loss(preds, patches_target, delta=self.huber_delta)
+        # Huber loss: each position predicts the corresponding target patch
+        loss = F.huber_loss(preds, patches, delta=self.huber_delta)
 
         return PatchModelOutput(loss=loss, predictions=preds)
 
