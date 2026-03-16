@@ -141,13 +141,20 @@ def train():
         torch.float16  if training_args.fp16 else
         torch.float32
     )
-    model, _tokenizer = build_patch_model(
+    model, tokenizer = build_patch_model(
         model_name=model_args.model_name_or_path,
         patch_dim=model_args.patch_size ** 2 * 3,
         huber_delta=model_args.huber_delta,
         torch_dtype=compute_dtype,
         freeze_transformer=model_args.freeze_transformer,
     )
+
+    # Save tokenizer to output_dir immediately so it is present in every
+    # checkpoint-N/ subdirectory written by the Trainer (which shares the
+    # same parent directory).
+    import os
+    os.makedirs(training_args.output_dir, exist_ok=True)
+    tokenizer.save_pretrained(training_args.output_dir)
 
     if training_args.gradient_checkpointing:
         model.transformer.gradient_checkpointing_enable(
@@ -200,7 +207,7 @@ def train():
 
     # 4. Save
     trainer.save_state()
-    model.save_pretrained(training_args.output_dir, tokenizer=_tokenizer)
+    model.save_pretrained(training_args.output_dir, tokenizer=tokenizer)
     logger.info("Done. Model saved to %s", training_args.output_dir)
 
 
