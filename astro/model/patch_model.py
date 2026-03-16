@@ -214,13 +214,15 @@ class AstroPatchModel(nn.Module):
     # Save / load
     # ------------------------------------------------------------------
 
-    def save_pretrained(self, path: str, **kwargs):
-        """Save full model state dict + config + special token IDs."""
+    def save_pretrained(self, path: str, tokenizer=None, **kwargs):
+        """Save full model state dict + config + special token IDs (+ tokenizer if provided)."""
         os.makedirs(path, exist_ok=True)
         torch.save(self.state_dict(), os.path.join(path, "patch_model.pt"))
         self.config.save_pretrained(path)
         with open(os.path.join(path, "special_token_ids.json"), "w") as f:
             json.dump(self.special_token_ids, f)
+        if tokenizer is not None:
+            tokenizer.save_pretrained(path)
 
     @classmethod
     def from_pretrained(
@@ -232,11 +234,16 @@ class AstroPatchModel(nn.Module):
         """Load a saved AstroPatchModel checkpoint."""
         cfg = AutoConfig.from_pretrained(path)
         backbone_id = backbone_name or cfg._name_or_path
-        backbone = AutoModelForCausalLM.from_pretrained(backbone_id, config=cfg)
+
         with open(os.path.join(path, "special_token_ids.json")) as f:
             special_token_ids = json.load(f)
-        # Ensure embedding table is sized correctly
-        backbone.resize_token_embeddings(cfg.vocab_size)
+
+        # Load tokenizer from checkpoint (has the special tokens already added)
+        # and use it to resize the backbone embedding table correctly.
+        tokenizer = AutoTokenizer.from_pretrained(path)
+        backbone = AutoModelForCausalLM.from_pretrained(backbone_id, config=cfg)
+        backbone.resize_token_embeddings(len(tokenizer))
+
         model = cls(backbone, special_token_ids=special_token_ids, **kwargs)
         state = torch.load(
             os.path.join(path, "patch_model.pt"), map_location="cpu", weights_only=True

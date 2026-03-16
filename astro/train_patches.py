@@ -200,7 +200,7 @@ def train():
 
     # 4. Save
     trainer.save_state()
-    model.save_pretrained(training_args.output_dir)
+    model.save_pretrained(training_args.output_dir, tokenizer=_tokenizer)
     logger.info("Done. Model saved to %s", training_args.output_dir)
 
 
