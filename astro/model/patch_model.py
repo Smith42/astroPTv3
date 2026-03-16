@@ -8,7 +8,7 @@ patch space, and Huber loss is computed against shifted targets.
 
 Architecture
 ------------
-    patches_in  (B, N-1, patch_dim)
+    patches_in  (B, 1023, 768)  — 512×512 image → 1024 patches of 16×16×3, input is [:-1]
          │
     patch_projector  [Linear(patch_dim → hidden_dim)]
          │
@@ -16,9 +16,9 @@ Architecture
          │
     regression_head  [Linear(hidden_dim → patch_dim)]
          │
-    preds  (B, N-1, patch_dim)
+    preds  (B, 1023, 768)
          │
-    Huber loss vs patches_target  (B, N-1, patch_dim)
+    Huber loss vs patches_target  (B, 1023, 768)
 
 Stage 1 (connector warmup): freeze transformer, train projector + head only.
 Stage 2 (full pretraining): unfreeze transformer.

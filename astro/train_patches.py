@@ -99,7 +99,7 @@ class PatchDataArguments:
 
 def patch_collate_fn(batch):
     """
-    All examples have identical shapes (255, 768) so no padding needed.
+    All examples have identical shapes (1023, 768) so no padding needed.
     """
     return {
         "patches_in":     torch.stack([b["patches_in"]     for b in batch]),

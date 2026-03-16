@@ -6,13 +6,13 @@ for autoregressive next-patch prediction (Option A training objective).
 
 Patch pipeline
 --------------
-1. Load 256×256 RGB image (image_crop).
-2. Divide into 16×16 pixel patches → 16×16 = 256 patches, each (768,) = 16×16×3.
-3. Normalise to [-1, 1].
+1. Load 512×512 RGB image (image column — full resolution, matches original AstroPT).
+2. Divide into 16×16 pixel patches → 32×32 = 1024 patches, each (768,) = 16×16×3.
+3. Normalise pixel values to [0, 1] by dividing by 255 (matches original AstroPT).
 4. Apply spiral ordering (matches original AstroPT — improves spatial locality).
 5. Return:
-     patches_in     = patches[:-1]   shape (255, 768)  ← model input
-     patches_target = patches[1:]    shape (255, 768)  ← regression target
+     patches_in     = patches[:-1]   shape (1023, 768)  ← model input
+     patches_target = patches[1:]    shape (1023, 768)  ← regression target
 
 This is purely self-supervised: no metadata labels needed, every galaxy trains
 the model.
@@ -23,8 +23,8 @@ Usage
 
     ds = GalaxyPatchDataset(split="validation")
     item = next(iter(ds))
-    item["patches_in"].shape      # (255, 768)
-    item["patches_target"].shape  # (255, 768)
+    item["patches_in"].shape      # (1023, 768)
+    item["patches_target"].shape  # (1023, 768)
 """
 
 from __future__ import annotations
@@ -51,8 +51,8 @@ HF_DATASET_ID = "Smith42/galaxies"
 HF_REVISION   = "v2.0"
 
 PATCH_SIZE  = 16   # pixels per patch side
-IMAGE_SIZE  = 256  # image_crop is 256×256
-N_PATCHES   = (IMAGE_SIZE // PATCH_SIZE) ** 2   # 256
+IMAGE_SIZE  = 512  # full-resolution image is 512×512 (matches original AstroPT)
+N_PATCHES   = (IMAGE_SIZE // PATCH_SIZE) ** 2   # 1024
 PATCH_DIM   = PATCH_SIZE * PATCH_SIZE * 3        # 768  (16×16×3)
 
 
@@ -73,8 +73,8 @@ def _spiral_indices(n: int) -> np.ndarray:
     return a.reshape((n, n)).flatten()
 
 
-# Cache the indices — same for all 256×256 images with patch_size=16
-_SPIRAL_IDX = _spiral_indices(IMAGE_SIZE // PATCH_SIZE)   # length 256
+# Cache the indices — same for all 512×512 images with patch_size=16
+_SPIRAL_IDX = _spiral_indices(IMAGE_SIZE // PATCH_SIZE)   # length 1024
 
 
 def spiralise(patches: torch.Tensor) -> torch.Tensor:
@@ -180,17 +180,17 @@ class GalaxyPatchDataset(IterableDataset):
             count += 1
 
     def _process_row(self, row: dict) -> dict:
-        image = row["image_crop"]
+        image = row["image"]
         if not isinstance(image, Image.Image):
             image = Image.fromarray(image)
         image = image.convert("RGB").resize(
             (IMAGE_SIZE, IMAGE_SIZE), Image.BILINEAR
         )
 
-        # (H, W, C) → (C, H, W), float32, normalised to [-1, 1]
-        arr = np.array(image, dtype=np.float32)          # (256, 256, 3)
-        arr = arr / 127.5 - 1.0                          # [-1, 1]
-        tensor = torch.from_numpy(arr).permute(2, 0, 1)  # (3, 256, 256)
+        # (H, W, C) → (C, H, W), float32, normalised to [0, 1] (matches original AstroPT)
+        arr = np.array(image, dtype=np.float32)          # (512, 512, 3)
+        arr = arr / 255.0                                 # [0, 1]
+        tensor = torch.from_numpy(arr).permute(2, 0, 1)  # (3, 512, 512)
 
         # Extract patches: (N_patches, patch_dim)
         p = self.patch_size
