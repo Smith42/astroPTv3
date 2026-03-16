@@ -141,7 +141,7 @@ def train():
         torch.float16  if training_args.fp16 else
         torch.float32
     )
-    model = build_patch_model(
+    model, _tokenizer = build_patch_model(
         model_name=model_args.model_name_or_path,
         patch_dim=model_args.patch_size ** 2 * 3,
         huber_delta=model_args.huber_delta,
