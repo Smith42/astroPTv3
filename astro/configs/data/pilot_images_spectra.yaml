@@ -1,0 +1,35 @@
+# Pilot corpus: Legacy Survey north images LEFT-crossmatched with DESI EDR SV3
+# spectra (both MMU HATS collections). Written by scripts/prepare_pilot_data.py;
+# the normalization block is filled by scripts/compute_norm_stats.py.
+name: pilot_images_spectra
+version: pilot_v1
+
+sources:
+  images: hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north
+  spectra: hf://datasets/UniverseTBD/mmu_desi_edr_sv3
+  crossmatch_radius_arcsec: 1.0
+  crossmatch_how: left
+
+paths:
+  # Relative paths resolve against the repo root (parent of astro/), so the
+  # default puts the corpus beside the repo. Override with $ASTROPT3_DATA_ROOT
+  # (or an absolute path here) to point at scratch on the training cluster.
+  # Resolved by astropt3.config_io.resolve_data_root.
+  root: ../astroPTv3_data/pilot_v1
+
+# Spatially disjoint split: whole order-7 HEALPix tiles (~0.2 deg^2) hash to
+# train or val (see astropt3.data.mmu.assign_split).
+split:
+  healpix_order: 7
+  val_fraction: 0.02
+  salt: 0
+
+packing:
+  seq_len: 4096
+
+# Platonic Universe asinh stretch parameters: per-band [g, r, z] 1st/99th flux
+# percentiles. null until computed from the prepared train split.
+normalization:
+  asinh_alpha: 20.0
+  image_p1: null
+  image_p99: null
