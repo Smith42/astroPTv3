@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from astropt3.config_io import (  # noqa: E402
     load_model_config,
+    resolve_data_root,
     sequencer_kwargs_from_data_config,
 )
 from astropt3.data.mmu import MMUIterableDataset  # noqa: E402
@@ -116,7 +117,7 @@ def main() -> int:
     args_config, _ = parser.parse_known_args()
     data_config = yaml.safe_load(args_config.config.read_text())
     parser.add_argument(
-        "--data-dir", type=Path, default=Path(data_config["paths"]["root"]) / "train"
+        "--data-dir", type=Path, default=resolve_data_root(data_config) / "train"
     )
     parser.add_argument(
         "--model-config", type=Path, default=ROOT / "configs" / "model" / "test-tiny.yaml"

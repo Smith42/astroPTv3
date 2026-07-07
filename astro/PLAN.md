@@ -6,7 +6,7 @@ AstroPTv3 (NAIRR260009) trains an open, from-scratch suite of multimodal
 astronomical foundation models (70M–12B, Pythia-mirrored sizes and
 checkpointing) by porting the AstroPT approach — autoregressive next-token
 **regression** over continuous embeddings of images/spectra — onto the SmolLM3
-architecture. This repo (`/beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3`)
+architecture. This repo (the `astroPTv3` checkout)
 is a fork of `huggingface/smollm`. Scope: **architecture + pre-training only**.
 
 Reference implementation: `../astroPT` (branch `multi-gpu-llm`) —
@@ -231,7 +231,8 @@ launch time in the YAML.
   `lsdb.open_catalog("hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north")`
   LEFT-crossmatch `mmu_desi_edr_sv3` (≤1″): all images kept, spectra attached
   where matched → ~256MB parquet shards at
-  `/beegfs/.../astroPTv3_data/pilot_v1/{train,val}/` + provenance json.
+  `$ASTROPT3_DATA_ROOT/{train,val}/` (default `../astroPTv3_data/pilot_v1`
+  beside the repo) + provenance json.
   Fallback if lsdb won't install: HF streaming + homemade HEALPix join (same
   output schema).
 - **Train/val split by coarse HEALPix pixel** (from `_healpix_29`) — spatially

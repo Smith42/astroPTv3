@@ -41,6 +41,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from astropt3.config_io import resolve_data_root  # noqa: E402
 from astropt3.data.mmu import assign_split, write_shard  # noqa: E402
 
 CONFIG_PATH = (
@@ -150,7 +151,7 @@ def write_partition(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     config = yaml.safe_load(CONFIG_PATH.read_text())
-    parser.add_argument("--out", type=Path, default=Path(config["paths"]["root"]))
+    parser.add_argument("--out", type=Path, default=resolve_data_root(config))
     parser.add_argument("--images", default=config["sources"]["images"])
     parser.add_argument("--spectra", default=config["sources"]["spectra"])
     parser.add_argument(

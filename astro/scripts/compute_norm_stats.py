@@ -22,6 +22,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from astropt3.config_io import resolve_data_root  # noqa: E402
 from astropt3.data.mmu import N_BANDS, MMUIterableDataset  # noqa: E402
 from astropt3.data.transforms import (  # noqa: E402
     ASINH_ALPHA,
@@ -64,7 +65,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     config = yaml.safe_load(CONFIG_PATH.read_text())
     parser.add_argument(
-        "--data-dir", type=Path, default=Path(config["paths"]["root"]) / "train"
+        "--data-dir", type=Path, default=resolve_data_root(config) / "train"
     )
     parser.add_argument("--config", type=Path, default=CONFIG_PATH)
     parser.add_argument("--n-images", type=int, default=10_000)

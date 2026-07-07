@@ -11,7 +11,11 @@ sources:
   crossmatch_how: left
 
 paths:
-  root: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_data/pilot_v1
+  # Relative paths resolve against the repo root (parent of astro/), so the
+  # default puts the corpus beside the repo. Override with $ASTROPT3_DATA_ROOT
+  # (or an absolute path here) to point at scratch on the training cluster.
+  # Resolved by astropt3.config_io.resolve_data_root.
+  root: ../astroPTv3_data/pilot_v1
 
 # Spatially disjoint split: whole order-7 HEALPix tiles (~0.2 deg^2) hash to
 # train or val (see astropt3.data.mmu.assign_split).
