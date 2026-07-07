@@ -35,4 +35,4 @@ uv run python -m astropt3.train_smoke --config configs/model/test-tiny.yaml \
 
 Model-size configs live in `configs/model/` (Pythia-mirrored 70M–12B).
 The implementation plan (phases, verification, parallelism recipes) is
-tracked in the project plan file; per-phase PRs land on feature branches.
+[`PLAN.md`](PLAN.md); per-phase PRs land on feature branches.
