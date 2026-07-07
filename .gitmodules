@@ -1,0 +1,4 @@
+[submodule "nanotron"]
+	path = nanotron
+	url = https://github.com/Smith42/nanotron.git
+	branch = astropt3

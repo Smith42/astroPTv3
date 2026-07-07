@@ -81,9 +81,20 @@ stages is implicit and easy to break, so understand it before editing:
 
 **Two implementations, one weight source of truth**: this transformers
 implementation is the release/probing artifact and CPU test target; actual
-pretraining happens in a nanotron fork (`nanotron/` git submodule, arrives
-Phase 3) that consumes the same batch dicts. Keep all modality/packing
-logic in `astro/` so the fork stays thin.
+pretraining happens in the nanotron fork (`nanotron/` git submodule, branch
+`astropt3`) that consumes flat micro-batch dicts built by
+`data/nanotron_loader.py` (`{m}_values`/`{m}_positions`/`{m}_mask` +
+`input_ids`/`position_ids` — flat because nanotron's device mover only
+transfers top-level tensors). The fork adds
+`src/nanotron/{models/astropt3.py,config/astropt3_config.py}`, the
+`astropt3_streaming` dataset type in `run_train.py`, and
+`tools/astropt3/convert_{nanotron_to_hf,hf_to_nanotron}.py`; PP=1 and
+`tp_mode: ALL_REDUCE` are asserted (modality modules are TP-replicated via
+nanotron's tied-parameter mechanism). `nanotron_loader.py` must stay
+importable without nanotron; keep all modality/packing logic in `astro/` so
+the fork stays thin. gpu-marked tests (`tests/test_nanotron_gpu.py`) cover
+HF↔nanotron parity, TP=2 replicated grads, and a 50-step synthetic run +
+checkpoint conversion — see PLAN Phase 3 notes for the venv recipe.
 
 A behavior to remember when touching data or fixtures: per-patch
 standardization turns flat/noise-only patches into irreducible N(0,1)

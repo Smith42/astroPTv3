@@ -1,0 +1,302 @@
+"""Phase 3 GPU verification (gpu-marked; excluded from the default CPU run).
+
+Covers the plan's Phase 3 gates:
+
+- tiny-config HF<->nanotron conversion + forward-loss parity on a fixed
+  synthetic batch (bf16 tolerance: nanotron rotates at absolute row positions
+  while HF restarts per object — RoPE is relative so the scores agree, but
+  float trajectories differ; plus flash-attn vs sdpa);
+- replicated-module gradient check across TP=2 (scripts/tp2_grad_check.py
+  under torchrun; skipped with fewer than 2 visible GPUs);
+- 50-step nanotron run on synthetic data (loss decreases) whose final
+  checkpoint converts, loads via ``AutoModel.from_pretrained`` and reproduces
+  the val loss.
+
+Environment: nanotron (editable ../nanotron) + flash-attn + astropt3 on a
+CUDA machine — the ``[train]`` extra. flash-attn has no prebuilt wheel for
+every torch/cuda combo; a torch 2.8 + cu12 venv with the matching
+Dao-AILab release wheel works on A100 (see PLAN Phase 3 notes). Run:
+
+    pytest -m gpu tests/test_nanotron_gpu.py -v
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from itertools import islice
+from pathlib import Path
+
+import pytest
+import torch
+import yaml
+
+pytestmark = pytest.mark.gpu
+
+ASTRO_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = ASTRO_DIR.parent
+NANOTRON_DIR = REPO_ROOT / "nanotron"
+TOOLS_DIR = NANOTRON_DIR / "tools" / "astropt3"
+
+MBS = 2
+SEQ_LEN = 896
+# bf16 forward parity: different-but-equivalent RoPE position conventions and
+# flash-attn vs sdpa kernels bound the achievable agreement
+REL_TOL = 3e-2
+
+
+def _dist_env(port: int = 29123) -> dict:
+    env = {
+        "RANK": "0",
+        "LOCAL_RANK": "0",
+        "WORLD_SIZE": "1",
+        "MASTER_ADDR": "127.0.0.1",
+        "MASTER_PORT": str(port),
+        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+    }
+    for key, value in env.items():
+        os.environ.setdefault(key, value)
+    return env
+
+
+@pytest.fixture(scope="session")
+def nt():
+    """Late imports so CPU-only collection of this module stays possible."""
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    pytest.importorskip("nanotron")
+    pytest.importorskip("flash_attn")
+    _dist_env()
+    sys.path.insert(0, str(TOOLS_DIR))
+    import convert_hf_to_nanotron
+    import convert_nanotron_to_hf
+    import convert_weights
+    import nanotron.models
+    from nanotron.config import AstroPT3Config as NanotronAstroPT3Config
+    from nanotron.models.astropt3 import AstroPT3ForTraining
+    from nanotron.parallel import ParallelContext
+    from nanotron.trainer import mark_tied_parameters
+
+    class NT:
+        pass
+
+    ns = NT()
+    ns.config_cls = NanotronAstroPT3Config
+    ns.model_cls = AstroPT3ForTraining
+    ns.build_model = nanotron.models.build_model
+    ns.mark_tied_parameters = mark_tied_parameters
+    ns.convert_weights = convert_weights
+    ns.to_hf = convert_nanotron_to_hf
+    ns.from_hf = convert_hf_to_nanotron
+    ns.parallel_context = ParallelContext(
+        data_parallel_size=1, pipeline_parallel_size=1, tensor_parallel_size=1
+    )
+    import nanotron.serialize
+
+    ns.serialize = nanotron.serialize
+    return ns
+
+
+def tiny_nt_config(nt):
+    return nt.config_cls(
+        hidden_size=64,
+        num_hidden_layers=4,  # crosses one NoPE layer (idx 3)
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=128,
+        max_position_embeddings=4096,
+        rope_theta=100000.0,
+        no_rope_layer=4,
+        rms_norm_eps=1e-6,
+        vocab_size=64,
+        pad_token_id=0,
+        bos_token_id=1,
+        eos_token_id=1,
+        tie_word_embeddings=False,
+        attention_bias=False,
+        _attn_implementation="flash_attention_2",
+        _use_qkv_packed=True,
+        _use_doc_masking=True,
+        log_attn_probs=False,
+    )
+
+
+def build_nt_model(nt, nt_config):
+    parallel_config = nt.convert_weights.make_parallel_config()
+    model = nt.build_model(
+        model_builder=lambda: nt.model_cls(
+            config=nt_config,
+            parallel_context=nt.parallel_context,
+            parallel_config=parallel_config,
+            random_states=None,
+        ),
+        parallel_context=nt.parallel_context,
+        dtype=torch.bfloat16,
+        device=torch.device("cuda"),
+    )
+    nt.mark_tied_parameters(model=model, parallel_context=nt.parallel_context)
+    return model
+
+
+def micro_batch(hf_config, device="cuda", skip=0):
+    from astropt3.data.nanotron_loader import PackedMicroBatches
+
+    stream = iter(PackedMicroBatches(hf_config, MBS, SEQ_LEN))
+    flat = next(islice(stream, skip, None))
+    return {k: v.to(device) for k, v in flat.items()}
+
+
+def regroup(flat: dict, names) -> dict:
+    """Flat nanotron micro-batch -> HF AstroPT3Model kwargs."""
+    return {
+        "input_ids": flat["input_ids"],
+        "position_ids": flat["position_ids"],
+        "modality_values": {n: flat[f"{n}_values"] for n in names if flat[f"{n}_values"].shape[0]},
+        "modality_masks": {n: flat[f"{n}_mask"] for n in names if flat[f"{n}_mask"].any()},
+        "modality_positions": {n: flat[f"{n}_positions"] for n in names if flat[f"{n}_values"].shape[0]},
+    }
+
+
+@pytest.fixture(scope="session")
+def matched_models(nt):
+    """HF tiny model and a nanotron model carrying identical weights."""
+    import astropt3  # noqa: F401 -- registers Auto classes
+
+    from astropt3 import AstroPT3Model
+
+    nt_config = tiny_nt_config(nt)
+    hf_config = nt.to_hf.get_hf_config(nt_config)
+    torch.manual_seed(0)
+    hf_model = AstroPT3Model(hf_config)
+    nt_model = build_nt_model(nt, nt_config)
+    nt.from_hf.convert_hf_to_nt(hf_model, nt_model, nt_config)
+    hf_model = hf_model.cuda().to(torch.bfloat16).eval()
+    return hf_model, nt_model, nt_config, hf_config
+
+
+def test_forward_loss_parity(nt, matched_models):
+    hf_model, nt_model, nt_config, hf_config = matched_models
+    flat = micro_batch(hf_config)
+    names = hf_config.modality_registry().names()
+    with torch.no_grad():
+        nt_out = nt_model(**flat)
+        hf_out = hf_model(**regroup(flat, names))
+
+    nt_loss = nt_out["loss"].item()
+    hf_loss = hf_out.loss.item()
+    assert nt_loss == pytest.approx(hf_loss, rel=REL_TOL), (nt_loss, hf_loss)
+    for name in names:
+        nt_mod = nt_out[f"{name}_loss"].item()
+        hf_mod = hf_out.modality_losses[name].item()
+        assert nt_mod == pytest.approx(hf_mod, rel=REL_TOL), (name, nt_mod, hf_mod)
+
+
+def test_conversion_roundtrip_exact(nt, matched_models):
+    from astropt3 import AstroPT3Model
+
+    hf_model, nt_model, nt_config, hf_config = matched_models
+    hf_back = AstroPT3Model(hf_config).cuda().to(torch.bfloat16)
+    nt.to_hf.convert_nt_to_hf(nt_model, hf_back, nt_config)
+    original = hf_model.state_dict()
+    for key, value in hf_back.state_dict().items():
+        assert torch.equal(value, original[key]), f"roundtrip drift in {key}"
+
+
+def test_tp2_replicated_module_gradients(nt):
+    if torch.cuda.device_count() < 2:
+        pytest.skip("TP=2 check needs 2 visible GPUs")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--nproc_per_node=2",
+            "--master_port=29511",
+            str(ASTRO_DIR / "scripts" / "tp2_grad_check.py"),
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "CUDA_DEVICE_MAX_CONNECTIONS": "1"},
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "TP2 GRAD CHECK PASS" in result.stdout
+
+
+def test_50step_synthetic_run_and_checkpoint_conversion(nt, tmp_path_factory):
+    """torchrun 50 steps on synthetic data; convert; reload; reproduce loss."""
+    workdir = tmp_path_factory.mktemp("nanotron_smoke")
+    config = yaml.safe_load((ASTRO_DIR / "configs" / "nanotron" / "astropt3-test-tiny.yaml").read_text())
+    config["checkpoints"]["checkpoints_path"] = str(workdir / "checkpoints")
+    config_path = workdir / "test-tiny.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--nproc_per_node=1",
+            "--master_port=29512",
+            str(NANOTRON_DIR / "run_train.py"),
+            "--config-file",
+            str(config_path),
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "CUDA_DEVICE_MAX_CONNECTIONS": "1"},
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout[-4000:]}\nstderr:\n{result.stderr[-4000:]}"
+
+    losses = [float(m) for m in re.findall(r"lm_loss: ([0-9.]+)", result.stdout)]
+    assert len(losses) >= 40, f"expected ~50 logged losses, got {len(losses)}"
+    assert losses[-1] < 0.8 * losses[0], f"nanotron smoke did not learn: {losses[0]:.4f} -> {losses[-1]:.4f}"
+
+    checkpoint = workdir / "checkpoints" / "50"
+    assert (checkpoint / "model_config.json").exists()
+
+    # convert in a subprocess: the converter builds its own ParallelContext
+    save_path = workdir / "hf"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--nproc_per_node=1",
+            "--master_port=29513",
+            str(TOOLS_DIR / "convert_nanotron_to_hf.py"),
+            f"--checkpoint_path={checkpoint}",
+            f"--save_path={save_path}",
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "CUDA_DEVICE_MAX_CONNECTIONS": "1"},
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+
+    # the converted checkpoint loads through the Auto classes...
+    import astropt3  # noqa: F401
+    from transformers import AutoModel
+
+    hf_model = AutoModel.from_pretrained(save_path).cuda().to(torch.bfloat16).eval()
+    assert hf_model.config.model_type == "astropt3"
+
+    # ...and reproduces the nanotron model's val loss on a held-out batch
+    with open(checkpoint / "model_config.json") as f:
+        nt_config = nt.config_cls(**json.load(f))
+    nt_model = build_nt_model(nt, nt_config)
+    nt.serialize.load_weights(
+        model=nt_model, parallel_context=nt.parallel_context, root_folder=checkpoint
+    )
+    flat = micro_batch(hf_model.config, skip=7)  # not the first training batch
+    names = hf_model.config.modality_registry().names()
+    with torch.no_grad():
+        nt_loss = nt_model(**flat)["loss"].item()
+        hf_loss = hf_model(**regroup(flat, names)).loss.item()
+    assert hf_loss == pytest.approx(nt_loss, rel=REL_TOL), (nt_loss, hf_loss)
