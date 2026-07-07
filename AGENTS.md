@@ -41,7 +41,15 @@ stages is implicit and easy to break, so understand it before editing:
 1. **Records** are MMU-schema dicts (`image.flux` float32 (3,152,152);
    `spectrum` with 7781-bin `flux/lambda/ivar/mask`). `data/synthetic.py`
    generates schema-identical fixtures so everything runs offline; records
-   may lack `spectrum` (image-only is the common case, ~13M of 14M).
+   may lack `spectrum` (image-only is the common case, ~13M of 14M). Real
+   records flow through `data/mmu.py`: `scripts/prepare_pilot_data.py`
+   (login node, `[data]` env, network) lsdb-LEFT-crossmatches the two MMU
+   HATS collections into local parquet shards (train/val by hashing coarse
+   HEALPix tiles — spatially disjoint), and `MMUIterableDataset` streams
+   them back offline, sharded by DP rank and DataLoader worker. The asinh
+   p1/p99 calibration in `configs/data/pilot_images_spectra.yaml` is
+   written by `scripts/compute_norm_stats.py`; `scripts/check_pilot_data.py`
+   is the sanity/throughput gate.
 2. **`ObjectSequencer`** (`data/packing.py`) turns a record into an
    `ObjectSeq`: asinh stretch + patchify (`tokenization.py`) + per-patch
    standardization (`data/transforms.py`) per modality, wrapped in frozen

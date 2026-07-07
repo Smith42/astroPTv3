@@ -1,4 +1,4 @@
-"""Load model-size YAMLs into AstroPT3Config objects."""
+"""Load model-size and data YAMLs."""
 
 from pathlib import Path
 
@@ -16,3 +16,24 @@ def load_model_config(path: str | Path) -> tuple[AstroPT3Config, dict]:
     meta = {k: raw[k] for k in _META_KEYS if k in raw}
     arch = {k: v for k, v in raw.items() if k not in _META_KEYS}
     return AstroPT3Config(**arch), meta
+
+
+def load_data_config(path: str | Path) -> dict:
+    """Read a configs/data/*.yaml file -> plain dict."""
+    return yaml.safe_load(Path(path).read_text())
+
+
+def sequencer_kwargs_from_data_config(data_config: dict) -> dict:
+    """Asinh-stretch kwargs for ``ObjectSequencer`` from a data config dict.
+
+    Empty until ``scripts/compute_norm_stats.py`` has filled the
+    ``normalization`` block (the sequencer then falls back to plain asinh).
+    """
+    norm = data_config.get("normalization") or {}
+    if norm.get("image_p99") is None:
+        return {}
+    return {
+        "image_p1": norm["image_p1"],
+        "image_p99": norm["image_p99"],
+        "alpha": norm.get("asinh_alpha", 20.0),
+    }
