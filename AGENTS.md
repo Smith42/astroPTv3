@@ -25,7 +25,7 @@ uv sync --extra dev                       # create/update the venv
 uv run pytest                             # CPU suite (gpu-marked tests excluded via addopts)
 uv run pytest tests/test_model.py::test_pad_invariance   # single test
 uv run python scripts/count_params.py     # size table; asserts ±10% of nominal
-uv run python -m astropt3.train_smoke \
+uv run python -m 3.train_smoke \
     --config configs/model/test-tiny.yaml --steps 50 --assert-decrease
 ```
 
@@ -82,7 +82,7 @@ stages is implicit and easy to break, so understand it before editing:
 **Two implementations, one weight source of truth**: this transformers
 implementation is the release/probing artifact and CPU test target; actual
 pretraining happens in the nanotron fork (`nanotron/` git submodule, branch
-`astropt3`) that consumes flat micro-batch dicts built by
+`main`) that consumes flat micro-batch dicts built by
 `data/nanotron_loader.py` (`{m}_values`/`{m}_positions`/`{m}_mask` +
 `input_ids`/`position_ids` — flat because nanotron's device mover only
 transfers top-level tensors). The fork adds
