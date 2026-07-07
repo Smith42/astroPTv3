@@ -281,6 +281,29 @@ bf16 tolerance; replicated-module gradient check across TP=2; 50-step nanotron
 run on synthetic data: loss decreases; conversion of that checkpoint loads via
 `AutoModel.from_pretrained` and reproduces val loss.
 
+DONE (verified on a shared A100 node, GPU-pinned, tiny configs only). Fork
+items 1–5 + 7 delivered; item 6 (Pythia checkpoint schedule) is Phase 4 per
+the phase split. Notes:
+- Modality encoders/decoders/pos-embedders ride nanotron's stock
+  `mark_unsharded_params_as_tied_across_tp` (replicated across TP,
+  `reduce_op=None` under ALL_REDUCE — "synced by design", asserted identical
+  grads in `astro/scripts/tp2_grad_check.py`). `tp_mode: ALL_REDUCE` is
+  asserted by the model: REDUCE_SCATTER shards the hidden stream over the
+  sequence and would break replication (revisit only if throughput demands).
+- nanotron applies RoPE at absolute row positions in the packed row; HF
+  restarts per object. RoPE is relative so attention agrees — parity is
+  therefore bf16-tolerance, not bitwise (conversion roundtrip IS bitwise).
+- GPU env recipe (no prebuilt flash-attn for torch 2.12/cu13 yet):
+  `uv venv --python 3.13; uv pip install torch==2.8.0
+  <flash_attn-2.8.3.post1+cu12torch2.8cxx11abiTRUE-cp313 wheel from GitHub>
+  -e nanotron -e astro psutil` then `pytest -m gpu astro/tests/test_nanotron_gpu.py`.
+- Fork carries 4 small compat/bug fixes vs upstream (functorch tree_map,
+  flash-attn 2.8 rotary signature, unbound `tied_name` in weight-decay
+  exclusion, consumption-stats hasattr guards) + relaxed numpy pin, psutil dep.
+- `Smith42/nanotron` fork + `astropt3` branch exist locally in `nanotron/`;
+  pushing to GitHub needs credentials (create the fork, then
+  `git -C nanotron push origin astropt3` and push the recorded gitlink).
+
 ### Phase 4 — Checkpoint schedule, resume, eval hooks
 Pythia `should_checkpoint` patch + dataset-state save; `eval/val_loss.py`
 (fixed 512 val batches per eval interval) + `eval/linear_probe.py` +

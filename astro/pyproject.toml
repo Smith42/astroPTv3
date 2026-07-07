@@ -25,17 +25,20 @@ data = [
     "hats",
     "nested-pandas",
 ]
-# Training machine only. Phase 3 adds the nanotron fork here as an editable
-# path source (../nanotron git submodule) once the submodule exists:
-#   [tool.uv.sources]
-#   nanotron = { path = "../nanotron", editable = true }
+# Training machine only: the nanotron fork (../nanotron git submodule,
+# editable) plus flash-attn (needs a CUDA toolchain or a matching prebuilt
+# wheel — see astro/tests/test_nanotron_gpu.py for the verification recipe).
 train = [
+    "nanotron",
     "flash-attn",
     "wandb",
 ]
 dev = [
     "pytest>=8.0",
 ]
+
+[tool.uv.sources]
+nanotron = { path = "../nanotron", editable = true }
 
 [build-system]
 requires = ["hatchling"]
