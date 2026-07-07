@@ -1,0 +1,12 @@
+# AstroPT3 6p9b — Pythia-mirrored size, SmolLM3 architecture (GQA, NoPE/4)
+name: astropt3-6p9b
+nominal_params: 6860000000
+hidden_size: 4096
+num_hidden_layers: 38
+num_attention_heads: 32
+num_key_value_heads: 8
+intermediate_size: 11008
+max_position_embeddings: 4096
+rope_theta: 100000.0
+no_rope_layer_interval: 4
+tokeniser: affine
