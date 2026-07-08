@@ -37,6 +37,11 @@ Model-size configs live in `configs/model/` (Pythia-mirrored 70M–12B).
 The implementation plan (phases, verification, parallelism recipes) is
 [`PLAN.md`](PLAN.md); per-phase PRs land on feature branches.
 
+**Docs**: [`docs/architecture.md`](docs/architecture.md) — what the model is
+and why (data→tokens→model, size family, parallelism semantics);
+[`docs/training.md`](docs/training.md) — how to run it (environments, data
+prep, launching, checkpoint/resume, eval, troubleshooting).
+
 ## Pilot data (login node, network)
 
 Both MMU sources are HATS collections with margin caches, so the crossmatch
