@@ -14,7 +14,6 @@ import torch
 from astropt3.data import mmu
 from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
-    _synthetic_records,
     flatten_packed_batch,
 )
 from astropt3.data.synthetic import record_stream
@@ -88,10 +87,12 @@ def test_absent_modality_ships_typed_empty_tensors(tiny_config, tiny_model):
     assert set(out.modality_losses) == {"images"}
 
 
-def test_synthetic_stream_disjoint_across_ranks_and_workers():
+def test_synthetic_stream_disjoint_across_ranks_and_workers(tiny_config):
     # rank/worker sharding strides over record indices
-    a = [r["object_id"] for r in islice(_synthetic_records(0, 2, 0.3), 20)]
-    b = [r["object_id"] for r in islice(_synthetic_records(1, 2, 0.3), 20)]
+    ds_a = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, rank=0, world_size=2)
+    ds_b = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, rank=1, world_size=2)
+    a = [r["object_id"] for r in islice(ds_a._synthetic_records(0, None), 20)]
+    b = [r["object_id"] for r in islice(ds_b._synthetic_records(0, None), 20)]
     assert not set(a) & set(b)
     assert len(set(a)) == 20
 

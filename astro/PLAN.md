@@ -313,6 +313,39 @@ training; ridge probe → redshift `Z`, which the pilot data carries natively).
 uninterrupted loss curve without sample replay (object_id hash log);
 checkpoint dirs at exactly steps 1,2,4,…,512,1000,…; each converts and loads.
 
+DONE (verified on the reserved A100s, tiny synthetic configs,
+2026-07-08; gpu gates in `tests/test_phase4_gpu.py`). Notes:
+- Schedule: `checkpoints.checkpoint_schedule: pythia` (new optional
+  `CheckpointsArgs` field) = powers of two ≤ 512 ∪ multiples of
+  `checkpoint_interval`; canonical implementation in
+  `astropt3/checkpoint_schedule.py`, lazy-imported by the fork's trainer.
+  1000-step run produced dirs at exactly 1,2,4,…,512,1000; all 11 convert
+  and load via `AutoModel.from_pretrained`.
+- Stream state: `PackedMicroBatches.state_dict()` = position at the START
+  of the current partial packing row (partial rows are untrained, so resume
+  re-draws them — no tensor serialization, exact continuation). Saved per
+  DP rank to `{ckpt}/dataset_state/dp_{rank}.pt` before `latest.txt`;
+  loaded in `run_train.py` from `trainer.init_checkpoint_path`. Requires
+  `num_loading_workers: 0` (else `state_dict()` is None and the trainer
+  skips it — revisit with torchdata StatefulDataLoader if Phase 5
+  throughput demands workers). MMU resume is exact for
+  `shuffle_buffer_size: 0`; with a buffer it skips at most the in-flight
+  buffer and never replays a trained record (HF shuffle semantics).
+- Kill/resume gate: checkpoint at 137, SIGKILL at ~152, resume → first
+  resumed loss 0.0789 vs 0.0790 uninterrupted, mean rel deviation 0.9%
+  over steps 138–200; `object_id_log` (new dataset arg, yield-time append)
+  proves the resumed stream is exactly the uninterrupted tail, no replay.
+- Fork also needed: per-stage `consumed_tokens_per_dataset_folder` kept in
+  sync by hand for astropt3 streams, else `TrainingMetadata`'s
+  consumed-tokens invariant fails on checkpoint LOAD (upstream only updates
+  it for BlendableDataset).
+- Eval is fully outside the trainer: `run_probe_sweep.py` polls a run dir
+  (gated on `latest.txt`), converts, then `eval/val_loss.py` (fixed
+  deterministic batches; synthetic val = record indices ≥ 10M) and
+  `eval/linear_probe.py` (closed-form ridge, inner-split λ, test R²).
+  Tiny-run sweep: val loss 0.456→0.051 monotone, images/spectra within 2×,
+  redshift probe R² 0.42→0.79 across checkpoints.
+
 ### Phase 5 — Slurm launch + 70M/160M pilots
 `launch_slurm.sbatch` (torchrun → `nanotron/run_train.py --config-file
 astro/configs/nanotron/astropt3-70m.yaml`), per-size YAMLs from the recipe
