@@ -25,7 +25,7 @@ uv sync --extra dev                       # create/update the venv
 uv run pytest                             # CPU suite (gpu-marked tests excluded via addopts)
 uv run pytest tests/test_model.py::test_pad_invariance   # single test
 uv run python scripts/count_params.py     # size table; asserts ±10% of nominal
-uv run python -m 3.train_smoke \
+uv run python -m astropt3.train_smoke \
     --config configs/model/test-tiny.yaml --steps 50 --assert-decrease
 ```
 

@@ -58,3 +58,35 @@ uv run python scripts/check_pilot_data.py --target-tokens-per-sec N
 Training streams the shards with `astropt3.data.mmu.MMUIterableDataset`
 (`HF_DATASETS_OFFLINE=1`; DP-rank and DataLoader-worker sharded; keep
 `num_workers ≤ n_shards / world_size`).
+
+## Training (nanotron fork) + async eval
+
+Pretraining runs on the `Smith42/nanotron` fork (submodule at `../nanotron`;
+configs in `configs/nanotron/`). Smoke run:
+
+```bash
+cd .. && CUDA_DEVICE_MAX_CONNECTIONS=1 \
+  torchrun --nproc_per_node=1 nanotron/run_train.py \
+    --config-file astro/configs/nanotron/astropt3-test-tiny.yaml
+```
+
+- **Checkpoints**: `checkpoints.checkpoint_schedule: pythia` saves at steps
+  1,2,4,…,512 plus every `checkpoint_interval` (schedule source:
+  `src/astropt3/checkpoint_schedule.py`). Each checkpoint carries the data
+  stream position (`dataset_state/dp_{rank}.pt`), so setting
+  `checkpoints.resume_checkpoint_path` resumes the exact micro-batch
+  sequence — no sample replay, no gap (requires `num_loading_workers: 0`;
+  set `object_id_log` on the dataset to audit this).
+- **Eval never blocks training** — run the sweep beside it on a spare GPU:
+
+```bash
+python astro/scripts/run_probe_sweep.py \
+  --checkpoints-dir <run_ckpt_dir> --out-dir <eval_dir> \
+  --data-root <val_shards|synthetic> --watch --until-step <train_steps>
+    # per checkpoint: convert to HF -> fixed-batch val loss
+    # (astropt3.eval.val_loss) -> ridge redshift probe
+    # (astropt3.eval.linear_probe) -> one line in probe_results.jsonl
+```
+
+GPU-marked tests (training machine / reserved GPU):
+`pytest -m gpu tests/test_nanotron_gpu.py tests/test_phase4_gpu.py`.

@@ -15,6 +15,7 @@ from astropt3.data import mmu
 from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
     flatten_packed_batch,
+    regroup_micro_batch as regroup,
 )
 from astropt3.data.synthetic import record_stream
 from astropt3.tokenization import BOS_ID, modality_token_ids
@@ -29,15 +30,6 @@ def micro_batches(tiny_config):
     return list(islice(iter(stream), 3))
 
 
-def regroup(flat: dict, names) -> dict:
-    """Flat nanotron micro-batch -> HF AstroPT3Model kwargs."""
-    return {
-        "input_ids": flat["input_ids"],
-        "position_ids": flat["position_ids"],
-        "modality_values": {n: flat[f"{n}_values"] for n in names if flat[f"{n}_values"].shape[0]},
-        "modality_masks": {n: flat[f"{n}_mask"] for n in names if flat[f"{n}_mask"].any()},
-        "modality_positions": {n: flat[f"{n}_positions"] for n in names if flat[f"{n}_values"].shape[0]},
-    }
 
 
 def test_micro_batch_contract(tiny_config, micro_batches):

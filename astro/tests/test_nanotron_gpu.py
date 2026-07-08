@@ -149,13 +149,9 @@ def micro_batch(hf_config, device="cuda", skip=0):
 
 def regroup(flat: dict, names) -> dict:
     """Flat nanotron micro-batch -> HF AstroPT3Model kwargs."""
-    return {
-        "input_ids": flat["input_ids"],
-        "position_ids": flat["position_ids"],
-        "modality_values": {n: flat[f"{n}_values"] for n in names if flat[f"{n}_values"].shape[0]},
-        "modality_masks": {n: flat[f"{n}_mask"] for n in names if flat[f"{n}_mask"].any()},
-        "modality_positions": {n: flat[f"{n}_positions"] for n in names if flat[f"{n}_values"].shape[0]},
-    }
+    from astropt3.data.nanotron_loader import regroup_micro_batch
+
+    return regroup_micro_batch(flat, names)
 
 
 @pytest.fixture(scope="session")
