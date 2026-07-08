@@ -367,6 +367,30 @@ completion: monotone-ish val loss per modality; image/spectra losses within
 ~5× after warmup (else tune loss_weight); probe R² for redshift improves
 across checkpoints.
 
+IN PROGRESS (2026-07-08, dev node, user's GPU reservation): real-data
+70M shakeout ahead of the cluster pilots.
+- Pilot data prep RUNS ON THE DEV NODE too (network confirmed): the full
+  `prepare_pilot_data.py` run is filling `../astroPTv3_data/pilot_v1`
+  (5,596 partitions, ~75 obj/s ≈ multi-day; journalled, resume any time,
+  any machine). A finished 2°-cone prep around the DESI SV3 rosette
+  (217.97, 32.62) sits in `../astroPTv3_data/pilot_sv3cone`: 26,452
+  objects, 7,354 with spectra (27.8%) — spectra-rich subset for probing.
+  NEVER point a cone run at the canonical dir: cone partitions are
+  row-filtered and would poison the resume journal.
+- `compute_norm_stats.py` ran on 10k real images → asinh p1/p99 now in
+  the data yaml (provisional: day-one sky region; re-check when the full
+  corpus lands). `check_pilot_data.py`: real images decode to exact
+  N(0,1) patches, spectra to 31 patches λ 3702–9784 Å; dataloader ~1,000
+  obj/s ≈ 400k tok/s per process at 8 workers (≥2× gate passes at DP=2).
+- Blocker found+fixed by the first 70M execution: upstream nanotron's
+  DDP + fp32-accum + ZeRO-1 comm hook routes to a dead reduce-scatter
+  branch (NotImplementedError) — every ZeRO-1 DDP run would have crashed
+  at step 1. Fork fix: all-reduce path (nanotron commit 0668f369).
+- 100-step DP=2 dry run (astropt3-70m-shakeout.yaml): loss 0.459→0.259,
+  ~240k tok/s total, 123 model TFLOPs/GPU (~39% MFU), peak 31.7 GiB/80.
+  20k-step run (2.6B tokens, Pythia checkpoints) + async probe sweep
+  launched on the reserved pair.
+
 ### Phase 6 — Scale-up + modality extension
 410M → 1.4B (TP=1), then 2.8B/6.9B/12B per the recipe table (dry run before
 each). Add time series (`mmu_tess_spoc`) and tabular scalars (`mmu_gaia_gaia`)
