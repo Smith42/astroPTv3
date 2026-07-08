@@ -25,7 +25,7 @@ uv sync --extra dev                       # create/update the venv
 uv run pytest                             # CPU suite (gpu-marked tests excluded via addopts)
 uv run pytest tests/test_model.py::test_pad_invariance   # single test
 uv run python scripts/count_params.py     # size table; asserts ±10% of nominal
-uv run python -m 3.train_smoke \
+uv run python -m astropt3.train_smoke \
     --config configs/model/test-tiny.yaml --steps 50 --assert-decrease
 ```
 
@@ -92,9 +92,25 @@ transfers top-level tensors). The fork adds
 `tp_mode: ALL_REDUCE` are asserted (modality modules are TP-replicated via
 nanotron's tied-parameter mechanism). `nanotron_loader.py` must stay
 importable without nanotron; keep all modality/packing logic in `astro/` so
-the fork stays thin. gpu-marked tests (`tests/test_nanotron_gpu.py`) cover
-HF↔nanotron parity, TP=2 replicated grads, and a 50-step synthetic run +
-checkpoint conversion — see PLAN Phase 3 notes for the venv recipe.
+the fork stays thin. gpu-marked tests (`tests/test_nanotron_gpu.py`,
+`tests/test_phase4_gpu.py`) cover HF↔nanotron parity, TP=2 replicated
+grads, 50-step smoke + conversion, the Pythia checkpoint schedule, and
+kill/resume — see PLAN Phase 3 notes for the venv recipe.
+
+**Checkpointing & eval (Phase 4)**: `checkpoints.checkpoint_schedule:
+pythia` saves at steps 1,2,4,…,512 plus every `checkpoint_interval`
+(canonical schedule in `checkpoint_schedule.py`, lazy-imported by the fork's
+trainer). Each checkpoint stores the stream position under
+`dataset_state/dp_{rank}.pt` — state is captured at the START of the current
+partial packing row, so resume re-draws the untrained partial row and
+continues the exact micro-batch sequence (requires `num_loading_workers: 0`;
+`object_id_log` writes the per-object no-replay audit trail). Evaluation
+never runs in the trainer: `scripts/run_probe_sweep.py` polls a run's
+checkpoint dir (gated on `latest.txt`), converts each step to HF, and runs
+`astropt3.eval.val_loss` (fixed deterministic val batches; synthetic val
+uses record indices ≥ 10M) and `astropt3.eval.linear_probe` (ridge probe of
+redshift `Z` from mean-pooled hidden states) — run it on a spare GPU
+alongside training.
 
 A behavior to remember when touching data or fixtures: per-patch
 standardization turns flat/noise-only patches into irreducible N(0,1)

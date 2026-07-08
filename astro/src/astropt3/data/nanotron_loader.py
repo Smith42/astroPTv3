@@ -23,8 +23,19 @@ test suite exercises it against the HF model, and only
 Sharding: the object stream is split by DP rank (identical within a TP
 group — nanotron passes the dp process-group rank/size) and further across
 DataLoader workers (HF datasets shard-splits MMU parquet; the synthetic
-stream strides over record indices). Checkpoint-resume of the stream is
-Phase 4 (``state_dict`` plumbing exists on ``MMUIterableDataset``).
+stream strides over record indices).
+
+Checkpoint-resume (Phase 4): with ``num_workers == 0`` the dataset is
+stateful. ``state_dict()`` returns the stream position at the START of the
+current partial row — everything already drawn into that row has not been
+trained on, so resume re-draws it and continues with exactly the micro-batch
+sequence an uninterrupted run would have produced. The synthetic state is a
+record counter (exact resume); the MMU state is the HF-datasets stream state
+snapshotted at row starts, which is exact for ``shuffle_buffer_size == 0``
+and skips at most the in-flight shuffle buffer otherwise (never replays a
+trained record — matching HF's own shuffle-resume semantics). With
+``num_workers > 0`` the main-process copy never iterates, so ``state_dict()``
+returns None and the trainer skips saving stream state.
 """
 
 import itertools
@@ -39,6 +50,8 @@ from .packing import ObjectSequencer, PackedCollator
 from .synthetic import make_record
 
 SYNTHETIC_ROOT = "synthetic"
+STATE_FILE_TEMPLATE = "dp_{rank}.pt"
+STATE_SUBDIR = "dataset_state"
 
 
 def hf_config_from_modalities(modalities, tokeniser: str = "affine") -> AstroPT3Config:
@@ -79,17 +92,15 @@ def flatten_packed_batch(batch: dict, config: AstroPT3Config, seq_len: int) -> d
     return flat
 
 
-def _synthetic_records(rank: int, stride: int, image_only_fraction: float):
-    """Endless deterministic record stream, disjoint across (rank, stride)."""
-    for i in itertools.count(rank, stride):
-        yield make_record(i, image_only_fraction=image_only_fraction)
-
-
-def _mmu_records(dataset: MMUIterableDataset):
-    """Endless stream over the shards, reshuffled per epoch."""
-    for epoch in itertools.count():
-        dataset.set_epoch(epoch)
-        yield from dataset
+def regroup_micro_batch(flat: dict, names) -> dict:
+    """Flat nanotron micro-batch -> HF ``AstroPT3Model`` forward kwargs."""
+    return {
+        "input_ids": flat["input_ids"],
+        "position_ids": flat["position_ids"],
+        "modality_values": {n: flat[f"{n}_values"] for n in names if flat[f"{n}_values"].shape[0]},
+        "modality_masks": {n: flat[f"{n}_mask"] for n in names if flat[f"{n}_mask"].any()},
+        "modality_positions": {n: flat[f"{n}_positions"] for n in names if flat[f"{n}_values"].shape[0]},
+    }
 
 
 class PackedMicroBatches(torch.utils.data.IterableDataset):
@@ -101,6 +112,11 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
     deterministic, so the collator reproduces exactly the grouped rows.
 
     Use with ``DataLoader(batch_size=None)``; each item IS a micro-batch.
+
+    ``object_id_log`` appends one ``object_id`` line per object as its
+    micro-batch is YIELDED (a partial row lost to a kill is never logged),
+    to ``{object_id_log}.dp{rank}`` — the no-replay audit trail for the
+    Phase 4 kill/resume gate.
     """
 
     def __init__(
@@ -116,6 +132,8 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         rank: int = 0,
         world_size: int = 1,
         seed: int = 0,
+        object_id_log: str | Path | None = None,
+        stateful: bool = True,
     ):
         super().__init__()
         self.config = config
@@ -127,6 +145,12 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self.rank = rank
         self.world_size = world_size
         self.seed = seed
+        self.object_id_log = None if object_id_log is None else str(object_id_log)
+        self._stateful = stateful
+        self._resume_state: dict | None = None  # applied on next __iter__
+        self._ckpt_state: dict | None = None  # updated at every yield
+        self._mmu_dataset: MMUIterableDataset | None = None
+        self._epoch = 0
 
         sequencer_kwargs = {}
         if norm_stats is not None:
@@ -134,16 +158,57 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self.sequencer = ObjectSequencer(config, **sequencer_kwargs)
         self.collator = PackedCollator(config, seq_len=seq_len)
 
-    def _records(self):
-        worker = torch.utils.data.get_worker_info()
-        if self.data_root == SYNTHETIC_ROOT:
-            # stride over record indices: disjoint across ranks and workers
-            n_workers = worker.num_workers if worker else 1
-            worker_id = worker.id if worker else 0
-            offset = self.rank * n_workers + worker_id
-            stride = self.world_size * n_workers
-            return _synthetic_records(offset, stride, self.synthetic_image_only_fraction)
-        # MMU parquet shards: DP split here, worker split inside HF datasets
+    # -- checkpoint state ---------------------------------------------------
+
+    def state_dict(self) -> dict | None:
+        """Stream position at the start of the current partial row, or None
+        when the stream is not stateful (``num_workers > 0``)."""
+        if not self._stateful:
+            return None
+        if self._ckpt_state is not None:
+            return dict(self._ckpt_state)
+        if self._resume_state is not None:
+            return dict(self._resume_state)
+        return {"records": 0, "epoch": 0, "hf_state": None, "data_root": self.data_root}
+
+    def load_state_dict(self, state: dict) -> None:
+        if state.get("data_root") not in (None, self.data_root):
+            raise ValueError(
+                f"dataset state was saved for data_root={state['data_root']!r}, "
+                f"this stream reads {self.data_root!r}"
+            )
+        self._resume_state = dict(state)
+
+    def _snapshot(self, records: int) -> dict:
+        """State AFTER ``records`` records have been consumed by the packer."""
+        hf_state = None
+        if self._mmu_dataset is not None:
+            hf_state = self._mmu_dataset.state_dict()
+        return {
+            "records": records,
+            "epoch": self._epoch,
+            "hf_state": hf_state,
+            "data_root": self.data_root,
+        }
+
+    # -- record sources -----------------------------------------------------
+
+    def _synthetic_records(self, start_count: int, worker):
+        """Endless deterministic stream; index striding keeps ranks/workers disjoint."""
+        n_workers = worker.num_workers if worker else 1
+        worker_id = worker.id if worker else 0
+        offset = self.rank * n_workers + worker_id
+        stride = self.world_size * n_workers
+        for k in itertools.count(start_count):
+            yield make_record(offset + k * stride, image_only_fraction=self.synthetic_image_only_fraction)
+
+    def _mmu_records(self, start_epoch: int, hf_state):
+        """Endless stream over the shards, reshuffled per epoch.
+
+        On resume the first epoch is fast-forwarded to the saved HF stream
+        state; if that state was end-of-stream the epoch yields nothing and
+        the loop rolls into the next one.
+        """
         dataset = MMUIterableDataset(
             self.data_root,
             rank=self.rank,
@@ -151,31 +216,79 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             shuffle_buffer_size=self.shuffle_buffer_size,
             seed=self.seed,
         )
-        return _mmu_records(dataset)
+        self._mmu_dataset = dataset
+        for epoch in itertools.count(start_epoch):
+            dataset.set_epoch(epoch)
+            if epoch == start_epoch and hf_state is not None:
+                dataset.load_state_dict(hf_state)
+            self._epoch = epoch
+            yield from dataset
 
-    def _rows(self):
-        """Greedy whole-object packing into rows of exactly seq_len budget."""
-        row, used = [], 0
-        for record in self._records():
-            obj = self.sequencer.build(record)
-            if len(obj) > self.seq_len:
-                raise ValueError(f"object of length {len(obj)} exceeds seq_len {self.seq_len}")
-            if used + len(obj) > self.seq_len:
-                yield row
-                row, used = [], 0
-            row.append(obj)
-            used += len(obj)
+    # -- iteration ------------------------------------------------------------
 
     def __iter__(self):
-        rows = self._rows()
-        while True:
-            group = list(itertools.islice(rows, self.micro_batch_size))
-            batch = self.collator([obj for row in group for obj in row])
-            assert batch["input_ids"].shape == (self.micro_batch_size, self.seq_len), (
-                f"greedy repack mismatch: {batch['input_ids'].shape} != "
-                f"({self.micro_batch_size}, {self.seq_len})"
-            )
-            yield flatten_packed_batch(batch, self.config, self.seq_len)
+        worker = torch.utils.data.get_worker_info()
+        stateful = self._stateful and worker is None
+        state = self._resume_state if stateful else None
+
+        count = state["records"] if state else 0
+        start_epoch = state["epoch"] if state else 0
+        hf_state = state["hf_state"] if state else None
+        self._epoch = start_epoch
+        self._mmu_dataset = None
+
+        if self.data_root == SYNTHETIC_ROOT:
+            records = self._synthetic_records(count, worker)
+        else:
+            records = self._mmu_records(start_epoch, hf_state)
+
+        log = None
+        if self.object_id_log is not None:
+            worker_suffix = f".w{worker.id}" if worker else ""
+            log_path = Path(f"{self.object_id_log}.dp{self.rank}{worker_suffix}")
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log = open(log_path, "a")
+
+        # prev_state = stream position BEFORE the record about to be drawn;
+        # row_start = position at the first record of the current partial row.
+        # On resume that position is the loaded state itself (the MMU dataset
+        # object does not exist until the record generator first runs).
+        prev_state = dict(state) if state else (self._snapshot(count) if stateful else None)
+        row_start = prev_state
+        rows: list[list] = []
+        row: list = []
+        used = 0
+
+        try:
+            for record in records:
+                obj = self.sequencer.build(record)
+                if len(obj) > self.seq_len:
+                    raise ValueError(f"object of length {len(obj)} exceeds seq_len {self.seq_len}")
+                if used + len(obj) > self.seq_len:
+                    rows.append(row)
+                    row, used = [], 0
+                    row_start = prev_state  # the new row starts at this record
+                    if len(rows) == self.micro_batch_size:
+                        batch = self.collator([o for r in rows for o in r])
+                        assert batch["input_ids"].shape == (self.micro_batch_size, self.seq_len), (
+                            f"greedy repack mismatch: {batch['input_ids'].shape} != "
+                            f"({self.micro_batch_size}, {self.seq_len})"
+                        )
+                        if stateful:
+                            self._ckpt_state = row_start
+                        if log is not None:
+                            log.writelines(f"{o.object_id}\n" for r in rows for o in r)
+                            log.flush()
+                        rows = []
+                        yield flatten_packed_batch(batch, self.config, self.seq_len)
+                row.append(obj)
+                used += len(obj)
+                count += 1
+                if stateful:
+                    prev_state = self._snapshot(count)
+        finally:
+            if log is not None:
+                log.close()
 
 
 def build_astropt3_dataloader(
@@ -187,12 +300,14 @@ def build_astropt3_dataloader(
     dp_size: int,
     num_workers: int = 0,
     seed: int = 0,
+    resume_state_dir: str | Path | None = None,
 ) -> torch.utils.data.DataLoader:
     """Entry point called by the fork's ``run_train.py`` (astropt3_streaming).
 
     ``dataset_args`` is nanotron's ``AstroPT3StreamingDatasetsArgs`` and
     ``model_config`` its ``AstroPT3Config`` — both duck-typed so this module
-    never imports nanotron.
+    never imports nanotron. ``resume_state_dir`` points at a checkpoint's
+    ``dataset_state/`` directory; loading it requires ``num_workers == 0``.
     """
     config = hf_config_from_modalities(model_config.modalities, getattr(model_config, "tokeniser", "affine"))
     dataset = PackedMicroBatches(
@@ -206,7 +321,18 @@ def build_astropt3_dataloader(
         rank=dp_rank,
         world_size=dp_size,
         seed=seed,
+        object_id_log=getattr(dataset_args, "object_id_log", None),
+        stateful=num_workers == 0,
     )
+    if resume_state_dir is not None:
+        state_file = Path(resume_state_dir) / STATE_FILE_TEMPLATE.format(rank=dp_rank)
+        if state_file.exists():
+            if num_workers != 0:
+                raise ValueError(
+                    "resuming astropt3 stream state requires num_loading_workers == 0 "
+                    f"(got {num_workers})"
+                )
+            dataset.load_state_dict(torch.load(state_file, weights_only=False))
     return torch.utils.data.DataLoader(
         dataset,
         batch_size=None,  # items are already whole micro-batches

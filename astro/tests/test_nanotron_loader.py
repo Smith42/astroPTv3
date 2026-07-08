@@ -14,8 +14,8 @@ import torch
 from astropt3.data import mmu
 from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
-    _synthetic_records,
     flatten_packed_batch,
+    regroup_micro_batch as regroup,
 )
 from astropt3.data.synthetic import record_stream
 from astropt3.tokenization import BOS_ID, modality_token_ids
@@ -30,15 +30,6 @@ def micro_batches(tiny_config):
     return list(islice(iter(stream), 3))
 
 
-def regroup(flat: dict, names) -> dict:
-    """Flat nanotron micro-batch -> HF AstroPT3Model kwargs."""
-    return {
-        "input_ids": flat["input_ids"],
-        "position_ids": flat["position_ids"],
-        "modality_values": {n: flat[f"{n}_values"] for n in names if flat[f"{n}_values"].shape[0]},
-        "modality_masks": {n: flat[f"{n}_mask"] for n in names if flat[f"{n}_mask"].any()},
-        "modality_positions": {n: flat[f"{n}_positions"] for n in names if flat[f"{n}_values"].shape[0]},
-    }
 
 
 def test_micro_batch_contract(tiny_config, micro_batches):
@@ -88,10 +79,12 @@ def test_absent_modality_ships_typed_empty_tensors(tiny_config, tiny_model):
     assert set(out.modality_losses) == {"images"}
 
 
-def test_synthetic_stream_disjoint_across_ranks_and_workers():
+def test_synthetic_stream_disjoint_across_ranks_and_workers(tiny_config):
     # rank/worker sharding strides over record indices
-    a = [r["object_id"] for r in islice(_synthetic_records(0, 2, 0.3), 20)]
-    b = [r["object_id"] for r in islice(_synthetic_records(1, 2, 0.3), 20)]
+    ds_a = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, rank=0, world_size=2)
+    ds_b = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, rank=1, world_size=2)
+    a = [r["object_id"] for r in islice(ds_a._synthetic_records(0, None), 20)]
+    b = [r["object_id"] for r in islice(ds_b._synthetic_records(0, None), 20)]
     assert not set(a) & set(b)
     assert len(set(a)) == 20
 
