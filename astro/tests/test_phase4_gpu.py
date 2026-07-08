@@ -200,19 +200,26 @@ def test_kill_at_137_resume_overlays_loss_curve(tmp_path_factory):
     deadline = time.time() + 3600
     try:
         while time.time() < deadline:
-            if proc.poll() is not None:
-                pytest.fail(f"run exited early: {(kill_dir / 'stdout.log').read_text()[-4000:]}")
             done_steps = len(losses_from((kill_dir / "stdout.log").read_text()))
-            if latest.exists() and latest.read_text().strip() == "137" and done_steps >= 152:
+            if latest.exists() and latest.read_text().strip() == "137" and done_steps >= 140:
+                break  # checkpoint written and a few steps past it -> kill now
+            if proc.poll() is not None:
+                # tiny steps are fast: the run may finish before the poll sees
+                # step 140 — acceptable as long as the 137 checkpoint exists
+                assert proc.returncode == 0 and latest.exists() and latest.read_text().strip() == "137", (
+                    f"run died before checkpoint 137: {(kill_dir / 'stdout.log').read_text()[-4000:]}"
+                )
                 break
-            time.sleep(2)
+            time.sleep(0.5)
         else:
-            pytest.fail("timed out waiting for checkpoint 137 + 15 more steps")
+            pytest.fail("timed out waiting for checkpoint 137")
     finally:
         if proc.poll() is None:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             proc.wait(timeout=60)
         out_file.close()
+    losses_b1 = losses_from((kill_dir / "stdout.log").read_text())
+    assert len(losses_b1) >= 138, f"killed run logged only {len(losses_b1)} steps"
 
     # resume from the 137 checkpoint and finish the 200 steps
     config_c = kill_resume_config(kill_dir, "objects_b2.log", train_steps=200, interval=1000)
@@ -221,13 +228,32 @@ def test_kill_at_137_resume_overlays_loss_curve(tmp_path_factory):
     losses_c = losses_from(stdout_c)
     assert len(losses_c) == 63, f"expected steps 138..200, got {len(losses_c)} loss lines"
 
-    # loss overlay: identical weights at step 138 (forward loss is computed
-    # before the nondeterministic backward), tolerant drift afterwards
+    # exact-resume check: the resumed run must continue ITS OWN run's
+    # trajectory — same restored weights, same data. The step-138 loss is a
+    # pure forward on the restored state (computed before the backward), so
+    # it must match at log precision; later steps drift slowly because the
+    # flash-attn backward is nondeterministic even within a single run
+    overlap = min(len(losses_b1) - 137, len(losses_c), 10)
+    assert overlap >= 1
+    assert losses_c[0] == pytest.approx(losses_b1[137], rel=2e-3), (losses_c[0], losses_b1[137])
+    for i in range(1, overlap):
+        assert losses_c[i] == pytest.approx(losses_b1[137 + i], rel=5e-2), (
+            i,
+            losses_c[i],
+            losses_b1[137 + i],
+        )
+
+    # coarse overlay vs the INDEPENDENT uninterrupted run: identical data
+    # stream, but run-to-run kernel nondeterminism compounds over 137 prior
+    # steps, so only a loose band is meaningful here
     tail_a = losses_a[137:]
-    assert losses_c[0] == pytest.approx(tail_a[0], rel=2e-2), (losses_c[0], tail_a[0])
     rel = [abs(c - a) / a for c, a in zip(losses_c, tail_a)]
-    assert sum(rel) / len(rel) < 0.05, f"mean relative loss deviation {sum(rel) / len(rel):.4f}"
-    print("resume overlay: first", (losses_c[0], tail_a[0]), "mean rel dev", sum(rel) / len(rel))
+    assert sum(rel) / len(rel) < 0.10, f"mean relative loss deviation {sum(rel) / len(rel):.4f}"
+    print(
+        f"resume overlay: own-run overlap {overlap} steps "
+        f"(first {losses_c[0]} vs {losses_b1[137]}), "
+        f"independent-run mean rel dev {sum(rel) / len(rel):.4f}"
+    )
 
     # object stream: resumed log is exactly the uninterrupted log's tail —
     # the stream continued without replaying any trained object

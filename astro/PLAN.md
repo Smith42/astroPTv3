@@ -331,10 +331,21 @@ DONE (verified on the reserved A100s, tiny synthetic configs,
   throughput demands workers). MMU resume is exact for
   `shuffle_buffer_size: 0`; with a buffer it skips at most the in-flight
   buffer and never replays a trained record (HF shuffle semantics).
-- Kill/resume gate: checkpoint at 137, SIGKILL at ~152, resume → first
-  resumed loss 0.0789 vs 0.0790 uninterrupted, mean rel deviation 0.9%
-  over steps 138–200; `object_id_log` (new dataset arg, yield-time append)
-  proves the resumed stream is exactly the uninterrupted tail, no replay.
+- Kill/resume gate: checkpoint at 137, SIGKILL a few steps later, resume →
+  the step-138 loss (pure forward on restored state) matches the killed
+  run's own value at log precision (0.0791 = 0.0791) and tracks the
+  independent uninterrupted run to 0.7% mean over steps 138–200;
+  `object_id_log` (new dataset arg, yield-time append) proves the resumed
+  stream is exactly the uninterrupted tail, no replay. Note: compare a
+  resumed run against its OWN trajectory for tight tolerances — two
+  independent runs drift a few % by step 137 (nondeterministic backward).
+- 2026-07-08 (later): rebased the fork commit onto `origin/astropt3` after
+  the user merged upstream `main` there (fork `main` now exists,
+  PR #1 = astropt3). The merge required two more compat fixes: moe.py must
+  not require `grouped_gemm` at import time (it is imported for dense
+  models via scaling.parametrization), and the flash-attn ≥ 2.8 rotary
+  signature fix from 179c18f0 had to be restored (merge took upstream's
+  rotary.py wholesale). Full GPU suite re-verified post-rebase.
 - Fork also needed: per-stage `consumed_tokens_per_dataset_folder` kept in
   sync by hand for astropt3 streams, else `TrainingMetadata`'s
   consumed-tokens invariant fails on checkpoint LOAD (upstream only updates
