@@ -25,17 +25,23 @@ group — nanotron passes the dp process-group rank/size) and further across
 DataLoader workers (HF datasets shard-splits MMU parquet; the synthetic
 stream strides over record indices).
 
-Checkpoint-resume (Phase 4): with ``num_workers == 0`` the dataset is
-stateful. ``state_dict()`` returns the stream position at the START of the
-current partial row — everything already drawn into that row has not been
-trained on, so resume re-draws it and continues with exactly the micro-batch
-sequence an uninterrupted run would have produced. The synthetic state is a
-record counter (exact resume); the MMU state is the HF-datasets stream state
-snapshotted at row starts, which is exact for ``shuffle_buffer_size == 0``
-and skips at most the in-flight shuffle buffer otherwise (never replays a
-trained record — matching HF's own shuffle-resume semantics). With
-``num_workers > 0`` the main-process copy never iterates, so ``state_dict()``
-returns None and the trainer skips saving stream state.
+Checkpoint-resume (Phase 4): ``state_dict()`` returns the stream position at
+the START of the current partial packing row — everything already drawn into
+that row has not been trained on, so resume re-draws it and continues with
+exactly the micro-batch sequence an uninterrupted run would have produced.
+The synthetic state is a record counter (exact resume); the MMU state is the
+HF-datasets stream state snapshotted at row starts, which is exact for
+``shuffle_buffer_size == 0`` and skips at most the in-flight shuffle buffer
+otherwise (never replays a trained record — matching HF's own
+shuffle-resume semantics).
+
+With ``num_workers == 0`` the dataset object itself carries the state. With
+``num_workers > 0`` each DataLoader worker's dataset copy keeps its own
+state, and :func:`build_astropt3_dataloader` returns a torchdata
+``StatefulDataLoader`` whose ``state_dict()`` gathers the per-worker
+snapshots consistent with the last micro-batch actually yielded to the
+caller (worker-prefetched batches are accounted for by torchdata). The
+trainer captures either kind of loader through :func:`loader_state_dict`.
 """
 
 import itertools
@@ -52,6 +58,7 @@ from .synthetic import make_record
 SYNTHETIC_ROOT = "synthetic"
 STATE_FILE_TEMPLATE = "dp_{rank}.pt"
 STATE_SUBDIR = "dataset_state"
+LOADER_STATE_FORMAT = "stateful_dataloader"
 
 
 def hf_config_from_modalities(modalities, tokeniser: str = "affine") -> AstroPT3Config:
@@ -161,17 +168,24 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
     # -- checkpoint state ---------------------------------------------------
 
     def state_dict(self) -> dict | None:
-        """Stream position at the start of the current partial row, or None
-        when the stream is not stateful (``num_workers > 0``)."""
-        if not self._stateful:
-            return None
+        """Stream position at the start of the current partial row.
+
+        Returns None only from the never-iterated main-process copy of a
+        plain ``num_workers > 0`` DataLoader (``stateful=False`` and nothing
+        consumed): the real state lives in the worker copies, which a
+        StatefulDataLoader collects through this same method.
+        """
         if self._ckpt_state is not None:
             return dict(self._ckpt_state)
         if self._resume_state is not None:
             return dict(self._resume_state)
+        if not self._stateful:
+            return None
         return {"records": 0, "epoch": 0, "hf_state": None, "data_root": self.data_root}
 
-    def load_state_dict(self, state: dict) -> None:
+    def load_state_dict(self, state: dict | None) -> None:
+        if state is None:  # a worker snapshotted before its first yield
+            return
         if state.get("data_root") not in (None, self.data_root):
             raise ValueError(
                 f"dataset state was saved for data_root={state['data_root']!r}, "
@@ -228,7 +242,11 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
 
     def __iter__(self):
         worker = torch.utils.data.get_worker_info()
-        stateful = self._stateful and worker is None
+        # Worker copies are always stateful: a StatefulDataLoader snapshots
+        # them via state_dict() inside the worker process (under a plain
+        # DataLoader the bookkeeping is dead weight but harmless). The
+        # main-process copy honors the ctor flag as before.
+        stateful = self._stateful or worker is not None
         state = self._resume_state if stateful else None
 
         count = state["records"] if state else 0
@@ -291,6 +309,24 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 log.close()
 
 
+def loader_state_dict(dataloader) -> dict | None:
+    """Checkpointable stream state of a :func:`build_astropt3_dataloader` loader.
+
+    A StatefulDataLoader's state (which embeds every worker's row-start
+    snapshot plus torchdata's prefetch/round-robin bookkeeping) is wrapped
+    with the worker count so resume can insist on the same layout. A plain
+    DataLoader defers to its dataset, which returns None when it holds no
+    state — the caller skips saving in that case.
+    """
+    if hasattr(dataloader, "state_dict"):  # torchdata StatefulDataLoader
+        return {
+            "format": LOADER_STATE_FORMAT,
+            "num_workers": dataloader.num_workers,
+            "loader": dataloader.state_dict(),
+        }
+    return dataloader.dataset.state_dict()
+
+
 def build_astropt3_dataloader(
     dataset_args,
     model_config,
@@ -307,7 +343,10 @@ def build_astropt3_dataloader(
     ``dataset_args`` is nanotron's ``AstroPT3StreamingDatasetsArgs`` and
     ``model_config`` its ``AstroPT3Config`` — both duck-typed so this module
     never imports nanotron. ``resume_state_dir`` points at a checkpoint's
-    ``dataset_state/`` directory; loading it requires ``num_workers == 0``.
+    ``dataset_state/`` directory. Loader-format states (written via
+    :func:`loader_state_dict` from a StatefulDataLoader) restore per-worker
+    stream positions and require the same ``num_workers`` as the saving run;
+    legacy dataset-format states require ``num_workers == 0``.
     """
     config = hf_config_from_modalities(model_config.modalities, getattr(model_config, "tokeniser", "affine"))
     dataset = PackedMicroBatches(
@@ -324,19 +363,43 @@ def build_astropt3_dataloader(
         object_id_log=getattr(dataset_args, "object_id_log", None),
         stateful=num_workers == 0,
     )
-    if resume_state_dir is not None:
-        state_file = Path(resume_state_dir) / STATE_FILE_TEMPLATE.format(rank=dp_rank)
-        if state_file.exists():
-            if num_workers != 0:
-                raise ValueError(
-                    "resuming astropt3 stream state requires num_loading_workers == 0 "
-                    f"(got {num_workers})"
-                )
-            dataset.load_state_dict(torch.load(state_file, weights_only=False))
-    return torch.utils.data.DataLoader(
+    try:
+        from torchdata.stateful_dataloader import StatefulDataLoader as loader_cls
+    except ImportError:
+        if num_workers > 0:
+            # never train unresumable: with workers the stream position lives
+            # in the worker processes and only a StatefulDataLoader can save it
+            raise ImportError(
+                "num_loading_workers > 0 requires torchdata's StatefulDataLoader "
+                "to checkpoint the stream position (`uv pip install torchdata`); "
+                "either install it or set num_loading_workers: 0"
+            )
+        loader_cls = torch.utils.data.DataLoader
+    # persistent_workers deliberately unset: the stream is endless, so the
+    # loader is never re-iterated and the flag only adds state-restore risk
+    loader = loader_cls(
         dataset,
         batch_size=None,  # items are already whole micro-batches
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
-        persistent_workers=num_workers > 0,
     )
+    if resume_state_dir is not None:
+        state_file = Path(resume_state_dir) / STATE_FILE_TEMPLATE.format(rank=dp_rank)
+        if state_file.exists():
+            state = torch.load(state_file, weights_only=False)
+            if isinstance(state, dict) and state.get("format") == LOADER_STATE_FORMAT:
+                if state["num_workers"] != num_workers:
+                    raise ValueError(
+                        f"stream state was saved with num_loading_workers="
+                        f"{state['num_workers']}, this run uses {num_workers}; "
+                        "per-worker stream positions only map onto the same count"
+                    )
+                loader.load_state_dict(state["loader"])
+            else:  # legacy dataset-format state (pre-StatefulDataLoader)
+                if num_workers != 0:
+                    raise ValueError(
+                        "resuming a dataset-format stream state requires "
+                        f"num_loading_workers == 0 (got {num_workers})"
+                    )
+                dataset.load_state_dict(state)
+    return loader

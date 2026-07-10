@@ -8,7 +8,9 @@ Covers the plan's Phase 4 gates on tiny synthetic runs:
   also produces val-loss + ridge-probe entries per checkpoint);
 - kill/resume: a run checkpointed at step 137 and SIGKILLed later, then
   resumed, overlays the uninterrupted 200-step loss curve and consumes
-  exactly the same object stream (object_id log: no replay, no gap).
+  exactly the same object stream (object_id log: no replay, no gap) — at
+  num_loading_workers 0 (dataset-held state) and 2 (per-worker state via
+  torchdata's StatefulDataLoader).
 
 Run (training machine / reserved GPU):
     pytest -m gpu tests/test_phase4_gpu.py -v
@@ -145,7 +147,9 @@ def test_pythia_schedule_conversions_and_probe_sweep(tmp_path_factory):
     print("pythia sweep:", json.dumps({s: (by_step[s]["val_loss"], by_step[s]["probe_r2"]) for s in by_step}))
 
 
-def kill_resume_config(base_dir: Path, log_name: str, train_steps: int, interval: int) -> dict:
+def kill_resume_config(
+    base_dir: Path, log_name: str, train_steps: int, interval: int, num_workers: int = 0
+) -> dict:
     config = load_tiny_config()
     config["tokens"]["train_steps"] = train_steps
     config["checkpoints"].update(
@@ -157,16 +161,20 @@ def kill_resume_config(base_dir: Path, log_name: str, train_steps: int, interval
     )
     config["optimizer"]["learning_rate_scheduler"]["lr_decay_steps"] = 190
     config["data_stages"][0]["data"]["dataset"]["object_id_log"] = str(base_dir / log_name)
+    config["data_stages"][0]["data"]["num_loading_workers"] = num_workers
     return config
 
 
-def test_kill_at_137_resume_overlays_loss_curve(tmp_path_factory):
-    workdir = tmp_path_factory.mktemp("kill_resume")
+@pytest.mark.parametrize("num_loading_workers", [0, 2])
+def test_kill_at_137_resume_overlays_loss_curve(tmp_path_factory, num_loading_workers):
+    workdir = tmp_path_factory.mktemp(f"kill_resume_w{num_loading_workers}")
 
     # reference: uninterrupted 200 steps, no intermediate checkpoints
     ref_dir = workdir / "ref"
     ref_dir.mkdir()
-    config_a = kill_resume_config(ref_dir, "objects_a.log", train_steps=200, interval=1000)
+    config_a = kill_resume_config(
+        ref_dir, "objects_a.log", train_steps=200, interval=1000, num_workers=num_loading_workers
+    )
     stdout_a = run_train(config_a, ref_dir, "ref-200")
     losses_a = losses_from(stdout_a)
     assert len(losses_a) == 200
@@ -174,7 +182,9 @@ def test_kill_at_137_resume_overlays_loss_curve(tmp_path_factory):
     # interrupted: checkpoint at 137, SIGKILL once ~15 further steps ran
     kill_dir = workdir / "killed"
     kill_dir.mkdir()
-    config_b = kill_resume_config(kill_dir, "objects_b1.log", train_steps=200, interval=137)
+    config_b = kill_resume_config(
+        kill_dir, "objects_b1.log", train_steps=200, interval=137, num_workers=num_loading_workers
+    )
     config_path = kill_dir / "killed.yaml"
     config_path.write_text(yaml.safe_dump(config_b))
     out_file = open(kill_dir / "stdout.log", "w")
@@ -221,8 +231,15 @@ def test_kill_at_137_resume_overlays_loss_curve(tmp_path_factory):
     losses_b1 = losses_from((kill_dir / "stdout.log").read_text())
     assert len(losses_b1) >= 138, f"killed run logged only {len(losses_b1)} steps"
 
+    # the checkpoint must carry stream state at ANY worker count — with
+    # workers it is the StatefulDataLoader's per-worker snapshot (the 20k
+    # real-data shakeouts silently saved none at num_loading_workers: 8)
+    assert (kill_dir / "checkpoints" / "137" / "dataset_state" / "dp_0.pt").exists()
+
     # resume from the 137 checkpoint and finish the 200 steps
-    config_c = kill_resume_config(kill_dir, "objects_b2.log", train_steps=200, interval=1000)
+    config_c = kill_resume_config(
+        kill_dir, "objects_b2.log", train_steps=200, interval=1000, num_workers=num_loading_workers
+    )
     config_c["checkpoints"]["resume_checkpoint_path"] = str(kill_dir / "checkpoints")
     stdout_c = run_train(config_c, kill_dir, "resumed")
     losses_c = losses_from(stdout_c)
@@ -255,13 +272,30 @@ def test_kill_at_137_resume_overlays_loss_curve(tmp_path_factory):
         f"independent-run mean rel dev {sum(rel) / len(rel):.4f}"
     )
 
-    # object stream: resumed log is exactly the uninterrupted log's tail —
-    # the stream continued without replaying any trained object
-    lines_a = (ref_dir / "objects_a.log.dp0").read_text().splitlines()
-    lines_b2 = (kill_dir / "objects_b2.log.dp0").read_text().splitlines()
-    assert 0 < len(lines_b2) < len(lines_a)
-    assert lines_a[-len(lines_b2) :] == lines_b2, "resumed stream != uninterrupted continuation"
-    assert not set(lines_a[: len(lines_a) - len(lines_b2)]) & set(lines_b2), "resume replayed objects"
-    # and the killed run consumed the same prefix while it lived
-    lines_b1 = (kill_dir / "objects_b1.log.dp0").read_text().splitlines()
-    assert lines_b1[: len(lines_a) - len(lines_b2)] == lines_a[: len(lines_a) - len(lines_b2)]
+    if num_loading_workers == 0:
+        # object stream: resumed log is exactly the uninterrupted log's tail —
+        # the stream continued without replaying any trained object
+        lines_a = (ref_dir / "objects_a.log.dp0").read_text().splitlines()
+        lines_b2 = (kill_dir / "objects_b2.log.dp0").read_text().splitlines()
+        assert 0 < len(lines_b2) < len(lines_a)
+        assert lines_a[-len(lines_b2) :] == lines_b2, "resumed stream != uninterrupted continuation"
+        assert not set(lines_a[: len(lines_a) - len(lines_b2)]) & set(lines_b2), "resume replayed objects"
+        # and the killed run consumed the same prefix while it lived
+        lines_b1 = (kill_dir / "objects_b1.log.dp0").read_text().splitlines()
+        assert lines_b1[: len(lines_a) - len(lines_b2)] == lines_a[: len(lines_a) - len(lines_b2)]
+    else:
+        # with workers the log is written at worker yield time, so both runs
+        # carry a nondeterministic prefetch overrun at their tails and exact
+        # tail equality is not well-defined. Per worker, object ids are
+        # unique within the horizon, so a unique alignment index plus an
+        # exact window match proves the resumed stream is a gap-free,
+        # replay-free continuation of the uninterrupted one
+        for w in range(num_loading_workers):
+            lines_a = (ref_dir / f"objects_a.log.dp0.w{w}").read_text().splitlines()
+            lines_b2 = (kill_dir / f"objects_b2.log.dp0.w{w}").read_text().splitlines()
+            assert lines_b2, f"worker {w} logged nothing after resume"
+            idx = lines_a.index(lines_b2[0])  # ValueError -> not a continuation
+            n = min(len(lines_a) - idx, len(lines_b2))
+            assert n > 0 and lines_a[idx : idx + n] == lines_b2[:n], (
+                f"worker {w}: resumed stream diverged from the uninterrupted run"
+            )

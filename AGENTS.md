@@ -103,8 +103,10 @@ pythia` saves at steps 1,2,4,…,512 plus every `checkpoint_interval`
 trainer). Each checkpoint stores the stream position under
 `dataset_state/dp_{rank}.pt` — state is captured at the START of the current
 partial packing row, so resume re-draws the untrained partial row and
-continues the exact micro-batch sequence (requires `num_loading_workers: 0`;
-`object_id_log` writes the per-object no-replay audit trail). Evaluation
+continues the exact micro-batch sequence at any `num_loading_workers`
+(workers > 0 rides torchdata's StatefulDataLoader and must resume with the
+same worker count; `object_id_log` writes the per-object no-replay audit
+trail). Evaluation
 never runs in the trainer: `scripts/run_probe_sweep.py` polls a run's
 checkpoint dir (gated on `latest.txt`), converts each step to HF, and runs
 `astropt3.eval.val_loss` (fixed deterministic val batches; synthetic val

@@ -6,15 +6,28 @@ the micro-batches an uninterrupted stream would have produced next — no
 sample replay, no gap — for both the synthetic and the MMU-parquet record
 sources. The object-id log is the audit trail: resumed log lines must
 continue the uninterrupted log with no duplicates.
+
+The same contract must hold end-to-end through
+``build_astropt3_dataloader`` + ``loader_state_dict`` at any
+``num_workers`` — with workers the state lives in the worker processes and
+rides torchdata's StatefulDataLoader.
 """
 
 from itertools import islice
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 from astropt3.data import mmu
-from astropt3.data.nanotron_loader import PackedMicroBatches
+from astropt3.data.nanotron_loader import (
+    STATE_FILE_TEMPLATE,
+    STATE_SUBDIR,
+    LOADER_STATE_FORMAT,
+    PackedMicroBatches,
+    build_astropt3_dataloader,
+    loader_state_dict,
+)
 from astropt3.data.synthetic import record_stream
 
 MBS = 2
@@ -97,6 +110,73 @@ def test_load_rejects_wrong_data_root(tiny_config, small_shard_dir):
     ds = make_stream(tiny_config, "synthetic")
     with pytest.raises(ValueError, match="data_root"):
         ds.load_state_dict({"records": 0, "epoch": 0, "hf_state": None, "data_root": str(small_shard_dir)})
+
+
+def build_loader(tiny_config, root, num_workers, resume_state_dir=None):
+    dataset_args = SimpleNamespace(
+        data_root=str(root),
+        norm_stats=None,
+        shuffle_buffer_size=0,
+        synthetic_image_only_fraction=0.3,
+        object_id_log=None,
+    )
+    return build_astropt3_dataloader(
+        dataset_args=dataset_args,
+        model_config=tiny_config,
+        micro_batch_size=MBS,
+        sequence_length=SEQ_LEN,
+        dp_rank=0,
+        dp_size=1,
+        num_workers=num_workers,
+        resume_state_dir=resume_state_dir,
+    )
+
+
+def save_state(state, tmp_path):
+    state_dir = tmp_path / STATE_SUBDIR
+    state_dir.mkdir(exist_ok=True)
+    torch.save(state, state_dir / STATE_FILE_TEMPLATE.format(rank=0))
+    return state_dir
+
+
+@pytest.mark.parametrize("source", ["synthetic", "mmu"])
+@pytest.mark.parametrize("num_workers", [0, 2])
+def test_stateful_loader_resume(source, num_workers, tiny_config, small_shard_dir, tmp_path):
+    root = "synthetic" if source == "synthetic" else small_shard_dir
+    loader_a = build_loader(tiny_config, root, num_workers)
+    it_a = iter(loader_a)
+    consumed = list(islice(it_a, N_BEFORE))
+    assert len(consumed) == N_BEFORE
+    state = loader_state_dict(loader_a)
+    assert state["format"] == LOADER_STATE_FORMAT
+    assert state["num_workers"] == num_workers
+    reference = list(islice(it_a, N_AFTER))  # uninterrupted continuation
+
+    state_dir = save_state(state, tmp_path)
+    loader_b = build_loader(tiny_config, root, num_workers, resume_state_dir=state_dir)
+    resumed = list(islice(iter(loader_b), N_AFTER))
+    for i, (ref, res) in enumerate(zip(reference, resumed)):
+        assert flat_equal(ref, res), f"micro-batch {i} diverged after resume"
+
+
+def test_loader_state_rejects_num_workers_mismatch(tiny_config, tmp_path):
+    loader = build_loader(tiny_config, "synthetic", 2)
+    next(iter(loader))
+    state_dir = save_state(loader_state_dict(loader), tmp_path)
+    with pytest.raises(ValueError, match="num_loading_workers"):
+        build_loader(tiny_config, "synthetic", 0, resume_state_dir=state_dir)
+
+
+def test_legacy_dataset_state_requires_zero_workers(tiny_config, tmp_path):
+    ds = make_stream(tiny_config, "synthetic")
+    it = iter(ds)
+    next(it)
+    state_dir = save_state(ds.state_dict(), tmp_path)
+    with pytest.raises(ValueError, match="num_loading_workers == 0"):
+        build_loader(tiny_config, "synthetic", 2, resume_state_dir=state_dir)
+    # at workers == 0 a legacy (dataset-format) file still resumes exactly
+    loader = build_loader(tiny_config, "synthetic", 0, resume_state_dir=state_dir)
+    assert flat_equal(next(iter(loader)), next(it))
 
 
 def test_mmu_resume_across_epoch_boundary(tiny_config, small_shard_dir):
