@@ -390,6 +390,45 @@ IN PROGRESS (2026-07-08, dev node, user's GPU reservation): real-data
   ~240k tok/s total, 123 model TFLOPs/GPU (~39% MFU), peak 31.7 GiB/80.
   20k-step run (2.6B tokens, Pythia checkpoints) + async probe sweep
   launched on the reserved pair.
+- 2026-07-09: 70M 20k-step shakeout DONE; sweep: val loss plateaus at
+  0.203 from ~step 18k, redshift probe R² 0.28–0.32. 160M 20k-step
+  shakeout DONE the same day (astropt3-160m-shakeout.yaml; wandb + new
+  per-modality loss logging; final lm_loss 0.197 at 132 TFLOPs/GPU;
+  included an unplanned mid-run kill+resume). CAVEAT on both: the
+  shakeout mixes and their val splits carried almost no spectra (the prep
+  had not yet reached the DESI footprint), so these are effectively
+  image-only numbers — spectra_loss logged 0 in most 160M iterations and
+  the 70M val loss has no spectra component at all.
+- 2026-07-10 resume gap found by audit and FIXED: the shakeouts ran with
+  num_loading_workers: 8, and with workers the dataset state_dict() path
+  never engaged — NO checkpoint of either 20k run carries dataset_state/
+  (the 160M mid-run resume silently restarted the stream). Fix: with
+  workers > 0 `build_astropt3_dataloader` now returns torchdata's
+  StatefulDataLoader (new hard dep `torchdata>=0.10`; installed in the
+  gpuenv) whose state_dict embeds per-worker row-start snapshots; the
+  trainer saves it via the new `loader_state_dict()` helper. Workers > 0
+  without torchdata now refuses to start instead of training unresumably;
+  resume asserts the same worker count; legacy dataset-format states
+  still load at workers 0. CPU-verified by 4 new tests in
+  test_loader_resume.py (exact continuation at workers 0/2 × synthetic/
+  MMU); the GPU kill/resume gate in test_phase4_gpu.py is now
+  parametrized over workers {0,2} and also asserts dataset_state exists.
+- 2026-07-10 data prep: restarted (died ~02:34 without a traceback at
+  939/5596 partitions, all spectra-free — the DESI-footprint pixels
+  simply sort late in the HEALPix order). prepare_pilot_data.py now
+  processes partitions overlapping the spectra catalog's coverage FIRST
+  (`--spectra-first`, default on; journal-keyed resume makes reordering
+  safe): matched spectra went 0 → ~138k within hours and pilot_v1/val
+  gained its first ~2k spectra objects. Remaining ~4.3k partitions are
+  image-only tail, ~63 obj/s.
+- 2026-07-10 Phase 5 deliverables landed: `scripts/launch_slurm.sbatch`
+  (multi-node srun+torchrun, per-size node counts, DRY_RUN_STEPS=100
+  dry-run mode) and full nanotron pilot YAMLs for all eight sizes
+  (recipe-table parallelism, Pythia LRs, GBS 512×4096,
+  checkpoint_schedule: pythia; 70m updated to match). 160M probe sweep
+  re-launched against a frozen hardlink snapshot of pilot_v1/val
+  (../astroPTv3_data/pilot_v1_val_frozen_20260710 — the live val dir
+  grows while prep runs, and the sweep needs one fixed val set).
 
 ### Phase 6 — Scale-up + modality extension
 410M → 1.4B (TP=1), then 2.8B/6.9B/12B per the recipe table (dry run before

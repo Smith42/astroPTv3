@@ -1,16 +1,16 @@
-# AstroPT3 70M pilot pretraining (Pythia-mirrored size; recipe: 32 GPUs,
-# TP=1, DP=32, ZeRO-1, no recompute — see astro/PLAN.md parallelism table).
+# AstroPT3 160M pilot pretraining (Pythia-mirrored size; recipe: 32 GPUs,
+# TP=1, DP=32, ZeRO-1 — see astro/PLAN.md parallelism table).
 #
 #   sbatch --nodes=4 astro/scripts/launch_slurm.sbatch \
-#       astro/configs/nanotron/astropt3-70m.yaml
+#       astro/configs/nanotron/astropt3-160m.yaml
 #
-# GBS = dp(32) x mbs(16) x seq(4096) = 2.10M tokens/step.
+# GBS = dp(32) x mbs(16) x acc(1) x seq(4096) = 2.10M tokens/step.
 # Dry-run 100 steps at the target topology first (see the sbatch header).
 # For a smaller box, scale `parallelism.dp` down and
 # `batch_accumulation_per_replica` up to keep GBS.
 general:
   project: astropt3
-  run: astropt3-70m-pilot
+  run: astropt3-160m-pilot
   seed: 42
   step: null
   consumed_train_samples: null
@@ -49,11 +49,11 @@ model:
       loss_weight: 1.0
     tokeniser: affine
     huber_delta: 1.0
-    hidden_size: 512
-    num_hidden_layers: 23
-    num_attention_heads: 8
-    num_key_value_heads: 2
-    intermediate_size: 1536
+    hidden_size: 768
+    num_hidden_layers: 25
+    num_attention_heads: 12
+    num_key_value_heads: 4
+    intermediate_size: 2048
     max_position_embeddings: 4096
     rope_theta: 100000.0
     no_rope_layer: 4
@@ -103,13 +103,13 @@ optimizer:
   accumulate_grad_in_fp32: true
   clip_grad: 1.0
   learning_rate_scheduler:
-    learning_rate: 0.001         # Pythia 70M peak LR
+    learning_rate: 0.0006         # Pythia 160M peak LR
     lr_warmup_steps: 2000        # min(2000, 1% of train_steps)
     lr_warmup_style: linear
     lr_decay_style: cosine       # cosine to 0.1x peak
     lr_decay_steps: null         # defaults to train_steps - warmup
     lr_decay_starting_step: null
-    min_decay_lr: 0.0001
+    min_decay_lr: 0.00006
   optimizer_factory:
     adam_beta1: 0.9
     adam_beta2: 0.95
@@ -131,7 +131,7 @@ tokens:
   limit_val_batches: 0           # eval never runs in the trainer: use
   limit_test_batches: 0          # scripts/run_probe_sweep.py on a spare GPU
 checkpoints:
-  checkpoints_path: ../astroPTv3_checkpoints/astropt3-70m
+  checkpoints_path: ../astroPTv3_checkpoints/astropt3-160m
   checkpoint_schedule: pythia    # steps 1,2,4,...,512 + every interval
   checkpoint_interval: 1000
   save_initial_state: false

@@ -22,9 +22,9 @@ Three distinct environments; do not mix them.
 
 | env | where | contents | used for |
 |-----|-------|----------|----------|
-| `uv sync --extra dev` | anywhere | torch (CPU ok), transformers, datasets | unit tests, CPU smoke, eval code |
+| `uv sync --extra dev` | anywhere | torch (CPU ok), torchdata, transformers, datasets | unit tests, CPU smoke, eval code |
 | `uv sync --extra data` | machine with network | + lsdb, hats, nested-pandas | data prep (crossmatch) only |
-| GPU venv | training machine | torch + **flash-attn** + nanotron (editable `nanotron/`) + astro (editable `astro/`) + psutil | training, GPU tests, conversion |
+| GPU venv | training machine | torch + **flash-attn** + nanotron (editable `nanotron/`) + astro (editable `astro/`) + psutil + torchdata | training, GPU tests, conversion |
 
 flash-attn wheels are the constraint for the GPU venv: pick a torch version
 with a prebuilt wheel for your CUDA (never compile it on a shared box).
@@ -104,8 +104,10 @@ multiplies by DP).
 Full nanotron run configs live in `astro/configs/nanotron/`:
 
 - `astropt3-test-tiny.yaml` — 4-layer toy, synthetic data, 1 GPU, 50 steps.
-- `astropt3-70m.yaml` — the 70M pilot recipe (32 GPUs, DP=32).
-- `astropt3-70m-shakeout.yaml` — the same model on 2 GPUs (DP=2), real
+- `astropt3-{70m,160m,410m,1b,1p4b,2p8b,6p9b,12b}.yaml` — the pilot recipes
+  for all eight sizes (dims from the PLAN size table, parallelism + peak LR
+  from the recipe table below, GBS 512×4096 everywhere).
+- `astropt3-70m-shakeout.yaml` — the 70M model on 2 GPUs (DP=2), real
   day-one data; the template for "I have a small box, not a cluster".
 
 The interesting knobs, top to bottom:
@@ -132,7 +134,8 @@ data_stages:
       norm_stats: astro/configs/data/pilot_images_spectra.yaml
       shuffle_buffer_size: 2000
       # object_id_log: <path>  # audit trail: one object_id/line as trained
-    num_loading_workers: 8     # 0 REQUIRED if you need exact stream resume
+    num_loading_workers: 8     # resume-exact at any value (torchdata
+                               # StatefulDataLoader); keep it FIXED per run
 optimizer:
   zero_stage: 1                # ZeRO-1 everywhere per the recipe table
 tokens:
@@ -178,8 +181,18 @@ torchrun --nproc_per_node=<gpus> --rdzv-backend=c10d --rdzv-endpoint=localhost:0
 runs share a box. `HF_DATASETS_OFFLINE=1` keeps `datasets` from touching the
 network on compute nodes.)
 
-Multi-node is the same command via your scheduler's `torchrun --nnodes=... 
---rdzv-endpoint=<head>:<port>`; a `launch_slurm.sbatch` lands with Phase 5.
+Multi-node goes through the launcher (from the repo root):
+
+```bash
+sbatch --nodes=<N> astro/scripts/launch_slurm.sbatch astro/configs/nanotron/<config>.yaml
+# dry run (100 steps, checkpoints redirected to *-dryrun):
+sbatch --nodes=<N> --export=ALL,DRY_RUN_STEPS=100 astro/scripts/launch_slurm.sbatch <config>
+```
+
+It sources `$ASTROPT3_ENV` (default `../astroPTv3_gpuenv`), rendezvous on
+the first node, and runs one `torchrun` per node via `srun`; node counts per
+size are in its header. The config's `dp*tp` must equal the allocated GPU
+count.
 
 **Always dry-run first** (playbook rule): run ~100 steps at the target
 topology and check tokens/s/GPU, MFU, and memory before committing
@@ -218,11 +231,15 @@ the stream position, then continues with **exactly the micro-batch sequence
 an uninterrupted run would have consumed** — no replayed samples, no gap.
 Constraints and semantics:
 
-- Exact stream resume requires `num_loading_workers: 0` (with workers the
-  main-process dataset never iterates, so no state is saved — the trainer
-  warns and the run still resumes weights/optimizer, just with a restarted
-  stream). Pick per run: shakeouts favour workers/throughput, science runs
-  favour exactness.
+- Exact stream resume works at **any** `num_loading_workers`: with workers
+  the stream position lives in the worker processes, so the loader is
+  torchdata's `StatefulDataLoader` and the checkpoint stores its per-worker
+  snapshots (torchdata must be installed in the GPU env — without it,
+  workers > 0 refuses to start rather than train unresumably, which is how
+  the 20k real-data shakeouts silently lost their stream state). The saved
+  state maps per-worker, so **resume with the same `num_loading_workers`
+  as the saving run** — a mismatch is rejected at load. Checkpoints written
+  before this change (dataset-format) still resume, at workers 0 only.
 - With `shuffle_buffer_size > 0`, resume skips at most the in-flight buffer
   and never replays a trained record (HF shuffle semantics).
 - Set `dataset.object_id_log` to get a per-rank file with one `object_id`
@@ -300,9 +317,9 @@ The fork's trainer syncs it for astropt3 streams.
 
 **Throughput far below the reference numbers** — almost always the
 dataloader. Check `check_pilot_data.py` throughput vs consumption, raise
-`num_loading_workers` (if you don't need exact resume), make sure the shard
-count per rank ≥ workers (HF assigns whole shards to workers), and keep
-`pin_memory` on (default). The synthetic generator is CPU-bound too — don't
+`num_loading_workers` (exact resume survives workers now), make sure the
+shard count per rank ≥ workers (HF assigns whole shards to workers), and
+keep `pin_memory` on (default). The synthetic generator is CPU-bound too — don't
 benchmark compute with `data_root: synthetic` and 0 workers.
 
 **Loss stuck ≈1.0 on synthetic-looking data** — per-patch standardization
