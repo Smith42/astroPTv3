@@ -36,6 +36,9 @@ class AstroPT3Config(SmolLM3Config):
         self,
         modalities: list[dict] | None = None,
         tokeniser: str = "affine",
+        jetformer_flow_steps: int = 4,
+        jetformer_flow_hidden: int = 128,
+        jetformer_gmm_k: int = 4,
         huber_delta: float = 1.0,
         special_token_ce_weight: float = 0.0,
         vocab_size: int = VOCAB_SIZE,
@@ -55,6 +58,9 @@ class AstroPT3Config(SmolLM3Config):
     ):
         self.modalities = modalities if modalities is not None else DEFAULT_MODALITIES
         self.tokeniser = tokeniser
+        self.jetformer_flow_steps = jetformer_flow_steps
+        self.jetformer_flow_hidden = jetformer_flow_hidden
+        self.jetformer_gmm_k = jetformer_gmm_k
         self.huber_delta = huber_delta
         self.special_token_ce_weight = special_token_ce_weight
         kwargs["use_cache"] = False  # reload passes it back through kwargs

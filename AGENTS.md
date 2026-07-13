@@ -73,7 +73,13 @@ stages is implicit and easy to break, so understand it before editing:
    `SmolLM3Model(inputs_embeds=…)` → per-modality `Decoder` heads. Loss is
    Huber at positions one left of each modality token (`<|begin_m|>`
    predicts patch 0 — astroPT's `starts-1` alignment), via
-   `left_shift_mask`; weighted mean over modalities present.
+   `left_shift_mask`; weighted mean over modalities present. The
+   `tokeniser: jetformer` option (JetFormer/GIVT, ported from astroPT v2's
+   sogol_branch) instead flows each modality's patch tokens through a
+   per-modality `TinyFlow1D` and predicts them with a per-modality `GMMHead`;
+   loss is exact patch-space likelihood `mean(NLL_GMM(z) - logdet)`, which
+   can go negative. HF-side only so far — the nanotron fork does not know
+   this tokeniser yet.
 5. **Config**: `AstroPT3Config(SmolLM3Config)` carries a `modalities` list
    of dicts; `import astropt3` registers the Auto classes, so it must be
    imported before `AutoModel.from_pretrained` on a checkpoint. Size YAMLs
