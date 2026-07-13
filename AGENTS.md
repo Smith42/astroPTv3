@@ -78,8 +78,11 @@ stages is implicit and easy to break, so understand it before editing:
    sogol_branch) instead flows each modality's patch tokens through a
    per-modality `TinyFlow1D` and predicts them with a per-modality `GMMHead`;
    loss is exact patch-space likelihood `mean(NLL_GMM(z) - logdet)`, which
-   can go negative. HF-side only so far — the nanotron fork does not know
-   this tokeniser yet.
+   can go negative. A noise curriculum (`jetformer_noise_max` -> `_min`,
+   driven via `set_jet_noise_frac`) perturbs only the embedded z copy in
+   training mode. The nanotron fork mirrors all of it (flows/GMM heads on
+   the embedding/head blocks, z+logdet routed to the loss, TP-synced noise);
+   sampling lives in `astropt3.generation` + `scripts/generate.py`.
 5. **Config**: `AstroPT3Config(SmolLM3Config)` carries a `modalities` list
    of dicts; `import astropt3` registers the Auto classes, so it must be
    imported before `AutoModel.from_pretrained` on a checkpoint. Size YAMLs

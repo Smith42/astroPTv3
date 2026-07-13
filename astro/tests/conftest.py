@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,11 @@ from astropt3.data.packing import ObjectSequencer, PackedCollator
 from astropt3.data.synthetic import make_record
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs" / "model"
+
+# gpu-marked tests spawn nanotron trainer subprocesses ({**os.environ}); a
+# test run must never require (or spam) a wandb login — real runs set
+# WANDB_MODE=online explicitly in their launcher
+os.environ.setdefault("WANDB_MODE", "disabled")
 
 
 @pytest.fixture(scope="session")

@@ -119,7 +119,22 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
         )
         if config.special_token_ce_weight > 0:
             self.special_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        # Noise-curriculum position (jetformer, v2 sogol_branch semantics):
+        # sigma = noise_max + (noise_min - noise_max) * frac, so frac 0 -> 1
+        # anneals noise_max -> noise_min over training. Default 1.0 means
+        # sigma = noise_min (= 0 by default): eval and existing checkpoints
+        # are unaffected unless the trainer drives the curriculum.
+        self.jet_noise_frac = 1.0
         self.post_init()
+
+    def set_jet_noise_frac(self, frac: float):
+        self.jet_noise_frac = float(min(max(frac, 0.0), 1.0))
+
+    def _jet_noise_sigma(self) -> float:
+        cfg = self.config
+        return cfg.jetformer_noise_max + (
+            cfg.jetformer_noise_min - cfg.jetformer_noise_max
+        ) * self.jet_noise_frac
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -161,8 +176,11 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
         modality_positions = modality_positions or {}
 
         # jetformer: values -> flow -> latent z once, up front; z is both the
-        # embedded input and the GMM target, and logdet joins the loss.
+        # embedded input and the GMM target, and logdet joins the loss. The
+        # noise curriculum perturbs only the embedded copy (training mode) —
+        # the GMM target z and the logdet stay clean.
         flow_logdets = {}
+        embed_values = modality_values
         if self.config.tokeniser == "jetformer" and modality_values:
             flowed = {}
             for name in self.modality_names:
@@ -172,9 +190,19 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
                 values = modality_values[name].to(next(flow.parameters()).dtype)
                 flowed[name], flow_logdets[name] = flow(values)
             modality_values = {**modality_values, **flowed}
+            embed_values = modality_values
+            sigma = self._jet_noise_sigma()
+            if self.training and sigma > 0:
+                embed_values = {
+                    **modality_values,
+                    **{
+                        name: z + sigma * torch.randn_like(z)
+                        for name, z in flowed.items()
+                    },
+                }
 
         inputs_embeds = self.assemble_inputs_embeds(
-            input_ids, modality_values, modality_masks, modality_positions
+            input_ids, embed_values, modality_masks, modality_positions
         )
         hidden = self.model(
             inputs_embeds=inputs_embeds,

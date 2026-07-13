@@ -36,6 +36,7 @@ train = [
 ]
 dev = [
     "pytest>=8.0",
+    "matplotlib>=3.8",  # scripts/generate.py sample plots
 ]
 
 [tool.uv.sources]

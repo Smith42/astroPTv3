@@ -2,11 +2,15 @@
 
 Status: the `tokeniser: jetformer` option (per-modality `TinyFlow1D` +
 `GMMHead`, loss `mean(NLL_GMM(z) − logdet)`) is implemented and tested on the
-HF side (`astro-phase5`, see AGENTS.md §4). Three pieces remain: the noise
-curriculum v2 used for flow stability, the nanotron fork implementation so
-jetformer can actually pretrain, and a sampling/generation script. Phases J1
-and J2 run on this machine (CPU); J3 is written here but verified on a leased
-GPU box; J4 is the GPU session itself, ending in a test pretraining run.
+HF side (`astro-phase5`, see AGENTS.md §4). J1 (noise curriculum), J2
+(`astropt3.generation` + `scripts/generate.py`) and J3 (nanotron fork:
+flows/GMM heads/loss, TP-synced curriculum noise, conversion,
+`test_jetformer_gpu.py`) are implemented; J4 runs on the reserved GH200 node
+(GPU venv = `miniforge3_pytorch/2.12.0` module + `.venv-train` overlay —
+torch 2.12+cu130 with prebuilt sm_90 flash-attn; the PLAN Phase 3 x86 wheel
+recipe does not apply on aarch64). The test pretraining config is
+`astro/configs/nanotron/astropt3-70m-jetformer.yaml` against
+`/work/nvme/bfvh/msmith10/astroPTv3_data/shakeout_mix2/train`.
 Everything is additive — the affine path, the staged Phase 5 pilots, and all
 existing gates are untouched.
 

@@ -61,13 +61,14 @@ STATE_SUBDIR = "dataset_state"
 LOADER_STATE_FORMAT = "stateful_dataloader"
 
 
-def hf_config_from_modalities(modalities, tokeniser: str = "affine") -> AstroPT3Config:
+def hf_config_from_modalities(modalities, tokeniser: str = "affine", **extra) -> AstroPT3Config:
     """Build the (tiny) HF-side config the sequencer/collator machinery wants.
 
     ``modalities`` may come from either implementation's config — both carry
-    the same list of dicts.
+    the same list of dicts. ``extra`` passes tokeniser-specific fields
+    (e.g. the ``jetformer_*`` knobs) straight through to ``AstroPT3Config``.
     """
-    return AstroPT3Config(modalities=[dict(m) for m in modalities], tokeniser=tokeniser)
+    return AstroPT3Config(modalities=[dict(m) for m in modalities], tokeniser=tokeniser, **extra)
 
 
 def flatten_packed_batch(batch: dict, config: AstroPT3Config, seq_len: int) -> dict:
@@ -348,7 +349,21 @@ def build_astropt3_dataloader(
     stream positions and require the same ``num_workers`` as the saving run;
     legacy dataset-format states require ``num_workers == 0``.
     """
-    config = hf_config_from_modalities(model_config.modalities, getattr(model_config, "tokeniser", "affine"))
+    config = hf_config_from_modalities(
+        model_config.modalities,
+        getattr(model_config, "tokeniser", "affine"),
+        # getattr with defaults so pre-jetformer fork configs still load
+        **{
+            f: getattr(model_config, f, d)
+            for f, d in [
+                ("jetformer_flow_steps", 4),
+                ("jetformer_flow_hidden", 128),
+                ("jetformer_gmm_k", 4),
+                ("jetformer_noise_max", 0.1),
+                ("jetformer_noise_min", 0.0),
+            ]
+        },
+    )
     dataset = PackedMicroBatches(
         config,
         micro_batch_size,

@@ -133,6 +133,41 @@ def test_save_load_roundtrip(tmp_path, jet_model, jet_batch):
     assert torch.allclose(before.loss, after.loss, atol=1e-6)
 
 
+def test_noise_curriculum_sigma_endpoints(jet_config):
+    from astropt3 import AstroPT3Model
+
+    model = AstroPT3Model(jet_config)
+    model.set_jet_noise_frac(0.0)
+    assert model._jet_noise_sigma() == pytest.approx(jet_config.jetformer_noise_max)
+    model.set_jet_noise_frac(1.0)
+    assert model._jet_noise_sigma() == pytest.approx(jet_config.jetformer_noise_min)
+    model.set_jet_noise_frac(-3.0)  # clamped
+    assert model._jet_noise_sigma() == pytest.approx(jet_config.jetformer_noise_max)
+
+
+def test_noise_curriculum_perturbs_train_only(jet_config, jet_batch):
+    from astropt3 import AstroPT3Model
+
+    torch.manual_seed(0)
+    model = AstroPT3Model(jet_config)
+    model.set_jet_noise_frac(0.0)  # sigma = noise_max
+
+    # Training mode: noise on the embedded z copy makes forwards stochastic,
+    # but the loss stays finite (targets/logdet are clean).
+    model.train()
+    out_a = model(**jet_batch)
+    out_b = model(**jet_batch)
+    assert torch.isfinite(out_a.loss) and torch.isfinite(out_b.loss)
+    assert not torch.allclose(out_a.loss, out_b.loss)
+
+    # Eval mode: noise off regardless of frac -> deterministic.
+    model.eval()
+    with torch.no_grad():
+        eval_a = model(**jet_batch)
+        eval_b = model(**jet_batch)
+    assert torch.allclose(eval_a.loss, eval_b.loss)
+
+
 def test_smoke_training_learns():
     from astropt3.train_smoke import run
 

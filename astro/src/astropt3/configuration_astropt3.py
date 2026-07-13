@@ -39,6 +39,8 @@ class AstroPT3Config(SmolLM3Config):
         jetformer_flow_steps: int = 4,
         jetformer_flow_hidden: int = 128,
         jetformer_gmm_k: int = 4,
+        jetformer_noise_max: float = 0.1,
+        jetformer_noise_min: float = 0.0,
         huber_delta: float = 1.0,
         special_token_ce_weight: float = 0.0,
         vocab_size: int = VOCAB_SIZE,
@@ -61,6 +63,8 @@ class AstroPT3Config(SmolLM3Config):
         self.jetformer_flow_steps = jetformer_flow_steps
         self.jetformer_flow_hidden = jetformer_flow_hidden
         self.jetformer_gmm_k = jetformer_gmm_k
+        self.jetformer_noise_max = jetformer_noise_max
+        self.jetformer_noise_min = jetformer_noise_min
         self.huber_delta = huber_delta
         self.special_token_ce_weight = special_token_ce_weight
         kwargs["use_cache"] = False  # reload passes it back through kwargs

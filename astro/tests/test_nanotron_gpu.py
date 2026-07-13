@@ -60,9 +60,12 @@ def _dist_env(port: int = 29123) -> dict:
     return env
 
 
-@pytest.fixture(scope="session")
-def nt():
-    """Late imports so CPU-only collection of this module stays possible."""
+def make_nt():
+    """Late imports so CPU-only collection of this module stays possible.
+
+    Shared with test_jetformer_gpu.py (both wrap it in a session fixture; the
+    ParallelContext is process-global so building it twice is harmless).
+    """
     if not torch.cuda.is_available():
         pytest.skip("needs a CUDA device")
     pytest.importorskip("nanotron")
@@ -98,7 +101,12 @@ def nt():
     return ns
 
 
-def tiny_nt_config(nt):
+@pytest.fixture(scope="session")
+def nt():
+    return make_nt()
+
+
+def tiny_nt_config(nt, **overrides):
     return nt.config_cls(
         hidden_size=64,
         num_hidden_layers=4,  # crosses one NoPE layer (idx 3)
@@ -119,6 +127,7 @@ def tiny_nt_config(nt):
         _use_qkv_packed=True,
         _use_doc_masking=True,
         log_attn_probs=False,
+        **overrides,
     )
 
 

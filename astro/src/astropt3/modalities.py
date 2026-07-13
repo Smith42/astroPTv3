@@ -160,9 +160,8 @@ class PositionEmbedder(nn.Module):
 # (N, D) token values — this is also what makes the flow modality-generic
 # (images and spectra alike). Per-modality loss is
 # ``mean_tokens(NLL_GMM(z) - logdet)``: exact likelihood in (standardized)
-# patch space, so it can be negative.
-# ponytail: no noise curriculum (v2 had one); add a config knob if the GPU
-# shakeout shows flow instability.
+# patch space, so it can be negative. The v2 noise curriculum lives on the
+# model (``AstroPT3Model.set_jet_noise_frac``), not here.
 
 
 class CouplingMLP(nn.Module):
