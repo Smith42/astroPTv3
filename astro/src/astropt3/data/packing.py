@@ -76,13 +76,19 @@ class ObjectSequencer:
                 image_p1, image_p99, alpha
             )
         self.spiral = spiral
+        # jetformer models an exact likelihood in patch space, so the record
+        # -> token map must stay invertible: per-patch standardization
+        # (which discards each patch's mean/std) is skipped — tokens are the
+        # asinh-stretched (images) / raw (spectra) patch values.
+        self.standardize = getattr(config, "tokeniser", "affine") != "jetformer"
 
     def _images_tokens(self, record: dict):
         mod = self.registry.get_config("images")
         flux = torch.as_tensor(record["image"]["flux"], dtype=torch.float32)
         flux = asinh_stretch(flux, self.asinh_scale, self.asinh_offset)
         patches = patchify_image(flux, mod.patch_size)
-        patches = per_patch_standardize(patches)
+        if self.standardize:
+            patches = per_patch_standardize(patches)
         if self.spiral:
             patches = spiralise(patches)
         positions = torch.arange(len(patches), dtype=torch.long)
@@ -96,7 +102,8 @@ class ObjectSequencer:
         mask = torch.as_tensor(spec["mask"], dtype=torch.bool)
         flux = torch.where(mask, torch.zeros_like(flux), flux)
         patches, lam_mean = patchify_spectrum(flux, lam, mod.patch_size)
-        patches = per_patch_standardize(patches)
+        if self.standardize:
+            patches = per_patch_standardize(patches)
         positions = normalize_wavelength(lam_mean).unsqueeze(-1)
         return patches, positions
 

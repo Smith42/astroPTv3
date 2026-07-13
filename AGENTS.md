@@ -52,7 +52,10 @@ stages is implicit and easy to break, so understand it before editing:
    is the sanity/throughput gate.
 2. **`ObjectSequencer`** (`data/packing.py`) turns a record into an
    `ObjectSeq`: asinh stretch + patchify (`tokenization.py`) + per-patch
-   standardization (`data/transforms.py`) per modality, wrapped in frozen
+   standardization (`data/transforms.py`) per modality (jetformer configs
+   SKIP the standardization — the exact-likelihood loss needs an invertible
+   record -> token map, and standardization discards each patch's
+   mean/std), wrapped in frozen
    special tokens: `<|bos|> <|begin_m|> …placeholders… <|end_m|>` per
    modality in **alphabetical registry order**. Images → 361 patch-8 tokens
    (192 floats); spectra → 31 patch-256 tokens with normalized per-patch

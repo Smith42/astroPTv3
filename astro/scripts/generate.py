@@ -22,9 +22,11 @@ Usage:
 Outputs land in ``--out`` as ``.npy`` (raw sampled values, data space) plus
 PNGs: a grid for images, flux-vs-wavelength for spectra. Non-unconditional
 modes lead with a ground-truth panel/trace from the template record. With
-``--norm-stats`` image values additionally get the inverse asinh stretch
-(qualitative only: per-patch standardization discards each patch's mean/std,
-which are not recoverable). ``--wandb`` logs the figures to the astropt3
+``--norm-stats`` image values additionally get the inverse asinh stretch —
+exact for jetformer checkpoints (whose sequencer skips per-patch
+standardization precisely so the token map inverts back to flux); for
+affine checkpoints it is qualitative only, since standardization discards
+each patch's mean/std. ``--wandb`` logs the figures to the astropt3
 wandb project (``--wandb-run-id <id>`` appends them to an existing run, e.g.
 the training run, instead of a new generation run).
 """
@@ -92,7 +94,7 @@ def save_spectra_png(flux: np.ndarray, lam: np.ndarray, path: Path, title: str, 
     for i, f in enumerate(flux):
         ax.plot(lam, f, lw=0.7, alpha=0.8, label=f"sample {i}")
     ax.set_xlabel("wavelength [$\\AA$]")
-    ax.set_ylabel("flux (standardized-patch space)")
+    ax.set_ylabel("flux (model patch space)")
     ax.set_title(title)
     if len(flux) <= 8:
         ax.legend(fontsize="small")

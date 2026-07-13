@@ -133,6 +133,32 @@ def test_save_load_roundtrip(tmp_path, jet_model, jet_batch):
     assert torch.allclose(before.loss, after.loss, atol=1e-6)
 
 
+def test_jetformer_skips_per_patch_standardization(jet_config):
+    """jetformer tokens must invert back to flux: no per-patch standardization."""
+    from astropt3 import AstroPT3Config
+    from astropt3.data.synthetic import make_record
+    from astropt3.tokenization import patchify_image
+
+    record = make_record(3, image_only_fraction=0.0)
+    jet_seq = ObjectSequencer(jet_config).build(record)
+    flux = torch.asinh(torch.as_tensor(record["image"]["flux"]))
+    expected = patchify_image(flux, 8)
+    assert torch.allclose(jet_seq.values["images"], expected)
+    # spectra tokens are the raw (mask-zeroed) flux patches
+    assert torch.allclose(
+        jet_seq.values["spectra"].flatten()[: len(record["spectrum"]["flux"])],
+        torch.as_tensor(record["spectrum"]["flux"]),
+    )
+
+    # the affine sequencer still standardizes
+    affine_config = AstroPT3Config(**{**jet_config.to_dict(), "tokeniser": "affine"})
+    affine_seq = ObjectSequencer(affine_config).build(record)
+    assert torch.allclose(
+        affine_seq.values["images"].mean(dim=-1), torch.zeros(361), atol=1e-5
+    )
+    assert not torch.allclose(jet_seq.values["images"], affine_seq.values["images"])
+
+
 def test_noise_curriculum_sigma_endpoints(jet_config):
     from astropt3 import AstroPT3Model
 
