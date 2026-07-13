@@ -20,10 +20,13 @@ Usage:
         [--norm-stats configs/data/pilot_images_spectra.yaml] [--out outdir]
 
 Outputs land in ``--out`` as ``.npy`` (raw sampled values, data space) plus
-PNGs: a grid for images, flux-vs-wavelength for spectra. With ``--norm-stats``
-image values additionally get the inverse asinh stretch (qualitative only:
-per-patch standardization discards each patch's mean/std, which are not
-recoverable).
+PNGs: a grid for images, flux-vs-wavelength for spectra. Non-unconditional
+modes lead with a ground-truth panel/trace from the template record. With
+``--norm-stats`` image values additionally get the inverse asinh stretch
+(qualitative only: per-patch standardization discards each patch's mean/std,
+which are not recoverable). ``--wandb`` logs the figures to the astropt3
+wandb project (``--wandb-run-id <id>`` appends them to an existing run, e.g.
+the training run, instead of a new generation run).
 """
 
 import argparse
@@ -52,16 +55,22 @@ def load_template_record(data_root: str, record_index: int, need_spectrum: bool)
     return record
 
 
-def save_image_png(values: np.ndarray, path: Path, title: str):
-    """[n, C, H, W] -> one PNG grid (per-image normalized RGB)."""
+def save_image_png(values: np.ndarray, path: Path, title: str, truth: np.ndarray | None = None):
+    """[n, C, H, W] -> one PNG grid (per-image normalized RGB).
+
+    With ``truth`` [C, H, W] the ground-truth panel leads the grid.
+    """
     import matplotlib.pyplot as plt
 
-    n = len(values)
-    fig, axes = plt.subplots(1, n, figsize=(3 * n, 3), squeeze=False)
-    for ax, img in zip(axes[0], values):
+    panels = ([("truth", truth)] if truth is not None else []) + [
+        (f"sample {i}", img) for i, img in enumerate(values)
+    ]
+    fig, axes = plt.subplots(1, len(panels), figsize=(3 * len(panels), 3.2), squeeze=False)
+    for ax, (label, img) in zip(axes[0], panels):
         rgb = np.transpose(img, (1, 2, 0))
         lo, hi = np.percentile(rgb, [1, 99])
         ax.imshow(np.clip((rgb - lo) / (hi - lo + 1e-8), 0, 1))
+        ax.set_title(label, fontsize="small")
         ax.axis("off")
     fig.suptitle(title)
     fig.tight_layout()
@@ -69,11 +78,17 @@ def save_image_png(values: np.ndarray, path: Path, title: str):
     plt.close(fig)
 
 
-def save_spectra_png(flux: np.ndarray, lam: np.ndarray, path: Path, title: str):
-    """[n, W] flux + [W] wavelength -> overlaid flux-vs-wavelength PNG."""
+def save_spectra_png(flux: np.ndarray, lam: np.ndarray, path: Path, title: str, truth: np.ndarray | None = None):
+    """[n, W] flux + [W] wavelength -> overlaid flux-vs-wavelength PNG.
+
+    With ``truth`` [W] the ground-truth spectrum is drawn in black behind
+    the samples.
+    """
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(10, 4))
+    if truth is not None:
+        ax.plot(lam, truth, lw=1.2, color="black", alpha=0.9, label="truth")
     for i, f in enumerate(flux):
         ax.plot(lam, f, lw=0.7, alpha=0.8, label=f"sample {i}")
     ax.set_xlabel("wavelength [$\\AA$]")
@@ -103,6 +118,16 @@ def main():
     parser.add_argument("--norm-stats", default=None, help="data yaml with asinh percentiles")
     parser.add_argument("--out", default="generated", help="output directory")
     parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="log the figures to wandb (project astropt3, job_type generation)",
+    )
+    parser.add_argument(
+        "--wandb-run-id",
+        default=None,
+        help="append to an existing wandb run (e.g. the training run) instead of a new one",
+    )
     args = parser.parse_args()
 
     import astropt3  # noqa: F401  -- registers the Auto classes
@@ -153,6 +178,30 @@ def main():
             generator=generator,
         )
 
+    wandb_run = None
+    if args.wandb:
+        import wandb
+
+        wandb_run = wandb.init(
+            project="astropt3",
+            id=args.wandb_run_id,
+            resume="allow" if args.wandb_run_id else None,
+            name=None if args.wandb_run_id else f"generate-{args.mode}-{template.object_id}",
+            job_type="generation",
+            config={k: v for k, v in vars(args).items() if k not in ("wandb", "wandb_run_id")},
+        )
+
+    def maybe_sinh(imgs):
+        if asinh_params is not None:
+            offset, scale = asinh_params
+            return torch.sinh(imgs) * scale.view(-1, 1, 1) + offset.view(-1, 1, 1)
+        return imgs
+
+    # ground truth for teacher-forced/conditioned spans: unconditional samples
+    # have none; reconstruct compares both spans; image-to-spectra compares
+    # the generated spectra against the record's real spectrum
+    show_truth = args.mode != "unconditional"
+
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     tag = f"{args.mode}_seed{args.seed}"
@@ -160,23 +209,36 @@ def main():
         tokens = tokens.cpu()
         np.save(out_dir / f"{name}_{tag}.npy", tokens.numpy())
         mod = registry.get_config(name)
+        png = out_dir / f"{name}_{tag}.png"
         if name == "images":
             side = int(round((tokens.shape[1]) ** 0.5)) * mod.patch_size
             channels = mod.input_size // (mod.patch_size**2)
-            imgs = torch.stack(
-                [unpatchify_image(t, mod.patch_size, channels, side) for t in tokens]
+            imgs = maybe_sinh(
+                torch.stack([unpatchify_image(t, mod.patch_size, channels, side) for t in tokens])
             )
-            if asinh_params is not None:
-                offset, scale = asinh_params
-                imgs = torch.sinh(imgs) * scale.view(-1, 1, 1) + offset.view(-1, 1, 1)
-            save_image_png(imgs.numpy(), out_dir / f"{name}_{tag}.png", f"{name} {tag}")
+            truth = None
+            if show_truth:
+                truth = maybe_sinh(
+                    unpatchify_image(template.values[name], mod.patch_size, channels, side).unsqueeze(0)
+                )[0].numpy()
+            save_image_png(imgs.numpy(), png, f"{name} {tag}", truth=truth)
         elif name == "spectra":
             lam = np.asarray(record["spectrum"]["lambda"])
             flux = torch.stack(
                 [unpatchify_spectrum(t, len(lam)) for t in tokens]
             )
-            save_spectra_png(flux.numpy(), lam, out_dir / f"{name}_{tag}.png", f"{name} {tag}")
+            truth = (
+                unpatchify_spectrum(template.values[name], len(lam)).numpy() if show_truth else None
+            )
+            save_spectra_png(flux.numpy(), lam, png, f"{name} {tag}", truth=truth)
+        if wandb_run is not None:
+            import wandb
+
+            wandb_run.log({f"generation/{name}_{tag}": wandb.Image(str(png))})
         print(f"wrote {name}: {tuple(tokens.shape)} -> {out_dir}/{name}_{tag}.{{npy,png}}")
+
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
