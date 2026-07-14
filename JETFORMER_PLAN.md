@@ -196,6 +196,26 @@ scope and log from there.
 - **Tune stability before the ablation matrix:** sweep `noise_min` (try
   0.02–0.05), LR (try 5e-4), and `clip_grad` — the grad-norm growth in §1 is the
   gating question. First ~500–2000 steps show whether it's fixed.
+  - **Reference — OLMo grad-norm-increase thread**
+    (<https://github.com/allenai/OLMo/issues/596>). Takeaways worth trying/checking
+    here, in order of usefulness:
+    - **Some of the rise is expected, not a bug.** Transformers are ~2-homogeneous,
+      so total grad norm scales roughly with the parameter norm; grad norm can climb
+      while loss/val keep improving smoothly. So first confirm whether §1's growth
+      actually hurts the loss curve, or is just clip absorbing a benign weight-norm
+      drift. Lever: **`weight_decay`** (bounds param norm → bounds grad norm).
+    - **Log per-parameter-group / per-layer grad norms** to localize the source
+      instead of watching the single global scalar. Prime suspects here are the
+      per-modality **flow / GMM head** groups (nats-scale exact-likelihood loss), and
+      the **embedding + early-layer** groups.
+    - **Watch for embedding-norm shrinkage.** If the early layers dominate the grad
+      norm, a collapsing embedding norm drives up the LayerNorm gradients — a known
+      OLMo failure mode. Track the embedding weight norm alongside grad norm.
+    - **A much smaller clip (`clip_grad` ~0.01) is offered as a fix**, but treat it as
+      a band-aid: only reach for it if loss/val are already improving smoothly and you
+      just want to cap the step size.
+    - **Keep activations/grads bounded for bf16.** Large params/activations/gradients
+      hurt low-precision stability specifically — relevant since these runs are bf16.
 - **Real spectra:** `shakeout_mix2` has none; get a dataset with populated
   `spectrum` arrays if the spectra modality is in scope.
 - **Commit** the `generate.py` change (and the launcher edit) on the `jetformer`
