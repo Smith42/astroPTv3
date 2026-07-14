@@ -27,8 +27,10 @@ exact for jetformer checkpoints (whose sequencer skips per-patch
 standardization precisely so the token map inverts back to flux); for
 affine checkpoints it is qualitative only, since standardization discards
 each patch's mean/std. ``--wandb`` logs the figures to the astropt3
-wandb project (``--wandb-run-id <id>`` appends them to an existing run, e.g.
-the training run, instead of a new generation run).
+wandb project as a fresh generation run; ``--wandb-run-id <id>`` appends
+them to an existing run instead (e.g. the training run). Pass several
+comma-separated ``--record-index`` values to collect a batch of
+reconstructions into one run.
 """
 
 import argparse
@@ -116,7 +118,11 @@ def main():
     parser.add_argument("--argmax", action="store_true", help="mixture-mean point sample")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--data-root", default="synthetic", help="val shard dir or 'synthetic'")
-    parser.add_argument("--record-index", type=int, default=0, help="template record")
+    parser.add_argument(
+        "--record-index",
+        default="0",
+        help="template record index; comma-separated list logs several into one run",
+    )
     parser.add_argument("--norm-stats", default=None, help="data yaml with asinh percentiles")
     parser.add_argument("--out", default="generated", help="output directory")
     parser.add_argument("--device", default=None)
@@ -158,28 +164,11 @@ def main():
 
     # sampling modes want the full skeleton (image + spectra spans)
     need_spectrum = args.mode != "reconstruct"
-    record = load_template_record(args.data_root, args.record_index, need_spectrum)
-    template = ObjectSequencer(model.config, **sequencer_kwargs).build(record)
-    print(f"template object {template.object_id!r}: spans {sorted(template.masks)}")
+    record_indices = [int(i) for i in str(args.record_index).split(",")]
+    sequencer = ObjectSequencer(model.config, **sequencer_kwargs)
 
-    if args.mode == "reconstruct":
-        sampled = {m: v.unsqueeze(0) for m, v in reconstruct(model, template).items()}
-    else:
-        if args.mode == "image-to-spectra":
-            gen_modalities = {"spectra"}
-        else:
-            gen_modalities = set(template.masks)
-        generator = torch.Generator(device=device).manual_seed(args.seed)
-        sampled = generate(
-            model,
-            template,
-            gen_modalities,
-            n=args.n,
-            temperature=args.temperature,
-            argmax=args.argmax,
-            generator=generator,
-        )
-
+    # one wandb run for the whole invocation: a fresh generation run by
+    # default, or the run named by --wandb-run-id (e.g. the training run)
     wandb_run = None
     if args.wandb:
         import wandb
@@ -188,7 +177,7 @@ def main():
             project="astropt3",
             id=args.wandb_run_id,
             resume="allow" if args.wandb_run_id else None,
-            name=None if args.wandb_run_id else f"generate-{args.mode}-{template.object_id}",
+            name=None if args.wandb_run_id else f"generate-{args.mode}",
             job_type="generation",
             config={k: v for k, v in vars(args).items() if k not in ("wandb", "wandb_run_id")},
         )
@@ -206,38 +195,62 @@ def main():
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    tag = f"{args.mode}_seed{args.seed}"
-    for name, tokens in sampled.items():
-        tokens = tokens.cpu()
-        np.save(out_dir / f"{name}_{tag}.npy", tokens.numpy())
-        mod = registry.get_config(name)
-        png = out_dir / f"{name}_{tag}.png"
-        if name == "images":
-            side = int(round((tokens.shape[1]) ** 0.5)) * mod.patch_size
-            channels = mod.input_size // (mod.patch_size**2)
-            imgs = maybe_sinh(
-                torch.stack([unpatchify_image(t, mod.patch_size, channels, side) for t in tokens])
-            )
-            truth = None
-            if show_truth:
-                truth = maybe_sinh(
-                    unpatchify_image(template.values[name], mod.patch_size, channels, side).unsqueeze(0)
-                )[0].numpy()
-            save_image_png(imgs.numpy(), png, f"{name} {tag}", truth=truth)
-        elif name == "spectra":
-            lam = np.asarray(record["spectrum"]["lambda"])
-            flux = torch.stack(
-                [unpatchify_spectrum(t, len(lam)) for t in tokens]
-            )
-            truth = (
-                unpatchify_spectrum(template.values[name], len(lam)).numpy() if show_truth else None
-            )
-            save_spectra_png(flux.numpy(), lam, png, f"{name} {tag}", truth=truth)
-        if wandb_run is not None:
-            import wandb
 
-            wandb_run.log({f"generation/{name}_{tag}": wandb.Image(str(png))})
-        print(f"wrote {name}: {tuple(tokens.shape)} -> {out_dir}/{name}_{tag}.{{npy,png}}")
+    for record_index in record_indices:
+        record = load_template_record(args.data_root, record_index, need_spectrum)
+        template = sequencer.build(record)
+        print(f"template object {template.object_id!r}: spans {sorted(template.masks)}")
+
+        if args.mode == "reconstruct":
+            sampled = {m: v.unsqueeze(0) for m, v in reconstruct(model, template).items()}
+        else:
+            if args.mode == "image-to-spectra":
+                gen_modalities = {"spectra"}
+            else:
+                gen_modalities = set(template.masks)
+            generator = torch.Generator(device=device).manual_seed(args.seed)
+            sampled = generate(
+                model,
+                template,
+                gen_modalities,
+                n=args.n,
+                temperature=args.temperature,
+                argmax=args.argmax,
+                generator=generator,
+            )
+
+        # the object id keeps figures from different records distinct on disk
+        # and as wandb media keys, so a multi-record batch shares one run
+        tag = f"{args.mode}_{template.object_id}_seed{args.seed}"
+        for name, tokens in sampled.items():
+            tokens = tokens.cpu()
+            np.save(out_dir / f"{name}_{tag}.npy", tokens.numpy())
+            mod = registry.get_config(name)
+            png = out_dir / f"{name}_{tag}.png"
+            if name == "images":
+                side = int(round((tokens.shape[1]) ** 0.5)) * mod.patch_size
+                channels = mod.input_size // (mod.patch_size**2)
+                imgs = maybe_sinh(
+                    torch.stack([unpatchify_image(t, mod.patch_size, channels, side) for t in tokens])
+                )
+                truth = None
+                if show_truth:
+                    truth = maybe_sinh(
+                        unpatchify_image(template.values[name], mod.patch_size, channels, side).unsqueeze(0)
+                    )[0].numpy()
+                save_image_png(imgs.numpy(), png, f"{name} {tag}", truth=truth)
+            elif name == "spectra":
+                lam = np.asarray(record["spectrum"]["lambda"])
+                flux = torch.stack(
+                    [unpatchify_spectrum(t, len(lam)) for t in tokens]
+                )
+                truth = (
+                    unpatchify_spectrum(template.values[name], len(lam)).numpy() if show_truth else None
+                )
+                save_spectra_png(flux.numpy(), lam, png, f"{name} {tag}", truth=truth)
+            if wandb_run is not None:
+                wandb_run.log({f"generation/{name}_{tag}": wandb.Image(str(png))})
+            print(f"wrote {name}: {tuple(tokens.shape)} -> {out_dir}/{name}_{tag}.{{npy,png}}")
 
     if wandb_run is not None:
         wandb_run.finish()

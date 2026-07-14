@@ -27,7 +27,10 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1   # required by nanotron's comm overlap
 export HF_DATASETS_OFFLINE=1           # data is local parquet
 export WANDB_MODE=${WANDB_MODE:-online}
 
-exec torchrun \
+# python -m, not the torchrun entry point: torch lives in the module's
+# system site-packages, so bare `torchrun` resolves to the module python
+# and loses the venv (editable nanotron/astropt3)
+exec python -m torch.distributed.run \
     --nproc-per-node="$NPROC" \
     --rdzv-backend=c10d \
     --rdzv-endpoint=localhost:0 \
