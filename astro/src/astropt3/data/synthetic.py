@@ -7,7 +7,7 @@ records mimic:
   (3, 152, 152) in LegacySurvey nanomaggies (galaxy cores ~0.1 nMgy, sky
   noise ~0.001 nMgy — the real pilot flux scale, so the physical band
   normalization's 0.01 nMgy arcsinh knee lands in the same regime as on
-  real data), ``image.bands`` = des-g/r/z, plus catalog scalars.
+  real data), ``image.band`` = des-g/r/z, plus catalog scalars.
 - ``UniverseTBD/mmu_desi_edr_sv3``: ``spectrum`` with 7781-bin ``flux``,
   ``lambda`` (3600-9824 A), ``ivar``, ``lsf_sigma``, ``mask``, plus ``Z``.
 
@@ -49,7 +49,7 @@ def make_record(index: int, image_only_fraction: float = 0.3) -> dict:
         "_healpix_29": int(rng.integers(0, 2**40)),
         "image": {
             "flux": flux.astype(np.float32),
-            "bands": IMAGE_BANDS,
+            "band": IMAGE_BANDS,
             "psf_fwhm": float(rng.uniform(1.0, 2.0)),
             "scale": 0.262,
         },

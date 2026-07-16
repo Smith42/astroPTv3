@@ -143,7 +143,7 @@ def test_jetformer_skips_per_patch_standardization(jet_config):
     record = make_record(3, image_only_fraction=0.0)
     jet_seq = ObjectSequencer(jet_config).build(record)
     flux = physical_normalize(
-        torch.as_tensor(record["image"]["flux"]), record["image"]["bands"]
+        torch.as_tensor(record["image"]["flux"]), record["image"]["band"]
     )
     expected = patchify_image(flux, 8)
     assert torch.allclose(jet_seq.values["images"], expected)

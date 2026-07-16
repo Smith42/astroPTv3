@@ -70,10 +70,8 @@ class ObjectSequencer:
         mod = self.registry.get_config("images")
         image = record["image"]
         flux = torch.as_tensor(image["flux"], dtype=torch.float32)
-        # MMU records carry "band" (mmu.normalize_record), synthetic "bands";
-        # either may arrive as a list or an array after a parquet round-trip.
-        bands = image["band"] if image.get("band") is not None else image.get("bands", [])
-        flux = physical_normalize(flux, [str(b) for b in bands])
+        # may arrive as a list or an array after a parquet round-trip
+        flux = physical_normalize(flux, [str(b) for b in image["band"]])
         patches = patchify_image(flux, mod.patch_size)
         if self.standardize:
             patches = per_patch_standardize(patches)

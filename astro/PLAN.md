@@ -40,7 +40,7 @@ using `<|begin_mod|>`/placeholder/`<|end_mod|>` special tokens;
 ## Verified pilot-data schemas (checked 2026-07-07 via HF datasets-server + MMU builders)
 
 **`UniverseTBD/mmu_ssl_legacysurvey_north`** — 14,174,203 rows, ~4 TB:
-- `image` struct: `bands=["des-g","des-r","des-z"]`, `flux` float32 **(3, 152, 152)**
+- `image` struct: `band=["des-g","des-r","des-z"]`, `flux` float32 **(3, 152, 152)**
   (builder constant `_image_size=152`, `_pixel_scale=0.262`), `psf_fwhm`, `scale`.
 - Scalars: `flux_{g,r,z}`, `fiberflux_{g,r,z}`, `psfdepth_{g,r,z}`, `ebv`, `z_spec`.
 - `ra` f64, `dec` f64, `object_id` string, `_healpix_29` int64.

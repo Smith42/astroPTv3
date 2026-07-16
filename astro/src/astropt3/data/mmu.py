@@ -92,8 +92,8 @@ def _image_flux(value) -> np.ndarray:
 def normalize_record(rec: dict) -> dict:
     """Coerce a raw record (synthetic fixture or crossmatch row) to PILOT_FEATURES.
 
-    Tolerates the schema drift between sources: ``bands`` vs ``band``, scalar
-    vs per-band ``psf_fwhm``/``scale``, missing probe scalars.
+    Tolerates the schema drift between sources: scalar vs per-band
+    ``psf_fwhm``/``scale``, missing probe scalars.
     """
     image = rec["image"]
     out = {
@@ -103,7 +103,7 @@ def normalize_record(rec: dict) -> dict:
         "_healpix_29": int(rec["_healpix_29"]),
         "image": {
             "flux": _image_flux(image["flux"]),
-            "band": [str(b) for b in image.get("band", image.get("bands", []))],
+            "band": [str(b) for b in image["band"]],
             "psf_fwhm": _as_band_list(image.get("psf_fwhm", np.nan)),
             "scale": _as_band_list(image.get("scale", np.nan)),
         },

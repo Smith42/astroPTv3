@@ -200,7 +200,7 @@ pass.
 - `astro/tests/test_jetformer.py` line ~144 — fix the expected flux:
   `flux = torch.asinh(torch.as_tensor(record["image"]["flux"]))` →
   `flux = physical_normalize(torch.as_tensor(record["image"]["flux"]),
-  record["image"]["bands"])`. The rest of the assertion (jetformer tokens ==
+  record["image"]["band"])`. The rest of the assertion (jetformer tokens ==
   patchify of the normalized flux; affine standardizes to zero mean) holds.
 - `astro/tests/test_eval.py` line 30 — drop `norm_stats=None`.
 - `astro/tests/test_loader_resume.py` line 118 — drop `norm_stats=None`.

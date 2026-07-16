@@ -181,11 +181,8 @@ def main():
         record = load_template_record(args.data_root, record_index, need_spectrum)
         template = sequencer.build(record)
         print(f"template object {template.object_id!r}: spans {sorted(template.masks)}")
-        # MMU records carry "band", synthetic "bands" — either keys the
-        # physical inverse normalization back to survey flux
-        image = record.get("image") or {}
-        bands = image["band"] if image.get("band") is not None else image.get("bands", [])
-        bands = [str(b) for b in bands]
+        # keys the physical inverse normalization back to survey flux
+        bands = [str(b) for b in (record.get("image") or {}).get("band", [])]
 
         if args.mode == "reconstruct":
             sampled = {m: v.unsqueeze(0) for m, v in reconstruct(model, template).items()}

@@ -1,7 +1,8 @@
 # ADR 0002: Inverse-variance-weighted Huber loss for the affine tokeniser
 
 - **Status:** Proposed (Parked) — see *Parked* banner below.
-- **Date:** 2026-07-15
+- **Date:** 2026-07-15 (facts refreshed 2026-07-16 for physical normalization;
+  decision untouched — see *Superseded context* below)
 - **References:**
   - [`0001-jetformer-inverse-variance-loss.md`](0001-jetformer-inverse-variance-loss.md)
     (this repo — Rejected for the `tokeniser: jetformer` head; the
@@ -25,6 +26,23 @@
 > decision still stands. If the root flips to defer/reject, the downstream
 > branches (loss formulation, data-switch mechanics, gating) re-open.
 
+> ## ⚠️ Superseded context (2026-07-16)
+>
+> This ADR was drafted against the **PU asinh stretch**, which
+> `a79e4ff` replaced with **physical band-registry normalization**
+> (`data/band_registry.py`): a fixed `arcsinh(flux/0.01)·0.01` knee keyed on
+> the record's band names, with **no per-corpus calibration** —
+> `compute_norm_stats.py` and the p1/p99 `norm_stats` path are gone.
+>
+> Facts below have been corrected for this; the decision, options, and open
+> issues are unchanged. **This makes the proposal cheaper, not different:**
+> adding `des-i` for the DR10-south switch is now a `BAND_REGISTRY` entry of
+> published survey constants rather than a calibration pass over the corpus.
+> The loss design is unaffected — `σ_patch²` propagation still comes from
+> `per_patch_standardize`, which is unchanged and still runs after the
+> stretch. O1 (root-decision doubt) should note the switch got slightly
+> cheaper when it is re-examined.
+
 ## Question
 
 Should the `tokeniser: affine` + Huber path (the default / release artifact per
@@ -46,7 +64,7 @@ the flow must stay invertible for `generation.py`. But ADR 0001's "Where the ide
 - ivar composes with Huber cleanly: `huber(√w·(ŷ−y), delta)` is a robustified
   Gaussian likelihood.
 - The one new piece of plumbing vs `galactiktok` is this repo's
-  **per-patch standardization** after the asinh stretch
+  **per-patch standardization** after the physical band-registry stretch
   (`transforms.per_patch_standardize`), which rescales each patch by its own
   `σ_patch`. Raw-flux ivar must be propagated into loss space as
   `ivar_loss = ivar_pixel · σ_patch²` — a **fixed per-patch scalar** computed
@@ -110,7 +128,8 @@ regime, down-weighting outliers in the large-residual regime via δ. Smallest
 change to the existing call site; δ keeps its robustness role; the loss stays a
 Huber regressor. Per-patch-standardization ivar propagation (`·σ_patch²`) is
 baked into the weight; the asinh Jacobian (galactiktok Option C) is deferred
-second-order. Band-subset-invariance machinery is N/A — AstroPT3 packs all
+second-order — with the fixed 0.01 nMgy knee it is `1/√(1+(flux/0.01)²)`, ≈1
+for sky-dominated pixels and biting only on bright ones. Band-subset-invariance machinery is N/A — AstroPT3 packs all
 bands into one token with no band dropout, so there is nothing to normalize;
 per-component `√w` weighting inside the token carries the noise weighting.
 
@@ -171,8 +190,9 @@ path, and commit to the DR10-south pilot switch as part of the decision.**
    delta=huber_delta)` per modality, then weighted by `loss_weight` and averaged
    over modalities present as today.
 4. **Data switch.** Re-pin pilot `mmu_ssl_legacysurvey_north` →
-   `mmu_legacysurvey_dr10_south_21`; add `des-i` to `BAND_REGISTRY`; recompute
-   asinh p1/p99 calibration (`compute_norm_stats.py`) for the south survey;
+   `mmu_legacysurvey_dr10_south_21`; add a `des-i` `BAND_REGISTRY` entry
+   (zeropoint / pixel scale / `m_bright` from published survey constants — no
+   calibration pass, and unknown bands raise until it exists);
    ripple 160px / 4-band / 400-patch / 256-dim through `tokenization.py`,
    packing, configs, and size YAMLs.
 5. **Mirror to the nanotron fork.** The loss edit must mirror to the fork's loss
@@ -202,8 +222,9 @@ path, and commit to the DR10-south pilot switch as part of the decision.**
   (pre-release); expensive once a real pilot trains.
 - **9× volume** (14M→124M) — longer prep, larger corpus; image×spectra
   crossmatch yield and the image-only/image+spectra ratio change; re-eval.
-- **4th band (`des-i`) calibration** — asinh p1/p99 must be recomputed for the
-  south survey; new `BAND_REGISTRY` entry.
+- **4th band (`des-i`) registry entry** — a new `BAND_REGISTRY` entry is
+  required (physical normalization raises on unknown bands), but it is
+  published survey constants, not a calibration pass over the corpus.
 - **Loss scale / effective LR** — weighting by `√(ivar·σ_patch²)` changes loss
   magnitude vs unweighted Huber; may need `loss_weight` / LR retune; δ
   semantics shift (δ is now in weighted-residual units).
@@ -277,6 +298,8 @@ Off by default (matching `galactiktok` ADR 0002), or mirror `spectrum_jeff`'s
 - `astro/src/astropt3/modeling_astropt3.py:244` — the affine + Huber call site.
 - `astro/src/astropt3/data/transforms.py` — `per_patch_standardize` (the
   `σ_patch²` Jacobian source).
+- `astro/src/astropt3/data/band_registry.py` — physical normalization
+  (`a79e4ff`); the `des-i` entry the DR10-south switch needs lands here.
 - `astro/src/astropt3/data/mmu.py` — `spectrum.ivar` already flows; image ivar
   arrives with the DR10-south switch.
 - `astro/PLAN.md` user decision #4 — pilot pinned to north (reversed by this
