@@ -4,12 +4,13 @@
 #
 # Usage, from the REPO ROOT (paths in the config are cwd-relative):
 #   bash astro/scripts/launch_jetformer_70m.sh [extra torchrun args]
+# Override the config with CONFIG=<path> (e.g. the physnorm shakeout).
 #
 # Environment: the module + .venv-train overlay (see
 # docs/jetformer_plan.md J4 status note); NOT the x86 $ASTROPT3_ENV recipe.
 set -euo pipefail
 
-CONFIG=astro/configs/nanotron/astropt3-70m-jetformer.yaml
+CONFIG=${CONFIG:-astro/configs/nanotron/astropt3-70m-jetformer.yaml}
 REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$REPO_ROOT"
 
