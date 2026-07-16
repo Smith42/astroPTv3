@@ -13,19 +13,3 @@ split:
   salt: 0
 packing:
   seq_len: 4096
-normalization:
-  asinh_alpha: 20.0
-  image_p1:
-  - -0.00427259923890233
-  - -0.008217865601181984
-  - -0.03999856114387512
-  image_p99:
-  - 0.019611205905675888
-  - 0.04567351192235947
-  - 0.08688019961118698
-  stats_provenance:
-    data_dir: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3/../astroPTv3_data/pilot_v1/train
-    n_images: 10000
-    pixels_per_image: 8192
-    seed: 0
-    created: '2026-07-08T16:48:38.641923+00:00'

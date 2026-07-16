@@ -42,19 +42,3 @@ def resolve_data_root(data_config: dict) -> Path:
     if not root.is_absolute():
         root = _REPO_ROOT / root
     return root
-
-
-def sequencer_kwargs_from_data_config(data_config: dict) -> dict:
-    """Asinh-stretch kwargs for ``ObjectSequencer`` from a data config dict.
-
-    Empty until ``scripts/compute_norm_stats.py`` has filled the
-    ``normalization`` block (the sequencer then falls back to plain asinh).
-    """
-    norm = data_config.get("normalization") or {}
-    if norm.get("image_p99") is None:
-        return {}
-    return {
-        "image_p1": norm["image_p1"],
-        "image_p99": norm["image_p99"],
-        "alpha": norm.get("asinh_alpha", 20.0),
-    }

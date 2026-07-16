@@ -89,7 +89,6 @@ data_stages:
   data:
     dataset:
       data_root: /work/nvme/bfvh/msmith10/astroPTv3_data/shakeout_mix2/train
-      norm_stats: astro/configs/data/pilot_images_spectra.yaml
       shuffle_buffer_size: 2000
       object_id_log: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer/objects.log
     seed: 42

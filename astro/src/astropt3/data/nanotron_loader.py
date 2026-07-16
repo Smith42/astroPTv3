@@ -49,7 +49,6 @@ from pathlib import Path
 
 import torch
 
-from ..config_io import load_data_config, sequencer_kwargs_from_data_config
 from ..configuration_astropt3 import AstroPT3Config
 from .mmu import MMUIterableDataset
 from .packing import ObjectSequencer, PackedCollator
@@ -134,7 +133,6 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         seq_len: int,
         *,
         data_root: str = SYNTHETIC_ROOT,
-        norm_stats: str | Path | None = None,
         shuffle_buffer_size: int = 0,
         synthetic_image_only_fraction: float = 0.3,
         rank: int = 0,
@@ -160,10 +158,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self._mmu_dataset: MMUIterableDataset | None = None
         self._epoch = 0
 
-        sequencer_kwargs = {}
-        if norm_stats is not None:
-            sequencer_kwargs = sequencer_kwargs_from_data_config(load_data_config(norm_stats))
-        self.sequencer = ObjectSequencer(config, **sequencer_kwargs)
+        self.sequencer = ObjectSequencer(config)
         self.collator = PackedCollator(config, seq_len=seq_len)
 
     # -- checkpoint state ---------------------------------------------------
@@ -369,7 +364,6 @@ def build_astropt3_dataloader(
         micro_batch_size,
         sequence_length,
         data_root=dataset_args.data_root,
-        norm_stats=getattr(dataset_args, "norm_stats", None),
         shuffle_buffer_size=getattr(dataset_args, "shuffle_buffer_size", 0),
         synthetic_image_only_fraction=getattr(dataset_args, "synthetic_image_only_fraction", 0.3),
         rank=dp_rank,

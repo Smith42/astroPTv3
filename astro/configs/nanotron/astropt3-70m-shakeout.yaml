@@ -80,7 +80,6 @@ data_stages:
   data:
     dataset:
       data_root: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_data/shakeout_mix/train
-      norm_stats: astro/configs/data/pilot_images_spectra.yaml
       shuffle_buffer_size: 2000
     seed: 42
     num_loading_workers: 8

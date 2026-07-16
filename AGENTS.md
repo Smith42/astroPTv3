@@ -46,12 +46,13 @@ stages is implicit and easy to break, so understand it before editing:
    (login node, `[data]` env, network) lsdb-LEFT-crossmatches the two MMU
    HATS collections into local parquet shards (train/val by hashing coarse
    HEALPix tiles — spatially disjoint), and `MMUIterableDataset` streams
-   them back offline, sharded by DP rank and DataLoader worker. The asinh
-   p1/p99 calibration in `configs/data/pilot_images_spectra.yaml` is
-   written by `scripts/compute_norm_stats.py`; `scripts/check_pilot_data.py`
-   is the sanity/throughput gate.
+   them back offline, sharded by DP rank and DataLoader worker.
+   `scripts/check_pilot_data.py` is the sanity/throughput gate.
 2. **`ObjectSequencer`** (`data/packing.py`) turns a record into an
-   `ObjectSeq`: asinh stretch + patchify (`tokenization.py`) + per-patch
+   `ObjectSeq`: physical band-registry normalization
+   (`data/band_registry.py`: rescale to nanomaggies → bright-pixel clamp →
+   `arcsinh(x/0.01)·0.01`, keyed on the record's band names — no per-corpus
+   calibration; unknown bands raise) + patchify (`tokenization.py`) + per-patch
    standardization (`data/transforms.py`) per modality (jetformer configs
    SKIP the standardization — the exact-likelihood loss needs an invertible
    record -> token map, and standardization discards each patch's
@@ -129,5 +130,7 @@ alongside training.
 A behavior to remember when touching data or fixtures: per-patch
 standardization turns flat/noise-only patches into irreducible N(0,1)
 targets — synthetic data must contain patch-scale structure or smoke
-training cannot learn, and the real asinh scale is calibrated from data
-(Phase 2 `compute_norm_stats.py`), not by eye.
+training cannot learn. Synthetic image flux is nMgy-scale (cores ~0.1,
+noise ~0.001) so the physical normalization's fixed 0.01 nMgy arcsinh knee
+lands in the same regime as on real LegacySurvey data; pre-physical-norm
+(PU-asinh) checkpoints are incompatible — retrain.

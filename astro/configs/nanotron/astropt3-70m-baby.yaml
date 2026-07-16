@@ -93,7 +93,6 @@ data_stages:
       # relative to the launch cwd (repo root) — point at scratch on the
       # training cluster if the corpus lives elsewhere
       data_root: ../astroPTv3_data/pilot_v1/train
-      norm_stats: astro/configs/data/pilot_images_spectra.yaml
       shuffle_buffer_size: 2000
     seed: 42
     num_loading_workers: 2

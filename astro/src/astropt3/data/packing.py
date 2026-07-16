@@ -32,12 +32,8 @@ from ..tokenization import (
     patchify_spectrum,
     spiralise,
 )
-from .transforms import (
-    ASINH_ALPHA,
-    asinh_params_from_percentiles,
-    asinh_stretch,
-    per_patch_standardize,
-)
+from .band_registry import physical_normalize
+from .transforms import per_patch_standardize
 
 
 @dataclass
@@ -60,21 +56,9 @@ class ObjectSequencer:
     def __init__(
         self,
         config: AstroPT3Config,
-        image_p1=None,
-        image_p99=None,
-        alpha: float = ASINH_ALPHA,
         spiral: bool = False,
     ):
         self.registry = config.modality_registry()
-        # Platonic Universe asinh stretch: per-band offset/scale from the 1st/99th
-        # flux percentiles (scripts/compute_norm_stats.py, Phase 2). Without stats
-        # (synthetic/smoke) fall back to plain asinh(flux).
-        if image_p99 is None:
-            self.asinh_offset, self.asinh_scale = 0.0, 1.0
-        else:
-            self.asinh_offset, self.asinh_scale = asinh_params_from_percentiles(
-                image_p1, image_p99, alpha
-            )
         self.spiral = spiral
         # jetformer models an exact likelihood in patch space, so the record
         # -> token map must stay invertible: per-patch standardization
@@ -84,8 +68,12 @@ class ObjectSequencer:
 
     def _images_tokens(self, record: dict):
         mod = self.registry.get_config("images")
-        flux = torch.as_tensor(record["image"]["flux"], dtype=torch.float32)
-        flux = asinh_stretch(flux, self.asinh_scale, self.asinh_offset)
+        image = record["image"]
+        flux = torch.as_tensor(image["flux"], dtype=torch.float32)
+        # MMU records carry "band" (mmu.normalize_record), synthetic "bands";
+        # either may arrive as a list or an array after a parquet round-trip.
+        bands = image["band"] if image.get("band") is not None else image.get("bands", [])
+        flux = physical_normalize(flux, [str(b) for b in bands])
         patches = patchify_image(flux, mod.patch_size)
         if self.standardize:
             patches = per_patch_standardize(patches)

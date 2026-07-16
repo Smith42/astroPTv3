@@ -136,12 +136,15 @@ def test_save_load_roundtrip(tmp_path, jet_model, jet_batch):
 def test_jetformer_skips_per_patch_standardization(jet_config):
     """jetformer tokens must invert back to flux: no per-patch standardization."""
     from astropt3 import AstroPT3Config
+    from astropt3.data.band_registry import physical_normalize
     from astropt3.data.synthetic import make_record
     from astropt3.tokenization import patchify_image
 
     record = make_record(3, image_only_fraction=0.0)
     jet_seq = ObjectSequencer(jet_config).build(record)
-    flux = torch.asinh(torch.as_tensor(record["image"]["flux"]))
+    flux = physical_normalize(
+        torch.as_tensor(record["image"]["flux"]), record["image"]["bands"]
+    )
     expected = patchify_image(flux, 8)
     assert torch.allclose(jet_seq.values["images"], expected)
     # spectra tokens are the raw (mask-zeroed) flux patches

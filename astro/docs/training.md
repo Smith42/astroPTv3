@@ -73,18 +73,14 @@ DESI EDR SV3 spectra (1″ radius) and writes ~shard-sized parquet under
 - DESI coverage is patchy: most partitions have 0% spectra matches, SV3
   rosettes have ~25%. Expect ~7% matched overall.
 
-### 2.2 Calibrate the image stretch (once per corpus)
+### 2.2 Image normalization (no calibration step)
 
-```bash
-uv run python scripts/compute_norm_stats.py --n-images 10000
-```
-
-Samples real images, computes per-band asinh p1/p99 percentiles, and writes
-them into `configs/data/pilot_images_spectra.yaml` (plus before/after
-histograms to eyeball). Training configs reference this yaml as
-`norm_stats`; without it the sequencer falls back to uncalibrated
-`asinh(flux)`. Recompute (or at least re-verify) when the corpus grows
-substantially — percentiles from one sky region are provisional.
+Image flux is normalized physically, keyed on each record's band names
+(`data/band_registry.py`): rescale to LegacySurvey nanomaggies → clamp
+survey-flagged bright pixels → `arcsinh(flux/0.01)·0.01`. The constants come
+from the surveys' own documentation, so there is nothing to calibrate per
+corpus — unknown bands raise `NotImplementedError` (add them to
+`BAND_REGISTRY`).
 
 ### 2.3 Gate the data before burning GPU-hours
 
@@ -131,7 +127,6 @@ data_stages:
 - data:
     dataset:
       data_root: <shard dir>   # or the literal string "synthetic"
-      norm_stats: astro/configs/data/pilot_images_spectra.yaml
       shuffle_buffer_size: 2000
       # object_id_log: <path>  # audit trail: one object_id/line as trained
     num_loading_workers: 8     # resume-exact at any value (torchdata
@@ -323,8 +318,9 @@ keep `pin_memory` on (default). The synthetic generator is CPU-bound too — don
 benchmark compute with `data_root: synthetic` and 0 workers.
 
 **Loss stuck ≈1.0 on synthetic-looking data** — per-patch standardization
-turned structureless patches into irreducible N(0,1) targets. Check the
-stretch calibration (`compute_norm_stats.py`) and that your data has
+turned structureless patches into irreducible N(0,1) targets. Check that the
+data's bands are in `band_registry.BAND_REGISTRY` (so the physical
+normalization applies at the right flux scale) and that the data has
 patch-scale structure.
 
 **Don't** use `datasets.IterableDataset.shuffle()` anywhere in the pipeline:

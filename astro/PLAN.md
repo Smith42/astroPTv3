@@ -95,7 +95,8 @@ astroPTv3/
 │   │   │   ├── packing.py           # ObjectSequencer + PackedCollator (shared by HF & nanotron paths)
 │   │   │   ├── nanotron_loader.py   # adapter: PackedCollator batches → nanotron micro-batch dicts
 │   │   │   ├── synthetic.py         # network-free fixtures matching the verified MMU schemas
-│   │   │   └── transforms.py        # asinh stretch + per-patch standardization
+│   │   │   ├── band_registry.py     # physical per-band normalization (rescale → clamp → arcsinh)
+│   │   │   └── transforms.py        # per-patch standardization
 │   │   ├── train_smoke.py           # tiny plain-torch CPU loop (validation only, NOT the trainer)
 │   │   └── eval/{val_loss.py,linear_probe.py}
 │   ├── configs/
@@ -104,7 +105,6 @@ astroPTv3/
 │   │   └── data/pilot_images_spectra.yaml
 │   ├── scripts/
 │   │   ├── prepare_pilot_data.py    # lsdb crossmatch → parquet shards (login node, [data] env)
-│   │   ├── compute_norm_stats.py
 │   │   ├── count_params.py          # asserts each size within 10% of nominal
 │   │   ├── launch_slurm.sbatch      # torchrun → nanotron run_train.py, multi-node
 │   │   └── run_probe_sweep.py       # async linear probes over converted HF checkpoints
@@ -136,7 +136,9 @@ modalities never resize the embedding.
 
 ### Modality tokenization (pinned to verified schemas)
 
-- **Images**: `image.flux` (3,152,152) float32 → asinh stretch → einops
+- **Images**: `image.flux` (3,152,152) float32 → physical band-registry
+  normalization (rescale → clamp → arcsinh; superseded the asinh stretch,
+  see `docs/physical_norm_plan.md`) → einops
   `"c (h p1) (w p2) -> (h w) (p1 p2 c)"` with **patch 8** → **361 tokens** of
   `input_size=192`; per-patch standardization; integer patch-index positions
   (spiral option ported). Patch 8 chosen because 152 = 8×19 (16 doesn't divide
@@ -239,8 +241,9 @@ launch time in the YAML.
   disjoint, no near-duplicate leakage.
 - Training streams the local shards with `load_dataset("parquet", ...,
   streaming=True)` + `HF_DATASETS_OFFLINE=1` — no network/lsdb on compute nodes.
-- `compute_norm_stats.py` (100k sample) → asinh scale + normalization stats
-  into the data YAML; verify flux histograms before/after stretch.
+- Image normalization is physical (band-registry constants, no per-corpus
+  calibration; superseded the original `compute_norm_stats.py` percentile
+  calibration — see `docs/physical_norm_plan.md`).
 - `synthetic.py` generates records matching the **verified schemas** above —
   all tests and the CPU smoke loop run networkless.
 
@@ -263,8 +266,9 @@ forward/backward finite with grads on every param; `save_pretrained` →
 size; 50-step CPU smoke on synthetic: loss < 0.7× initial.
 
 ### Phase 2 — Pilot data prep + streaming dataset
-`prepare_pilot_data.py`, `compute_norm_stats.py`, `data/mmu.py`,
-`configs/data/pilot_images_spectra.yaml`.
+`prepare_pilot_data.py`, `data/mmu.py`,
+`configs/data/pilot_images_spectra.yaml` (the original `compute_norm_stats.py`
+calibration step was later retired for physical normalization).
 **Verify**: crossmatch logs matched/unmatched counts (expect ~0.5–1M matched,
 ~13M image-only); decoded-object sanity print (patch stats ~N(0,1) after
 stretch, λ range 3600–9824Å); dataloader-only throughput ≥2× training
@@ -377,9 +381,9 @@ IN PROGRESS (2026-07-08, dev node, user's GPU reservation): real-data
   objects, 7,354 with spectra (27.8%) — spectra-rich subset for probing.
   NEVER point a cone run at the canonical dir: cone partitions are
   row-filtered and would poison the resume journal.
-- `compute_norm_stats.py` ran on 10k real images → asinh p1/p99 now in
-  the data yaml (provisional: day-one sky region; re-check when the full
-  corpus lands). `check_pilot_data.py`: real images decode to exact
+- `compute_norm_stats.py` ran on 10k real images → asinh p1/p99 into
+  the data yaml (historical: both retired when physical normalization
+  landed, see `docs/physical_norm_plan.md`). `check_pilot_data.py`: real images decode to exact
   N(0,1) patches, spectra to 31 patches λ 3702–9784 Å; dataloader ~1,000
   obj/s ≈ 400k tok/s per process at 8 workers (≥2× gate passes at DP=2).
 - Blocker found+fixed by the first 70M execution: upstream nanotron's

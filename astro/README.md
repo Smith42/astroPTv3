@@ -52,13 +52,14 @@ uv run --extra data python scripts/prepare_pilot_data.py
     # LEFT-crossmatch (1", nearest) → ~256MB parquet shards under
     # {root}/{train,val}/ + provenance.json; resumable per partition;
     # logs matched/image-only counts. Smoke: --cone RA DEC RADIUS_ARCSEC
-uv run python scripts/compute_norm_stats.py
-    # per-band asinh p1/p99 → normalization block of
-    # configs/data/pilot_images_spectra.yaml (+ before/after histograms)
 uv run python scripts/check_pilot_data.py --target-tokens-per-sec N
     # decoded-object sanity (~N(0,1) patches, λ range) + dataloader
     # throughput bench (want ≥2× training consumption)
 ```
+
+Image normalization is physical (band-registry-keyed rescale → bright-pixel
+clamp → arcsinh; `data/band_registry.py`), so there is no per-corpus
+calibration step.
 
 Training streams the shards with `astropt3.data.mmu.MMUIterableDataset`
 (`HF_DATASETS_OFFLINE=1`; DP-rank and DataLoader-worker sharded; keep

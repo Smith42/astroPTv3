@@ -16,17 +16,17 @@ a real record.
 Usage:
     uv run python scripts/generate.py --checkpoint <hf_dir> \
         --mode image-to-spectra --n 4 --temperature 0.9 \
-        [--data-root <val_dir>|synthetic] [--record-index 0] \
-        [--norm-stats configs/data/pilot_images_spectra.yaml] [--out outdir]
+        [--data-root <val_dir>|synthetic] [--record-index 0] [--out outdir]
 
 Outputs land in ``--out`` as ``.npy`` (raw sampled values, data space) plus
 PNGs: a grid for images, flux-vs-wavelength for spectra. Non-unconditional
-modes lead with a ground-truth panel/trace from the template record. With
-``--norm-stats`` image values additionally get the inverse asinh stretch —
-exact for jetformer checkpoints (whose sequencer skips per-patch
-standardization precisely so the token map inverts back to flux); for
-affine checkpoints it is qualitative only, since standardization discards
-each patch's mean/std. ``--wandb`` logs the figures to the astropt3
+modes lead with a ground-truth panel/trace from the template record. Image
+values get the physical inverse normalization (band-registry keyed by the
+template record's bands; no calibration file needed) — exact for jetformer
+checkpoints (whose sequencer skips per-patch standardization precisely so
+the token map inverts back to flux); for affine checkpoints it is
+qualitative only, since standardization discards each patch's mean/std.
+``--wandb`` logs the figures to the astropt3
 wandb project as a fresh generation run; ``--wandb-run-id <id>`` appends
 them to an existing run instead (e.g. the training run). Pass several
 comma-separated ``--record-index`` values to collect a batch of
@@ -123,7 +123,6 @@ def main():
         default="0",
         help="template record index; comma-separated list logs several into one run",
     )
-    parser.add_argument("--norm-stats", default=None, help="data yaml with asinh percentiles")
     parser.add_argument("--out", default="generated", help="output directory")
     parser.add_argument("--device", default=None)
     parser.add_argument(
@@ -141,9 +140,8 @@ def main():
     import astropt3  # noqa: F401  -- registers the Auto classes
     from transformers import AutoModel
 
-    from astropt3.config_io import load_data_config, sequencer_kwargs_from_data_config
+    from astropt3.data.band_registry import physical_inverse
     from astropt3.data.packing import ObjectSequencer
-    from astropt3.data.transforms import asinh_params_from_percentiles
     from astropt3.generation import generate, reconstruct
     from astropt3.tokenization import unpatchify_image, unpatchify_spectrum
 
@@ -151,21 +149,10 @@ def main():
     model = AutoModel.from_pretrained(args.checkpoint).to(device).eval()
     registry = model.config.modality_registry()
 
-    sequencer_kwargs, asinh_params = {}, None
-    if args.norm_stats:
-        data_config = load_data_config(args.norm_stats)
-        sequencer_kwargs = sequencer_kwargs_from_data_config(data_config)
-        if sequencer_kwargs:
-            asinh_params = asinh_params_from_percentiles(
-                sequencer_kwargs["image_p1"],
-                sequencer_kwargs["image_p99"],
-                sequencer_kwargs["alpha"],
-            )
-
     # sampling modes want the full skeleton (image + spectra spans)
     need_spectrum = args.mode != "reconstruct"
     record_indices = [int(i) for i in str(args.record_index).split(",")]
-    sequencer = ObjectSequencer(model.config, **sequencer_kwargs)
+    sequencer = ObjectSequencer(model.config)
 
     # one wandb run for the whole invocation: a fresh generation run by
     # default, or the run named by --wandb-run-id (e.g. the training run)
@@ -182,12 +169,6 @@ def main():
             config={k: v for k, v in vars(args).items() if k not in ("wandb", "wandb_run_id")},
         )
 
-    def maybe_sinh(imgs):
-        if asinh_params is not None:
-            offset, scale = asinh_params
-            return torch.sinh(imgs) * scale.view(-1, 1, 1) + offset.view(-1, 1, 1)
-        return imgs
-
     # ground truth for teacher-forced/conditioned spans: unconditional samples
     # have none; reconstruct compares both spans; image-to-spectra compares
     # the generated spectra against the record's real spectrum
@@ -200,6 +181,11 @@ def main():
         record = load_template_record(args.data_root, record_index, need_spectrum)
         template = sequencer.build(record)
         print(f"template object {template.object_id!r}: spans {sorted(template.masks)}")
+        # MMU records carry "band", synthetic "bands" — either keys the
+        # physical inverse normalization back to survey flux
+        image = record.get("image") or {}
+        bands = image["band"] if image.get("band") is not None else image.get("bands", [])
+        bands = [str(b) for b in bands]
 
         if args.mode == "reconstruct":
             sampled = {m: v.unsqueeze(0) for m, v in reconstruct(model, template).items()}
@@ -230,14 +216,16 @@ def main():
             if name == "images":
                 side = int(round((tokens.shape[1]) ** 0.5)) * mod.patch_size
                 channels = mod.input_size // (mod.patch_size**2)
-                imgs = maybe_sinh(
-                    torch.stack([unpatchify_image(t, mod.patch_size, channels, side) for t in tokens])
+                imgs = physical_inverse(
+                    torch.stack([unpatchify_image(t, mod.patch_size, channels, side) for t in tokens]),
+                    bands,
                 )
                 truth = None
                 if show_truth:
-                    truth = maybe_sinh(
-                        unpatchify_image(template.values[name], mod.patch_size, channels, side).unsqueeze(0)
-                    )[0].numpy()
+                    truth = physical_inverse(
+                        unpatchify_image(template.values[name], mod.patch_size, channels, side),
+                        bands,
+                    ).numpy()
                 save_image_png(imgs.numpy(), png, f"{name} {tag}", truth=truth)
             elif name == "spectra":
                 lam = np.asarray(record["spectrum"]["lambda"])

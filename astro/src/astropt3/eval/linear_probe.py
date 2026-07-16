@@ -36,9 +36,9 @@ def _val_records(data_root, seed=0):
         yield from MMUIterableDataset(data_root, rank=0, world_size=1, seed=seed)
 
 
-def collect_probe_objects(config, data_root, target, n_objects, *, norm_stats_kwargs=None, seed=0):
+def collect_probe_objects(config, data_root, target, n_objects, *, seed=0):
     """First ``n_objects`` val objects that carry a finite ``target`` scalar."""
-    sequencer = ObjectSequencer(config, **(norm_stats_kwargs or {}))
+    sequencer = ObjectSequencer(config)
     objects, targets = [], []
     for record in _val_records(data_root, seed=seed):
         value = record.get(target)

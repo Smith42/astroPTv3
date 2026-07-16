@@ -115,7 +115,6 @@ def test_load_rejects_wrong_data_root(tiny_config, small_shard_dir):
 def build_loader(tiny_config, root, num_workers, resume_state_dir=None):
     dataset_args = SimpleNamespace(
         data_root=str(root),
-        norm_stats=None,
         shuffle_buffer_size=0,
         synthetic_image_only_fraction=0.3,
         object_id_log=None,

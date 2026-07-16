@@ -6,7 +6,7 @@ numbers are comparable across steps.
 
 Usage:
     python -m astropt3.eval.val_loss --checkpoint <hf_dir> \
-        --data-root <val_shards_dir|synthetic> [--norm-stats data.yaml] \
+        --data-root <val_shards_dir|synthetic> \
         --batches 512 --micro-batch-size 4 --seq-len 896 [--out val.json]
 """
 
@@ -22,14 +22,13 @@ from ..data.nanotron_loader import PackedMicroBatches, regroup_micro_batch
 SYNTHETIC_VAL_OFFSET = 10_000_000
 
 
-def val_batches(config, data_root, *, norm_stats, n_batches, micro_batch_size, seq_len, seed=0):
+def val_batches(config, data_root, *, n_batches, micro_batch_size, seq_len, seed=0):
     """Yield the fixed validation micro-batches (HF forward kwargs)."""
     stream = PackedMicroBatches(
         config,
         micro_batch_size,
         seq_len,
         data_root=data_root,
-        norm_stats=norm_stats,
         rank=0,
         world_size=1,
         seed=seed,
@@ -45,7 +44,7 @@ def val_batches(config, data_root, *, norm_stats, n_batches, micro_batch_size, s
 
 
 @torch.no_grad()
-def evaluate(model, data_root, *, norm_stats=None, n_batches=512, micro_batch_size=4, seq_len=896, seed=0):
+def evaluate(model, data_root, *, n_batches=512, micro_batch_size=4, seq_len=896, seed=0):
     """Mean loss (and per-modality means) over the fixed val batches."""
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
@@ -54,7 +53,6 @@ def evaluate(model, data_root, *, norm_stats=None, n_batches=512, micro_batch_si
     for kwargs in val_batches(
         model.config,
         data_root,
-        norm_stats=norm_stats,
         n_batches=n_batches,
         micro_batch_size=micro_batch_size,
         seq_len=seq_len,
@@ -80,7 +78,7 @@ def evaluate(model, data_root, *, norm_stats=None, n_batches=512, micro_batch_si
 
 
 def evaluate_checkpoint(
-    checkpoint, data_root, *, norm_stats=None, n_batches=512, micro_batch_size=4, seq_len=896, device=None, seed=0
+    checkpoint, data_root, *, n_batches=512, micro_batch_size=4, seq_len=896, device=None, seed=0
 ):
     import astropt3  # noqa: F401  -- registers the Auto classes
 
@@ -93,7 +91,6 @@ def evaluate_checkpoint(
     result = evaluate(
         model,
         data_root,
-        norm_stats=norm_stats,
         n_batches=n_batches,
         micro_batch_size=micro_batch_size,
         seq_len=seq_len,
@@ -107,7 +104,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True, help="converted HF checkpoint dir")
     parser.add_argument("--data-root", required=True, help="val shard dir or 'synthetic'")
-    parser.add_argument("--norm-stats", default=None)
     parser.add_argument("--batches", type=int, default=512)
     parser.add_argument("--micro-batch-size", type=int, default=4)
     parser.add_argument("--seq-len", type=int, default=896)
@@ -119,7 +115,6 @@ def main():
     result = evaluate_checkpoint(
         args.checkpoint,
         args.data_root,
-        norm_stats=args.norm_stats,
         n_batches=args.batches,
         micro_batch_size=args.micro_batch_size,
         seq_len=args.seq_len,

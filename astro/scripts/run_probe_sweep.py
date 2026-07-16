@@ -16,7 +16,7 @@ Usage (training machine, alongside a run):
     python astro/scripts/run_probe_sweep.py \
         --checkpoints-dir ../astroPTv3_checkpoints/astropt3-70m \
         --out-dir ../astroPTv3_eval/astropt3-70m \
-        --data-root <val_shards_dir> --norm-stats astro/configs/data/pilot_images_spectra.yaml \
+        --data-root <val_shards_dir> \
         --watch --until-step 143000
 """
 
@@ -88,7 +88,6 @@ def process_step(step: int, args) -> dict:
     val = evaluate_checkpoint(
         hf_dir,
         args.data_root,
-        norm_stats=args.norm_stats,
         n_batches=args.val_batches,
         micro_batch_size=args.micro_batch_size,
         seq_len=args.seq_len,
@@ -118,7 +117,6 @@ def main():
     parser.add_argument("--checkpoints-dir", required=True, help="nanotron run checkpoint dir")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--data-root", required=True, help="val shard dir or 'synthetic'")
-    parser.add_argument("--norm-stats", default=None)
     parser.add_argument("--converter", default=str(DEFAULT_CONVERTER))
     parser.add_argument("--val-batches", type=int, default=512)
     parser.add_argument("--probe-objects", type=int, default=2048)

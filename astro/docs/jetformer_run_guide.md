@@ -85,9 +85,10 @@ Extra torchrun/nanotron args pass straight through.
 
 ### Config: `astro/configs/nanotron/astropt3-70m-jetformer.yaml`
 Key fields (and the knobs most likely to change):
-- data: `data_root: .../shakeout_mix2/train`, `norm_stats:
-  astro/configs/data/pilot_images_spectra.yaml`, `synthetic_image_only_fraction:
+- data: `data_root: .../shakeout_mix2/train`, `synthetic_image_only_fraction:
   0.3`, `object_id_log: <ckpt>/objects.log`, `num_loading_workers: 8`.
+  (`norm_stats` is retired — image normalization is now physical, keyed on
+  band names; see `physical_norm_plan.md`.)
 - jetformer: `tokeniser: jetformer`, `jetformer_flow_steps: 4`,
   `jetformer_flow_hidden: 128`, `jetformer_gmm_k: 4`,
   **`jetformer_noise_max: 0.1`, `jetformer_noise_min: 0.0`** (raise the min to
@@ -115,7 +116,7 @@ A tiny CPU-smoke config exists at
 python astro/scripts/run_probe_sweep.py \
   --checkpoints-dir /work/nvme/.../astropt3_checkpoints/astropt3-70m-jetformer \
   --out-dir /work/nvme/.../astroPTv3_eval/astropt3-70m-jetformer \
-  --data-root <val_shards_dir> --norm-stats astro/configs/data/pilot_images_spectra.yaml \
+  --data-root <val_shards_dir> \
   --watch --until-step 20000
 ```
 Polls `latest.txt`, converts each step to HF, runs `val_loss` + redshift

@@ -2,6 +2,7 @@
 
 from transformers.models.smollm3.configuration_smollm3 import SmolLM3Config
 
+from .data.band_registry import _DIV_FACTOR
 from .modalities import ModalityRegistry
 from .tokenization import VOCAB_SIZE
 
@@ -43,6 +44,7 @@ class AstroPT3Config(SmolLM3Config):
         jetformer_noise_min: float = 0.0,
         huber_delta: float = 1.0,
         special_token_ce_weight: float = 0.0,
+        image_norm_divisor: float = _DIV_FACTOR,
         vocab_size: int = VOCAB_SIZE,
         hidden_size: int = 512,
         intermediate_size: int = 1536,
@@ -67,6 +69,12 @@ class AstroPT3Config(SmolLM3Config):
         self.jetformer_noise_min = jetformer_noise_min
         self.huber_delta = huber_delta
         self.special_token_ce_weight = special_token_ce_weight
+        # self-describing checkpoints: the arcsinh divisor of the physical
+        # image normalization the training data went through (the default
+        # back-fills configs/checkpoints saved before the field existed —
+        # note pre-physical-norm PU-asinh checkpoints are incompatible
+        # regardless, see docs)
+        self.image_norm_divisor = image_norm_divisor
         kwargs["use_cache"] = False  # reload passes it back through kwargs
         super().__init__(
             vocab_size=vocab_size,

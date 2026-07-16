@@ -27,7 +27,7 @@ def test_val_batches_are_held_out(tiny_config):
     # val stream indices start at the offset — disjoint from training indices
     batches = list(
         val_loss.val_batches(
-            tiny_config, "synthetic", norm_stats=None, n_batches=1, micro_batch_size=2, seq_len=896
+            tiny_config, "synthetic", n_batches=1, micro_batch_size=2, seq_len=896
         )
     )
     assert len(batches) == 1

@@ -36,12 +36,20 @@ survey data to model input:
    (`data/mmu.py::MMUIterableDataset`) or from the synthetic generator
    (`data/synthetic.py`, schema-identical, used by every test).
 
-2. **Stretch**: image flux passes through the Platonic-Universe asinh stretch
-   `asinh((flux − p1) / ((p99 − p1)/α))`, α=20, with per-band 1st/99th
-   percentiles calibrated from real data by `scripts/compute_norm_stats.py`
-   and stored in `configs/data/pilot_images_spectra.yaml`. Without
-   calibration the fallback is plain `asinh(flux)` (the synthetic-data
-   convention). Spectra are not stretched; masked bins are zeroed.
+2. **Physical normalization** (`data/band_registry.py`, ported from
+   galactiktok `feat/norm`): image flux is normalized physically, keyed on
+   the record's band names — rescale to LegacySurvey nanomaggies
+   (zeropoint + pixel-area factors from the surveys' documentation) →
+   clamp survey-flagged bright pixels (per-band `m_bright` ceiling) →
+   `arcsinh(flux/0.01)·0.01`. No data-driven calibration; unknown bands
+   raise, `rgb-*` composites pass through raw. Invertible up to the clamp
+   (`physical_inverse`). Spectra are not stretched; masked bins are zeroed.
+
+   > **Migration note:** checkpoints trained before this change (on the
+   > percentile-calibrated Platonic-Universe asinh stretch) are
+   > **incompatible** — the normalization target is different. The config
+   > field `image_norm_divisor` is back-filled on load, but the weights were
+   > trained on a different target: declare incompatible, retrain.
 
 3. **Patchify** (`tokenization.py`):
    - images → **361 patches of 192 floats** (8×8×3; patch 8 because
