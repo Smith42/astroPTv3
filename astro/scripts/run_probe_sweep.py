@@ -111,16 +111,22 @@ def process_step(step: int, args, sample_records: list[dict]) -> dict:
     )
     result["val_loss"] = val["loss"]
     result["val_modality_losses"] = val["modality_losses"]
-    probe = probe_checkpoint(
-        hf_dir,
-        args.data_root,
-        target=args.target,
-        n_objects=args.probe_objects,
-        seq_len=args.seq_len,
-        objects_per_batch=args.objects_per_batch,
-        device=args.device,
-        seed=args.seed,
-    )
+    try:
+        probe = probe_checkpoint(
+            hf_dir,
+            args.data_root,
+            target=args.target,
+            n_objects=args.probe_objects,
+            seq_len=args.seq_len,
+            objects_per_batch=args.objects_per_batch,
+            device=args.device,
+            seed=args.seed,
+        )
+    except ValueError as exc:
+        # a val corpus can carry too few labelled objects (shakeout_mix2 has no
+        # DESI matches at all); val loss + panels are still worth having
+        print(f"[sweep] probe skipped: {exc}", flush=True)
+        probe = {"r2": None, "lambda": None, "target": args.target}
     result["probe_r2"] = probe["r2"]
     result["probe_lambda"] = probe["lambda"]
     result["probe_target"] = probe["target"]
@@ -200,7 +206,7 @@ def main():
         from astropt3.eval.samples import load_template_record
 
         sample_records = [
-            load_template_record(args.data_root, int(i), need_spectrum=True)
+            load_template_record(args.data_root, int(i), prefer_spectrum=True)
             for i in args.sample_records.split(",")
         ]
 
@@ -236,14 +242,19 @@ def main():
                         "checkpoint_step": step,
                         "val/loss": result["val_loss"],
                         **{f"val/loss_{m}": v for m, v in result["val_modality_losses"].items()},
-                        "probe/r2": result["probe_r2"],
+                        **({} if result["probe_r2"] is None else {"probe/r2": result["probe_r2"]}),
                         **{
                             f"samples/{k}": wandb.Image(p)
                             for k, p in result.get("samples", {}).items()
                         },
                     }
                 )
-            print(f"[sweep] step {step}: val_loss={result['val_loss']:.4f} r2={result['probe_r2']:.4f}", flush=True)
+            r2 = result["probe_r2"]
+            print(
+                f"[sweep] step {step}: val_loss={result['val_loss']:.4f} "
+                f"r2={'n/a' if r2 is None else format(r2, '.4f')}",
+                flush=True,
+            )
             done.add(step)
         if not args.watch or (args.until_step is not None and args.until_step in done):
             break

@@ -11,6 +11,7 @@ from astropt3.data.packing import ObjectSequencer
 from astropt3.data.synthetic import make_record
 from astropt3.eval.samples import (
     default_modes,
+    load_template_record,
     render_sampled_tokens,
     sample_checkpoint,
     sample_template,
@@ -159,6 +160,19 @@ def test_render_sampled_tokens_writes_pngs(smoke_model, template, tmp_path):
         )
         assert set(pngs) == {"images", "spectra"}
         assert all(p.exists() and p.stat().st_size > 0 for p in pngs.values())
+
+
+def test_load_template_record_falls_back_when_corpus_has_no_spectra(tmp_path):
+    """An image-only corpus (shakeout_mix2) still yields a usable template."""
+    from astropt3.data import mmu
+
+    records = [make_record(i, image_only_fraction=1.0) for i in range(4)]
+    mmu.write_shard(records, tmp_path / "shard-00000.parquet")
+    record = load_template_record(str(tmp_path), 1, prefer_spectrum=True)
+    assert "spectrum" not in record
+    assert record["object_id"] == records[1]["object_id"]
+    with pytest.raises(ValueError, match="fewer than 9 records"):
+        load_template_record(str(tmp_path), 8, prefer_spectrum=True)
 
 
 def test_sample_checkpoint_end_to_end(smoke_model, tmp_path):
