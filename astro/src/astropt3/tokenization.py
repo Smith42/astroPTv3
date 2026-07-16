@@ -7,7 +7,8 @@ alphabetical registry order: <|begin_m|>, <|m|> (placeholder), <|end_m|>.
 ids 8-63 are reserved for future modalities (time series, tabular, ...).
 
 Patchification is pinned to the verified MMU schemas:
-- images:  float32 (3, 152, 152) cubes -> patch 8 -> 361 tokens of 192 floats
+- images:  float32 (3, 152, 152) cubes, center-cropped to 96x96 by the
+  sequencer -> patch 8 -> 144 tokens of 192 floats
 - spectra: float32 (7781,) flux -> pad to 7936 -> 31 patches of 256 floats
 """
 

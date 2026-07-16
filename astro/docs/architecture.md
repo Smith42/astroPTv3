@@ -41,7 +41,8 @@ survey data to model input:
    the record's band names — rescale to LegacySurvey nanomaggies
    (zeropoint + pixel-area factors from the surveys' documentation) →
    clamp survey-flagged bright pixels (per-band `m_bright` ceiling) →
-   `arcsinh(flux/0.01)·0.01`. No data-driven calibration; unknown bands
+   `arcsinh(flux/0.01)` (flux in knee units: 0.01 nMgy = 10 picomaggies,
+   so tokens are O(1)). No data-driven calibration; unknown bands
    raise, `rgb-*` composites pass through raw. Invertible up to the clamp
    (`physical_inverse`). Spectra are not stretched; masked bins are zeroed.
 
@@ -49,11 +50,15 @@ survey data to model input:
    > percentile-calibrated Platonic-Universe asinh stretch) are
    > **incompatible** — the normalization target is different. The config
    > field `image_norm_divisor` is back-filled on load, but the weights were
-   > trained on a different target: declare incompatible, retrain.
+   > trained on a different target: declare incompatible, retrain. The same
+   > applies to physnorm checkpoints trained before the switch to knee-unit
+   > tokens (dropping the trailing `·divisor`) and the 96×96 central crop
+   > (361 → 144 image tokens): incompatible, retrain.
 
 3. **Patchify** (`tokenization.py`):
-   - images → **361 patches of 192 floats** (8×8×3; patch 8 because
-     152 = 8×19 — 16 does not divide 152), integer patch-index positions;
+   - images → central 96×96 crop (`packing.IMAGE_CROP`; JWST cubes are
+     already 96×96) → **144 patches of 192 floats** (8×8×3), integer
+     patch-index positions;
    - spectra → pad 7781→7936 → **31 patches of 256 floats**, each with a
      *continuous* position: the patch's mean wavelength, normalized
      `(λ−3000)/7000`.

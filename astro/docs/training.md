@@ -77,7 +77,8 @@ DESI EDR SV3 spectra (1″ radius) and writes ~shard-sized parquet under
 
 Image flux is normalized physically, keyed on each record's band names
 (`data/band_registry.py`): rescale to LegacySurvey nanomaggies → clamp
-survey-flagged bright pixels → `arcsinh(flux/0.01)·0.01`. The constants come
+survey-flagged bright pixels → `arcsinh(flux/0.01)` — tokens are flux in
+knee units (0.01 nMgy = 10 picomaggies), O(1) values. The constants come
 from the surveys' own documentation, so there is nothing to calibrate per
 corpus — unknown bands raise `NotImplementedError` (add them to
 `BAND_REGISTRY`).
@@ -115,7 +116,7 @@ general:
 model:
   model_config:
     is_astropt3_config: true   # dispatches to AstroPT3ForTraining
-    # modalities: omitted -> pinned pilot defaults (images 361x192 patch 8,
+    # modalities: omitted -> pinned pilot defaults (images 144x192 patch 8,
     #                        spectra 31x256 continuous-λ positions)
     tokeniser: affine          # or "aim" (MLP)
     _use_doc_masking: true     # position_ids restarts = document boundaries

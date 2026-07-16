@@ -49,16 +49,18 @@ stages is implicit and easy to break, so understand it before editing:
    them back offline, sharded by DP rank and DataLoader worker.
    `scripts/check_pilot_data.py` is the sanity/throughput gate.
 2. **`ObjectSequencer`** (`data/packing.py`) turns a record into an
-   `ObjectSeq`: physical band-registry normalization
+   `ObjectSeq`: central 96×96 crop (`packing.IMAGE_CROP`; JWST cubes are
+   already 96×96) + physical band-registry normalization
    (`data/band_registry.py`: rescale to nanomaggies → bright-pixel clamp →
-   `arcsinh(x/0.01)·0.01`, keyed on the record's band names — no per-corpus
+   `arcsinh(x/0.01)` — tokens are flux in knee units of 0.01 nMgy = 10 pMgy,
+   O(1) values, keyed on the record's band names — no per-corpus
    calibration; unknown bands raise) + patchify (`tokenization.py`) + per-patch
    standardization (`data/transforms.py`) per modality (jetformer configs
    SKIP the standardization — the exact-likelihood loss needs an invertible
    record -> token map, and standardization discards each patch's
    mean/std), wrapped in frozen
    special tokens: `<|bos|> <|begin_m|> …placeholders… <|end_m|>` per
-   modality in **alphabetical registry order**. Images → 361 patch-8 tokens
+   modality in **alphabetical registry order**. Images → 144 patch-8 tokens
    (192 floats); spectra → 31 patch-256 tokens with normalized per-patch
    mean wavelength as a continuous position.
 3. **`PackedCollator`** greedily packs whole objects (never split) into

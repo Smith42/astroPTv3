@@ -7,7 +7,8 @@ from .modalities import ModalityRegistry
 from .tokenization import VOCAB_SIZE
 
 # Pilot modalities, pinned to the verified MMU schemas (see plan):
-# - images:  (3, 152, 152) flux cubes, patch 8 -> 361 tokens of 8*8*3 = 192
+# - images:  (3, 152, 152) flux cubes, center crop 96x96, patch 8 -> 144
+#   tokens of 8*8*3 = 192 (max_positions 361 is a harmless ceiling)
 # - spectra: 7781-bin DESI spectra, patch 256 -> 31 tokens; position = per-patch
 #   mean wavelength, normalized, projected by an affine PositionEmbedder
 DEFAULT_MODALITIES = [

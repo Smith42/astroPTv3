@@ -35,6 +35,9 @@ from ..tokenization import (
 from .band_registry import _DIV_FACTOR, physical_normalize
 from .transforms import per_patch_standardize
 
+# side of the central image crop applied before patchify, in pixels
+IMAGE_CROP = 96
+
 
 @dataclass
 class ObjectSeq:
@@ -74,6 +77,13 @@ class ObjectSequencer:
         mod = self.registry.get_config("images")
         image = record["image"]
         flux = torch.as_tensor(image["flux"], dtype=torch.float32)
+        # central crop: 152x152 survey cutouts -> 96x96 (144 patch-8 tokens);
+        # JWST cubes are already 96x96 and pass through untouched
+        h, w = flux.shape[-2:]
+        if h > IMAGE_CROP or w > IMAGE_CROP:
+            top = (h - IMAGE_CROP) // 2
+            left = (w - IMAGE_CROP) // 2
+            flux = flux[..., top : top + IMAGE_CROP, left : left + IMAGE_CROP]
         # may arrive as a list or an array after a parquet round-trip
         flux = physical_normalize(
             flux, [str(b) for b in image["band"]], divisor=self.image_norm_divisor

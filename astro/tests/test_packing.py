@@ -8,16 +8,16 @@ from astropt3.tokenization import BOS_ID, PAD_ID, modality_token_ids
 
 def test_object_sequence_structure(sequencer, full_record):
     obj = sequencer.build(full_record)
-    assert len(obj) == 397  # 1 bos + (1+361+1) images + (1+31+1) spectra
+    assert len(obj) == 180  # 1 bos + (1+144+1) images + (1+31+1) spectra
     begin_img, ph_img, end_img = modality_token_ids("images")
     begin_spec, ph_spec, end_spec = modality_token_ids("spectra")
     ids = obj.input_ids
     assert ids[0] == BOS_ID
-    assert ids[1] == begin_img and ids[363] == end_img
-    assert (ids[2:363] == ph_img).all()
-    assert ids[364] == begin_spec and ids[396] == end_spec
-    assert (ids[365:396] == ph_spec).all()
-    assert obj.masks["images"].sum() == 361 and obj.values["images"].shape == (361, 192)
+    assert ids[1] == begin_img and ids[146] == end_img
+    assert (ids[2:146] == ph_img).all()
+    assert ids[147] == begin_spec and ids[179] == end_spec
+    assert (ids[148:179] == ph_spec).all()
+    assert obj.masks["images"].sum() == 144 and obj.values["images"].shape == (144, 192)
     assert obj.masks["spectra"].sum() == 31 and obj.values["spectra"].shape == (31, 256)
     # spectra positions are normalized wavelengths in ~[0, 1]
     pos = obj.positions["spectra"]
@@ -26,7 +26,7 @@ def test_object_sequence_structure(sequencer, full_record):
 
 def test_image_only_object(sequencer, image_only_record):
     obj = sequencer.build(image_only_record)
-    assert len(obj) == 364  # 1 bos + 363 images block
+    assert len(obj) == 147  # 1 bos + 146 images block
     assert "spectra" not in obj.masks
 
 

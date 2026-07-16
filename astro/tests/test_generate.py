@@ -61,7 +61,7 @@ def test_unconditional_shapes(smoke_model, template):
     g = torch.Generator().manual_seed(0)
     out = generate(smoke_model, template, {"images", "spectra"}, n=2, generator=g)
     assert set(out) == {"images", "spectra"}
-    assert out["images"].shape == (2, 361, 192)
+    assert out["images"].shape == (2, 144, 192)
     assert out["spectra"].shape == (2, 31, 256)
     assert all(torch.isfinite(v).all() for v in out.values())
 
@@ -104,6 +104,6 @@ def test_generate_rejects_affine_and_missing_span(smoke_model, template, jet_con
 
 def test_reconstruct_shapes(smoke_model, template):
     preds = reconstruct(smoke_model, template)
-    assert preds["images"].shape == (361, 192)
+    assert preds["images"].shape == (144, 192)
     assert preds["spectra"].shape == (31, 256)
     assert all(torch.isfinite(v).all() for v in preds.values())
