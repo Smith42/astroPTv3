@@ -25,12 +25,20 @@ before samples/wandb existed are never revisited (use a fresh ``--out-dir``
 or delete their lines to re-log; HF conversions are cached, so re-eval is
 cheap).
 
+Every checkpoint the trainer writes is evaluated exactly once (steps 1, 2,
+4, ..., 512 then every ``checkpoint_interval``); ``--samples-every`` thins
+only the sample panels. ``--until-step`` bounds the sweep: steps above it are
+never evaluated, and with ``--watch`` polling stops once the trainer reaches
+it.
+
 Usage (training machine, alongside a run):
     python astro/scripts/run_probe_sweep.py \
         --checkpoints-dir ../astroPTv3_checkpoints/astropt3-70m \
         --out-dir ../astroPTv3_eval/astropt3-70m \
         --data-root <val_shards_dir> \
         --watch --until-step 143000 --wandb
+
+Needs the ``[train]`` extra (matplotlib + wandb for the panels).
 """
 
 import argparse
@@ -160,7 +168,13 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--watch", action="store_true", help="poll until --until-step is processed")
     parser.add_argument("--poll-interval", type=float, default=60.0)
-    parser.add_argument("--until-step", type=int, default=None)
+    parser.add_argument(
+        "--until-step",
+        type=int,
+        default=None,
+        help="highest checkpoint step to evaluate; steps above it are never processed "
+        "(pass the run's train_steps to sweep the whole run)",
+    )
     parser.add_argument(
         "--sample-records",
         default="0",
@@ -230,7 +244,12 @@ def main():
 
     while True:
         done = processed_steps(results_path)
-        todo = [s for s in completed_steps(Path(args.checkpoints_dir)) if s not in done]
+        completed = completed_steps(Path(args.checkpoints_dir))
+        todo = [
+            s
+            for s in completed
+            if s not in done and (args.until_step is None or s <= args.until_step)
+        ]
         for step in todo:
             print(f"[sweep] processing step {step}", flush=True)
             result = process_step(step, args, sample_records)
@@ -256,7 +275,13 @@ def main():
                 flush=True,
             )
             done.add(step)
-        if not args.watch or (args.until_step is not None and args.until_step in done):
+        if not args.watch:
+            break
+        # once the trainer is at/past --until-step, every in-range step is in
+        # `done` (they were all in this pass's todo), so the sweep is finished.
+        # Keyed on the trainer's progress, not on --until-step itself being a
+        # scheduled step, so an off-schedule bound still terminates.
+        if args.until_step is not None and max(completed, default=0) >= args.until_step:
             break
         time.sleep(args.poll_interval)
 
