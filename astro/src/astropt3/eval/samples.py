@@ -247,13 +247,16 @@ def sample_checkpoint(
     seed: int = 0,
     out_dir: Path,
     device=None,
+    step: int | None = None,
 ) -> dict:
     """Sample + render every (record, mode) pair from a converted checkpoint.
 
     ``records`` are pre-loaded template records (load once per sweep, not per
     step). A fresh seeded generator per (record, mode) keeps the sampling
     noise identical at every checkpoint, so a run's panels differ only
-    through the model. Returns ``{"{mode}/{name}/{object_id}": str(png)}``.
+    through the model. ``step``, when given, is folded into the PNG tag so
+    filenames are self-identifying across steps. Returns
+    ``{"{mode}/{name}/{object_id}": str(png)}``.
     """
     import astropt3  # noqa: F401  -- registers the Auto classes
 
@@ -290,7 +293,8 @@ def sample_checkpoint(
                 template,
                 sampled,
                 out_dir=out_dir,
-                tag=f"{mode}_{template.object_id}_seed{seed}",
+                tag=(f"step{step}_" if step is not None else "")
+            + f"{mode}_{template.object_id}_seed{seed}",
                 show_truth=True,
                 truth_label="truth (reference)" if mode == "unconditional" else "truth",
             )

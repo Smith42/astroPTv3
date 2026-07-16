@@ -162,7 +162,7 @@ def process_step(step: int, args, sample_records: list[dict]) -> dict:
     result["probe_r2"] = probe["r2"]
     result["probe_lambda"] = probe["lambda"]
     result["probe_target"] = probe["target"]
-    if sample_records and should_checkpoint(step, args.samples_every):
+    if sample_records and should_checkpoint(step, args.samples_every) and step >= args.samples_floor:
         result["samples"] = sample_checkpoint(
             hf_dir,
             sample_records,
@@ -172,6 +172,7 @@ def process_step(step: int, args, sample_records: list[dict]) -> dict:
             seed=args.seed,
             out_dir=Path(args.out_dir) / "samples" / str(step),
             device=args.device,
+            step=step,
         )
     return result
 
@@ -221,6 +222,13 @@ def main():
     )
     parser.add_argument("--sample-n", type=int, default=4, help="samples per mode")
     parser.add_argument("--sample-temperature", type=float, default=1.0)
+    parser.add_argument(
+        "--samples-floor",
+        type=int,
+        default=0,
+        help="never sample panels before this step (the Pythia schedule's early "
+        "pow2<=512 checkpoints are kept by default; set e.g. 1000 to suppress them)",
+    )
     parser.add_argument(
         "--samples-every",
         type=int,

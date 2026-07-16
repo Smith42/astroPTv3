@@ -42,17 +42,25 @@ export WANDB_MODE=${WANDB_MODE:-online}
 
 # eval sidecar: polls the run's checkpoint dir on a spare GPU, fully
 # decoupled from the trainer (filesystem interface: latest.txt); paths come
-# from the prefix-rewritten config
+# from the prefix-rewritten config. SAMPLES_EVERY thins the image/spectra
+# panels (val-loss + probe still run on every checkpoint); default 1000
+# matches this config's checkpoint_interval so imagery logs once per 1k
+# steps. SAMPLES_FLOOR suppresses the Pythia schedule's early pow2<=512
+# checkpoints; default 1000 -> zero imagery before step 1000, then every
+# 1000 after.
 SIDECAR_PID=
 if [[ -n "${EVAL_GPU:-}" ]]; then
     CKPTS=$(awk '$1 == "checkpoints_path:" {print $2; exit}' "$LOCAL_CONFIG")
     VAL_ROOT=$(awk '$1 == "data_root:" {print $2; exit}' "$LOCAL_CONFIG" | sed 's|/train$|/val|')
     TRAIN_STEPS=$(awk '$1 == "train_steps:" {print $2; exit}' "$LOCAL_CONFIG")
     EVAL_OUT=${EVAL_OUT:-$(dirname "$CKPTS")/eval/$(basename "$CKPTS")}
+    SAMPLES_EVERY=${SAMPLES_EVERY:-1000}
+    SAMPLES_FLOOR=${SAMPLES_FLOOR:-1000}
     mkdir -p "$EVAL_OUT"
     CUDA_VISIBLE_DEVICES="$EVAL_GPU" python astro/scripts/run_probe_sweep.py \
         --checkpoints-dir "$CKPTS" --out-dir "$EVAL_OUT" --data-root "$VAL_ROOT" \
-        --watch --until-step "$TRAIN_STEPS" --wandb \
+        --watch --until-step "$TRAIN_STEPS" \
+        --samples-every "$SAMPLES_EVERY" --samples-floor "$SAMPLES_FLOOR" --wandb \
         > "$EVAL_OUT/sweep.log" 2>&1 &
     SIDECAR_PID=$!
     trap 'kill "$SIDECAR_PID" 2>/dev/null || true; rm -f "$LOCAL_CONFIG"' INT TERM
