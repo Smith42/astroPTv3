@@ -46,7 +46,7 @@ class AstroPT3Config(SmolLM3Config):
         huber_delta: float = 1.0,
         special_token_ce_weight: float = 0.0,
         image_norm_divisor: float = _DIV_FACTOR,
-        spiral: bool = False,
+        spiral: bool = True,
         vocab_size: int = VOCAB_SIZE,
         hidden_size: int = 512,
         intermediate_size: int = 1536,
@@ -82,12 +82,13 @@ class AstroPT3Config(SmolLM3Config):
         # The field is the single source of truth for the order a checkpoint
         # trained in: ObjectSequencer spiralises iff it is True, and the
         # inverse path (eval/samples.py) antispiralises iff the LOADED
-        # checkpoint's config says True. The __init__ default must stay
-        # False so checkpoints saved before the field existed (the raster
-        # 70M/160M shakeouts) back-fill to raster; configs saved from now on
-        # always record the field explicitly. New training configs opt in
-        # with `spiral: true` in their YAML (set in every configs/model +
-        # configs/nanotron size YAML).
+        # checkpoint's config says True. The __init__ default is True so every
+        # run (and any config/older fork config missing the field) is spiral
+        # by default; all configs/model + configs/nanotron YAMLs set the field
+        # explicitly. NOTE: this flips the old back-fill from raster to spiral,
+        # so any raster checkpoint saved before the field existed (the 70M/160M
+        # raster shakeouts) now loads as spiral and decodes scrambled — retrain
+        # or load those with `spiral: false` passed explicitly.
         self.spiral = spiral
         kwargs["use_cache"] = False  # reload passes it back through kwargs
         super().__init__(

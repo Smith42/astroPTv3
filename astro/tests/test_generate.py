@@ -175,9 +175,10 @@ def test_spiral_checkpoint_decodes_pixel_identical_to_raster(jet_config, tmp_pat
     from astropt3.tokenization import antispiralise
 
     spiral_config = AstroPT3Config(**{**jet_config.to_dict(), "spiral": True})
+    raster_config = AstroPT3Config(**{**jet_config.to_dict(), "spiral": False})
     record = make_record(3, image_only_fraction=0.0)
     spiral_template = ObjectSequencer(spiral_config).build(record)
-    raster_template = ObjectSequencer(jet_config).build(record)
+    raster_template = ObjectSequencer(raster_config).build(record)
     # forward half: the sequencer spiralises image tokens iff config.spiral
     assert not torch.equal(spiral_template.values["images"], raster_template.values["images"])
     assert torch.equal(
@@ -190,7 +191,7 @@ def test_spiral_checkpoint_decodes_pixel_identical_to_raster(jet_config, tmp_pat
     pixels = {}
     for label, config, template in [
         ("spiral", spiral_config, spiral_template),
-        ("raster", jet_config, raster_template),
+        ("raster", raster_config, raster_template),
     ]:
         pngs = render_sampled_tokens(
             SimpleNamespace(config=config),  # render only reads model.config
@@ -210,7 +211,7 @@ def test_sequencer_rejects_spiral_override(jet_config):
     old per-call kwarg is gone, so a contradicting override fails loud."""
     with pytest.raises(TypeError):
         ObjectSequencer(jet_config, spiral=True)
-    assert ObjectSequencer(jet_config).spiral is False
+    assert ObjectSequencer(jet_config).spiral is jet_config.spiral
 
 
 def test_load_template_record_falls_back_when_corpus_has_no_spectra(tmp_path):

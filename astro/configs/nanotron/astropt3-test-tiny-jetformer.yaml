@@ -28,6 +28,7 @@ model:
   model_config:
     is_astropt3_config: true
     tokeniser: jetformer
+    spiral: true  # center-outward image patch order (ADR 0004)
     jetformer_flow_steps: 4
     jetformer_flow_hidden: 128
     jetformer_gmm_k: 4

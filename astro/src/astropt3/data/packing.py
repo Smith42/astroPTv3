@@ -62,7 +62,7 @@ class ObjectSequencer:
         # checkpoint self-describes the order it trained in, and the inverse
         # path keys off the same field — a caller-supplied override would
         # reopen the silent-scramble mismatch, so there deliberately isn't one
-        self.spiral = getattr(config, "spiral", False)
+        self.spiral = getattr(config, "spiral", True)
         # jetformer models an exact likelihood in patch space, so the record
         # -> token map must stay invertible: per-patch standardization
         # (which discards each patch's mean/std) is skipped — tokens are the

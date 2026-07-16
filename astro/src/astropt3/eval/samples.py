@@ -208,7 +208,7 @@ def render_sampled_tokens(
             # a spiral checkpoint's tokens (sampled AND template) are in
             # spiral order; unpatchify expects raster, so undo the exact
             # order the checkpoint trained in (ADR 0004)
-            spiral = getattr(model.config, "spiral", False)
+            spiral = getattr(model.config, "spiral", True)
 
             def to_pixels(t):
                 return unpatchify_image(
