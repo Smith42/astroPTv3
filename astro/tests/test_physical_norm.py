@@ -33,10 +33,10 @@ def test_normalize_des_is_arcsinh_over_divisor():
     torch.manual_seed(0)
     flux = torch.randn(3, 8, 8) * 0.05  # nMgy-scale, below the ~398 nMgy clamp
     out = physical_normalize(flux, DES_BANDS)
-    assert torch.allclose(out, torch.arcsinh(flux / _DIV_FACTOR) * _DIV_FACTOR)
+    assert torch.allclose(out, torch.arcsinh(flux / _DIV_FACTOR))
     assert torch.isfinite(out).all()
     # output is bounded by the compressed bright ceiling
-    ceiling = math.asinh(clamp_flux("des-g") / _DIV_FACTOR) * _DIV_FACTOR
+    ceiling = math.asinh(clamp_flux("des-g") / _DIV_FACTOR)
     assert out.abs().max() <= ceiling
 
 
@@ -85,7 +85,7 @@ def test_non_default_divisor_changes_output_and_roundtrips():
 def test_sequencer_uses_config_divisor(tiny_config):
     """config.image_norm_divisor must reach the sequencer's normalization."""
     from astropt3 import AstroPT3Config
-    from astropt3.data.packing import ObjectSequencer
+    from astropt3.data.packing import IMAGE_CROP, ObjectSequencer
     from astropt3.data.synthetic import make_record
     from astropt3.tokenization import patchify_image
 
@@ -95,6 +95,9 @@ def test_sequencer_uses_config_divisor(tiny_config):
     )
     seq = ObjectSequencer(moved_config).build(record)
     flux = torch.as_tensor(record["image"]["flux"])
+    h, w = flux.shape[-2:]
+    top, left = (h - IMAGE_CROP) // 2, (w - IMAGE_CROP) // 2
+    flux = flux[..., top : top + IMAGE_CROP, left : left + IMAGE_CROP]
     expected = patchify_image(
         physical_normalize(flux, record["image"]["band"], divisor=0.5), 8
     )

@@ -31,7 +31,9 @@ from astropt3.data.nanotron_loader import (
 from astropt3.data.synthetic import record_stream
 
 MBS = 2
-SEQ_LEN = 896
+# two whole objects per row (objects are 180/147 tokens post-crop), so the
+# object-per-batch counts in the epoch-boundary comments below stay true
+SEQ_LEN = 384
 N_BEFORE = 3  # micro-batches consumed before the checkpoint
 N_AFTER = 4  # micro-batches compared after resume
 

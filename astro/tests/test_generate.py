@@ -1,4 +1,5 @@
-"""Sampling/generation from a jetformer checkpoint (astropt3.generation)."""
+"""Sampling/generation from a jetformer checkpoint (astropt3.generation),
+and the shared sample-rendering layer on top of it (astropt3.eval.samples)."""
 
 from pathlib import Path
 
@@ -8,6 +9,12 @@ import torch
 from astropt3.config_io import load_model_config
 from astropt3.data.packing import ObjectSequencer
 from astropt3.data.synthetic import make_record
+from astropt3.eval.samples import (
+    default_modes,
+    render_sampled_tokens,
+    sample_checkpoint,
+    sample_template,
+)
 from astropt3.generation import generate, reconstruct, sample_gmm
 
 CONFIG = Path(__file__).resolve().parents[1] / "configs" / "model" / "test-tiny-jetformer.yaml"
@@ -61,7 +68,7 @@ def test_unconditional_shapes(smoke_model, template):
     g = torch.Generator().manual_seed(0)
     out = generate(smoke_model, template, {"images", "spectra"}, n=2, generator=g)
     assert set(out) == {"images", "spectra"}
-    assert out["images"].shape == (2, 361, 192)
+    assert out["images"].shape == (2, 144, 192)
     assert out["spectra"].shape == (2, 31, 256)
     assert all(torch.isfinite(v).all() for v in out.values())
 
@@ -104,6 +111,72 @@ def test_generate_rejects_affine_and_missing_span(smoke_model, template, jet_con
 
 def test_reconstruct_shapes(smoke_model, template):
     preds = reconstruct(smoke_model, template)
-    assert preds["images"].shape == (361, 192)
+    assert preds["images"].shape == (144, 192)
     assert preds["spectra"].shape == (31, 256)
     assert all(torch.isfinite(v).all() for v in preds.values())
+
+
+def test_default_modes(jet_config):
+    from astropt3 import AstroPT3Config
+
+    assert default_modes(jet_config) == ["unconditional", "image-to-spectra"]
+    affine = AstroPT3Config(**{**jet_config.to_dict(), "tokeniser": "affine"})
+    assert default_modes(affine) == ["reconstruct"]
+
+
+def test_sample_template_modes(smoke_model, template):
+    recon = sample_template(smoke_model, template, "reconstruct")
+    assert recon["images"].shape == (1, 144, 192)
+    assert recon["spectra"].shape == (1, 31, 256)
+
+    # spectra-only draws: the full-span unconditional cost is already paid
+    # by test_unconditional_shapes
+    def draw(seed):
+        g = torch.Generator().manual_seed(seed)
+        return sample_template(smoke_model, template, "image-to-spectra", n=1, generator=g)
+
+    a = draw(0)
+    assert set(a) == {"spectra"}  # teacher-forced images are not returned
+    assert a["spectra"].shape == (1, 31, 256)
+    assert torch.allclose(draw(0)["spectra"], a["spectra"])  # same seed reproduces
+
+    with pytest.raises(ValueError, match="unknown mode"):
+        sample_template(smoke_model, template, "nope")
+
+
+def test_render_sampled_tokens_writes_pngs(smoke_model, template, tmp_path):
+    record = make_record(3, image_only_fraction=0.0)
+    sampled = sample_template(smoke_model, template, "reconstruct")
+    for show_truth in (True, False):
+        pngs = render_sampled_tokens(
+            smoke_model,
+            record,
+            template,
+            sampled,
+            out_dir=tmp_path / f"truth_{show_truth}",
+            tag="t",
+            show_truth=show_truth,
+        )
+        assert set(pngs) == {"images", "spectra"}
+        assert all(p.exists() and p.stat().st_size > 0 for p in pngs.values())
+
+
+def test_sample_checkpoint_end_to_end(smoke_model, tmp_path):
+    ckpt = tmp_path / "ckpt"
+    smoke_model.save_pretrained(ckpt)
+    record = make_record(3, image_only_fraction=0.0)
+    oid = ObjectSequencer(smoke_model.config).build(record).object_id
+    pngs = sample_checkpoint(
+        ckpt,
+        [record],
+        modes=["reconstruct", "image-to-spectra"],
+        n=1,
+        out_dir=tmp_path / "samples",
+        device="cpu",
+    )
+    assert set(pngs) == {
+        f"reconstruct/images/{oid}",
+        f"reconstruct/spectra/{oid}",
+        f"image-to-spectra/spectra/{oid}",
+    }
+    assert all(Path(p).exists() and Path(p).stat().st_size > 0 for p in pngs.values())

@@ -154,13 +154,19 @@ def physical_normalize(
     ``divisor`` is the arcsinh knee in nanomaggies — pass the checkpoint's
     ``config.image_norm_divisor`` so data and inverse stay in the regime the
     model was trained on.
+
+    Output is flux denominated in units of the divisor (default 0.01 nMgy =
+    10 pMgy): below the knee ``arcsinh(x/d) ≈ x/d`` reads as flux in tens of
+    picomaggies, above it as log-flux. Keeping tokens O(1) (noise ~0.1, DES
+    ceiling ~11.3) matters for the jetformer exact-likelihood path, which
+    feeds these values to the flow/GMM unstandardized.
     """
     if all(b in RAW_BANDS for b in bands):
         return flux
     rescale, clamp = physical_factors(bands, flux.device, flux.dtype)
     flux = flux * rescale
     flux = flux.clamp(min=-clamp, max=clamp)
-    return torch.arcsinh(flux / divisor) * divisor
+    return torch.arcsinh(flux / divisor)
 
 
 def physical_inverse(
@@ -178,9 +184,9 @@ def physical_inverse(
     if all(b in RAW_BANDS for b in bands):
         return flux
     rescale, clamp = physical_factors(bands, flux.device, flux.dtype)
-    ceiling = torch.arcsinh(clamp / divisor) * divisor
+    ceiling = torch.arcsinh(clamp / divisor)
     flux = flux.clamp(min=-ceiling, max=ceiling)
-    flux = torch.sinh(flux / divisor) * divisor
+    flux = torch.sinh(flux) * divisor
     return flux / rescale
 
 

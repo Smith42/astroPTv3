@@ -77,7 +77,8 @@ DESI EDR SV3 spectra (1″ radius) and writes ~shard-sized parquet under
 
 Image flux is normalized physically, keyed on each record's band names
 (`data/band_registry.py`): rescale to LegacySurvey nanomaggies → clamp
-survey-flagged bright pixels → `arcsinh(flux/0.01)·0.01`. The constants come
+survey-flagged bright pixels → `arcsinh(flux/0.01)` — tokens are flux in
+knee units (0.01 nMgy = 10 picomaggies), O(1) values. The constants come
 from the surveys' own documentation, so there is nothing to calibrate per
 corpus — unknown bands raise `NotImplementedError` (add them to
 `BAND_REGISTRY`).
@@ -115,7 +116,7 @@ general:
 model:
   model_config:
     is_astropt3_config: true   # dispatches to AstroPT3ForTraining
-    # modalities: omitted -> pinned pilot defaults (images 361x192 patch 8,
+    # modalities: omitted -> pinned pilot defaults (images 144x192 patch 8,
     #                        spectra 31x256 continuous-λ positions)
     tokeniser: affine          # or "aim" (MLP)
     _use_doc_masking: true     # position_ids restarts = document boundaries
@@ -253,15 +254,25 @@ CUDA_VISIBLE_DEVICES=<spare> python astro/scripts/run_probe_sweep.py \
   --checkpoints-dir <run's checkpoints_path> \
   --out-dir <eval dir> \
   --data-root <val shard dir> \
-  --norm-stats astro/configs/data/pilot_images_spectra.yaml \
   --seq-len 4096 --val-batches 512 --probe-objects 2048 \
-  --watch --until-step <train_steps>
+  --watch --until-step <train_steps> --wandb
 ```
+
+(Or let the launcher start it for you: `EVAL_GPU=<spare id>` on the launch
+scripts backgrounds exactly this, deriving the paths from the training
+config.)
 
 For each completed checkpoint it: converts to HF (`{out}/hf/{step}`), scores
 a **fixed deterministic set of validation batches** (val loss comparable
 across steps), ridge-probes redshift `Z` from mean-pooled hidden states
-(test-split R²), and appends one JSON line to `{out}/probe_results.jsonl`.
+(test-split R²), renders fixed-template sample panels — an output image and
+spectrum per mode, same record + seed every step so the panels show model
+evolution (ADR 0003; `--sample-*` flags, `--sample-records none` to
+disable) — into `{out}/samples/{step}`, and appends one JSON line to
+`{out}/probe_results.jsonl`. With `--wandb` the scalars and panels also land
+in the sweep's own wandb run (`eval-<run>`, plotted against
+`checkpoint_step`; deliberately not the trainer's run, whose monotonic
+internal step a lagging sidecar would fight).
 Healthy runs show monotone-ish falling val loss and rising probe R² across
 the Pythia checkpoints (the tiny reference run went val 0.456→0.051,
 R² 0.42→0.79 over 1000 steps).

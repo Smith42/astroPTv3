@@ -142,9 +142,13 @@ def test_jetformer_skips_per_patch_standardization(jet_config):
 
     record = make_record(3, image_only_fraction=0.0)
     jet_seq = ObjectSequencer(jet_config).build(record)
-    flux = physical_normalize(
-        torch.as_tensor(record["image"]["flux"]), record["image"]["band"]
-    )
+    from astropt3.data.packing import IMAGE_CROP
+
+    flux = torch.as_tensor(record["image"]["flux"])
+    h, w = flux.shape[-2:]
+    top, left = (h - IMAGE_CROP) // 2, (w - IMAGE_CROP) // 2
+    flux = flux[..., top : top + IMAGE_CROP, left : left + IMAGE_CROP]
+    flux = physical_normalize(flux, record["image"]["band"])
     expected = patchify_image(flux, 8)
     assert torch.allclose(jet_seq.values["images"], expected)
     # spectra tokens are the raw (mask-zeroed) flux patches
@@ -157,7 +161,7 @@ def test_jetformer_skips_per_patch_standardization(jet_config):
     affine_config = AstroPT3Config(**{**jet_config.to_dict(), "tokeniser": "affine"})
     affine_seq = ObjectSequencer(affine_config).build(record)
     assert torch.allclose(
-        affine_seq.values["images"].mean(dim=-1), torch.zeros(361), atol=1e-5
+        affine_seq.values["images"].mean(dim=-1), torch.zeros(144), atol=1e-5
     )
     assert not torch.allclose(jet_seq.values["images"], affine_seq.values["images"])
 
