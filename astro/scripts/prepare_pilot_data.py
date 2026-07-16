@@ -115,6 +115,23 @@ def row_to_record(row, suffixes=("", "_desi")) -> dict:
     return record
 
 
+def pixel_overlaps(pixel: tuple, others: list) -> bool:
+    """True if nested HEALPix ``(order, pixel)`` intersects any of ``others``.
+
+    Two nested pixels overlap iff the shallower one is an ancestor of the
+    deeper one: shifting the deeper pixel index right by ``2 * order_diff``
+    yields its ancestor at the shallower order.
+    """
+    o1, p1 = pixel
+    for o2, p2 in others:
+        if o1 <= o2:
+            if p2 >> (2 * (o2 - o1)) == p1:
+                return True
+        elif p1 >> (2 * (o1 - o2)) == p2:
+            return True
+    return False
+
+
 def _load_progress(path: Path) -> dict:
     done = {}
     if path.exists():
@@ -181,6 +198,14 @@ def main() -> int:
         default=None,
         help="smoke mode: cone-filter the image catalog before crossmatching",
     )
+    parser.add_argument(
+        "--spectra-first",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="process partitions overlapping the spectra catalog's coverage "
+        "first, so matched pairs land in the corpus early (the progress "
+        "journal is keyed by pixel, so reordering is resume-safe)",
+    )
     args = parser.parse_args()
 
     import lsdb  # [data] extra; deliberately absent from the CPU test env
@@ -203,6 +228,16 @@ def main() -> int:
     pixels = xmatched.get_ordered_healpix_pixels()
     if args.limit_partitions is not None:
         pixels = pixels[: args.limit_partitions]
+    indexed = list(enumerate(pixels))
+    if args.spectra_first:
+        # partitions[i] indexes the ORIGINAL pixel order, so the partition
+        # index travels with its pixel through the sort
+        coverage = [(p.order, p.pixel) for p in spectra.get_ordered_healpix_pixels()]
+        indexed.sort(key=lambda ip: not pixel_overlaps((ip[1].order, ip[1].pixel), coverage))
+        n_priority = sum(
+            pixel_overlaps((p.order, p.pixel), coverage) for _, p in indexed
+        )
+        print(f"spectra-first: {n_priority} of {len(pixels)} partitions overlap spectra coverage")
     print(f"{len(pixels)} partitions to process")
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -217,10 +252,13 @@ def main() -> int:
         print(f"resuming: {len(done)} partitions already done ({counts})")
 
     started = time.time()
-    for i, pixel in enumerate(pixels):
+    n_objects_at_start = counts["n_objects"]
+    n_processed = len(done)
+    for i, pixel in indexed:
         key = (pixel.order, pixel.pixel)
         if key in done:
             continue
+        n_processed += 1
         clean_partition(args.out, pixel.order, pixel.pixel)
         df = xmatched.partitions[i].compute()
         records_by_split = {"train": [], "val": []}
@@ -255,9 +293,9 @@ def main() -> int:
                 )
                 + "\n"
             )
-        rate = counts["n_objects"] / max(time.time() - started, 1e-9)
+        rate = (counts["n_objects"] - n_objects_at_start) / max(time.time() - started, 1e-9)
         print(
-            f"[{i + 1}/{len(pixels)}] Norder={pixel.order} Npix={pixel.pixel}: "
+            f"[{n_processed}/{len(pixels)}] Norder={pixel.order} Npix={pixel.pixel}: "
             f"{len(df)} objects ({n_matched} matched) | totals: "
             f"{counts['n_objects']} objects, {counts['n_matched']} matched "
             f"({100 * counts['n_matched'] / max(counts['n_objects'], 1):.2f}%), "

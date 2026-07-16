@@ -46,13 +46,17 @@ stages is implicit and easy to break, so understand it before editing:
    (login node, `[data]` env, network) lsdb-LEFT-crossmatches the two MMU
    HATS collections into local parquet shards (train/val by hashing coarse
    HEALPix tiles — spatially disjoint), and `MMUIterableDataset` streams
-   them back offline, sharded by DP rank and DataLoader worker. The asinh
-   p1/p99 calibration in `configs/data/pilot_images_spectra.yaml` is
-   written by `scripts/compute_norm_stats.py`; `scripts/check_pilot_data.py`
-   is the sanity/throughput gate.
+   them back offline, sharded by DP rank and DataLoader worker.
+   `scripts/check_pilot_data.py` is the sanity/throughput gate.
 2. **`ObjectSequencer`** (`data/packing.py`) turns a record into an
-   `ObjectSeq`: asinh stretch + patchify (`tokenization.py`) + per-patch
-   standardization (`data/transforms.py`) per modality, wrapped in frozen
+   `ObjectSeq`: physical band-registry normalization
+   (`data/band_registry.py`: rescale to nanomaggies → bright-pixel clamp →
+   `arcsinh(x/0.01)·0.01`, keyed on the record's band names — no per-corpus
+   calibration; unknown bands raise) + patchify (`tokenization.py`) + per-patch
+   standardization (`data/transforms.py`) per modality (jetformer configs
+   SKIP the standardization — the exact-likelihood loss needs an invertible
+   record -> token map, and standardization discards each patch's
+   mean/std), wrapped in frozen
    special tokens: `<|bos|> <|begin_m|> …placeholders… <|end_m|>` per
    modality in **alphabetical registry order**. Images → 361 patch-8 tokens
    (192 floats); spectra → 31 patch-256 tokens with normalized per-patch
@@ -73,7 +77,16 @@ stages is implicit and easy to break, so understand it before editing:
    `SmolLM3Model(inputs_embeds=…)` → per-modality `Decoder` heads. Loss is
    Huber at positions one left of each modality token (`<|begin_m|>`
    predicts patch 0 — astroPT's `starts-1` alignment), via
-   `left_shift_mask`; weighted mean over modalities present.
+   `left_shift_mask`; weighted mean over modalities present. The
+   `tokeniser: jetformer` option (JetFormer/GIVT, ported from astroPT v2's
+   sogol_branch) instead flows each modality's patch tokens through a
+   per-modality `TinyFlow1D` and predicts them with a per-modality `GMMHead`;
+   loss is exact patch-space likelihood `mean(NLL_GMM(z) - logdet)`, which
+   can go negative. A noise curriculum (`jetformer_noise_max` -> `_min`,
+   driven via `set_jet_noise_frac`) perturbs only the embedded z copy in
+   training mode. The nanotron fork mirrors all of it (flows/GMM heads on
+   the embedding/head blocks, z+logdet routed to the loss, TP-synced noise);
+   sampling lives in `astropt3.generation` + `scripts/generate.py`.
 5. **Config**: `AstroPT3Config(SmolLM3Config)` carries a `modalities` list
    of dicts; `import astropt3` registers the Auto classes, so it must be
    imported before `AutoModel.from_pretrained` on a checkpoint. Size YAMLs
@@ -103,8 +116,10 @@ pythia` saves at steps 1,2,4,…,512 plus every `checkpoint_interval`
 trainer). Each checkpoint stores the stream position under
 `dataset_state/dp_{rank}.pt` — state is captured at the START of the current
 partial packing row, so resume re-draws the untrained partial row and
-continues the exact micro-batch sequence (requires `num_loading_workers: 0`;
-`object_id_log` writes the per-object no-replay audit trail). Evaluation
+continues the exact micro-batch sequence at any `num_loading_workers`
+(workers > 0 rides torchdata's StatefulDataLoader and must resume with the
+same worker count; `object_id_log` writes the per-object no-replay audit
+trail). Evaluation
 never runs in the trainer: `scripts/run_probe_sweep.py` polls a run's
 checkpoint dir (gated on `latest.txt`), converts each step to HF, and runs
 `astropt3.eval.val_loss` (fixed deterministic val batches; synthetic val
@@ -115,5 +130,7 @@ alongside training.
 A behavior to remember when touching data or fixtures: per-patch
 standardization turns flat/noise-only patches into irreducible N(0,1)
 targets — synthetic data must contain patch-scale structure or smoke
-training cannot learn, and the real asinh scale is calibrated from data
-(Phase 2 `compute_norm_stats.py`), not by eye.
+training cannot learn. Synthetic image flux is nMgy-scale (cores ~0.1,
+noise ~0.001) so the physical normalization's fixed 0.01 nMgy arcsinh knee
+lands in the same regime as on real LegacySurvey data; pre-physical-norm
+(PU-asinh) checkpoints are incompatible — retrain.

@@ -2,6 +2,7 @@
 
 from transformers.models.smollm3.configuration_smollm3 import SmolLM3Config
 
+from .data.band_registry import _DIV_FACTOR
 from .modalities import ModalityRegistry
 from .tokenization import VOCAB_SIZE
 
@@ -36,8 +37,14 @@ class AstroPT3Config(SmolLM3Config):
         self,
         modalities: list[dict] | None = None,
         tokeniser: str = "affine",
+        jetformer_flow_steps: int = 4,
+        jetformer_flow_hidden: int = 128,
+        jetformer_gmm_k: int = 4,
+        jetformer_noise_max: float = 0.1,
+        jetformer_noise_min: float = 0.0,
         huber_delta: float = 1.0,
         special_token_ce_weight: float = 0.0,
+        image_norm_divisor: float = _DIV_FACTOR,
         vocab_size: int = VOCAB_SIZE,
         hidden_size: int = 512,
         intermediate_size: int = 1536,
@@ -55,8 +62,20 @@ class AstroPT3Config(SmolLM3Config):
     ):
         self.modalities = modalities if modalities is not None else DEFAULT_MODALITIES
         self.tokeniser = tokeniser
+        self.jetformer_flow_steps = jetformer_flow_steps
+        self.jetformer_flow_hidden = jetformer_flow_hidden
+        self.jetformer_gmm_k = jetformer_gmm_k
+        self.jetformer_noise_max = jetformer_noise_max
+        self.jetformer_noise_min = jetformer_noise_min
         self.huber_delta = huber_delta
         self.special_token_ce_weight = special_token_ce_weight
+        # arcsinh divisor of the physical image normalization; consumed by
+        # ObjectSequencer (forward) and scripts/generate.py (inverse), so a
+        # checkpoint always normalizes and inverts with the divisor it
+        # trained with (the default back-fills configs/checkpoints saved
+        # before the field existed — note pre-physical-norm PU-asinh
+        # checkpoints are incompatible regardless, see docs)
+        self.image_norm_divisor = image_norm_divisor
         kwargs["use_cache"] = False  # reload passes it back through kwargs
         super().__init__(
             vocab_size=vocab_size,

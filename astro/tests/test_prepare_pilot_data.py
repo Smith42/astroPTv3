@@ -133,6 +133,19 @@ def test_unsuffixed_columns_also_resolve():
     assert "spectrum" in record and record["Z"] == pytest.approx(0.43)
 
 
+def test_pixel_overlaps_nested_ancestry():
+    # order-6 pixel 9145 descends from order-5 pixel 2286 (9145 >> 2) and
+    # contains order-8 pixels 146320..146335 (9145 << 4 ..)
+    assert prepare.pixel_overlaps((6, 9145), [(6, 9145)])
+    assert prepare.pixel_overlaps((6, 9145), [(5, 2286)])  # coarser ancestor
+    assert prepare.pixel_overlaps((5, 2286), [(6, 9145)])  # finer descendant
+    assert prepare.pixel_overlaps((6, 9145), [(8, 146320)])
+    assert not prepare.pixel_overlaps((6, 9145), [(6, 9146)])
+    assert not prepare.pixel_overlaps((6, 9145), [(5, 2287)])
+    assert not prepare.pixel_overlaps((6, 9145), [(8, 146336)])
+    assert not prepare.pixel_overlaps((6, 9145), [])
+
+
 def test_write_partition_shards_and_cleanup(tmp_path):
     from astropt3.data.synthetic import record_stream
 

@@ -43,7 +43,7 @@ def test_roundtrip_matches_source_records(shard_dir):
 def test_normalize_record_coerces_synthetic_schema():
     normalized = mmu.normalize_record(make_record(3))
     image = normalized["image"]
-    assert image["band"] == IMAGE_BANDS  # "bands" -> "band"
+    assert image["band"] == IMAGE_BANDS
     assert len(image["psf_fwhm"]) == mmu.N_BANDS  # scalar -> per-band
     assert normalized["match_dist_arcsec"] is None
     assert normalized["ZWARN"] is None

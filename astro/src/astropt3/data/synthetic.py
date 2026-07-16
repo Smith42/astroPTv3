@@ -4,7 +4,10 @@ Every test and CPU smoke run uses these — no network, no real data. The
 records mimic:
 
 - ``UniverseTBD/mmu_ssl_legacysurvey_north``: ``image.flux`` float32
-  (3, 152, 152), ``image.bands`` = des-g/r/z, plus catalog scalars.
+  (3, 152, 152) in LegacySurvey nanomaggies (galaxy cores ~0.1 nMgy, sky
+  noise ~0.001 nMgy — the real pilot flux scale, so the physical band
+  normalization's 0.01 nMgy arcsinh knee lands in the same regime as on
+  real data), ``image.band`` = des-g/r/z, plus catalog scalars.
 - ``UniverseTBD/mmu_desi_edr_sv3``: ``spectrum`` with 7781-bin ``flux``,
   ``lambda`` (3600-9824 A), ``ivar``, ``lsf_sigma``, ``mask``, plus ``Z``.
 
@@ -35,9 +38,9 @@ def make_record(index: int, image_only_fraction: float = 0.3) -> dict:
     # N(0,1) targets); size still correlates with the redshift proxy
     sigma = 15.0 + 25.0 * z
     blob = np.exp(-(((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma**2)))
-    amps = rng.uniform(20.0, 80.0, size=3).astype(np.float32)
+    amps = rng.uniform(0.01, 0.1, size=3).astype(np.float32)
     flux = amps[:, None, None] * blob[None, :, :]
-    flux += rng.normal(0.0, 0.1, size=flux.shape).astype(np.float32)
+    flux += rng.normal(0.0, 0.001, size=flux.shape).astype(np.float32)
 
     record = {
         "object_id": f"synth_{index:08d}",
@@ -46,7 +49,7 @@ def make_record(index: int, image_only_fraction: float = 0.3) -> dict:
         "_healpix_29": int(rng.integers(0, 2**40)),
         "image": {
             "flux": flux.astype(np.float32),
-            "bands": IMAGE_BANDS,
+            "band": IMAGE_BANDS,
             "psf_fwhm": float(rng.uniform(1.0, 2.0)),
             "scale": 0.262,
         },

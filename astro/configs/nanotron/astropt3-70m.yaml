@@ -1,12 +1,12 @@
 # AstroPT3 70M pilot pretraining (Pythia-mirrored size; recipe: 32 GPUs,
 # TP=1, DP=32, ZeRO-1, no recompute — see astro/PLAN.md parallelism table).
 #
-#   cd <repo root> && CUDA_DEVICE_MAX_CONNECTIONS=1 \
-#     torchrun --nnodes=... --nproc_per_node=8 nanotron/run_train.py \
-#       --config-file astro/configs/nanotron/astropt3-70m.yaml
+#   sbatch --nodes=4 astro/scripts/launch_slurm.sbatch \
+#       astro/configs/nanotron/astropt3-70m.yaml
 #
 # GBS = dp(32) x mbs(16) x seq(4096) = 2.10M tokens/step.
-# For a dry run on fewer GPUs, scale `parallelism.dp` down and
+# Dry-run 100 steps at the target topology first (see the sbatch header).
+# For a smaller box, scale `parallelism.dp` down and
 # `batch_accumulation_per_replica` up to keep GBS.
 general:
   project: astropt3
@@ -93,10 +93,11 @@ data_stages:
       # relative to the launch cwd (repo root) — point at scratch on the
       # training cluster if the corpus lives elsewhere
       data_root: ../astroPTv3_data/pilot_v1/train
-      norm_stats: astro/configs/data/pilot_images_spectra.yaml
       shuffle_buffer_size: 2000
     seed: 42
-    num_loading_workers: 2
+    # resume-exact with workers via torchdata's StatefulDataLoader; a resumed
+    # run must use the SAME worker count as the run that saved the checkpoint
+    num_loading_workers: 8
 optimizer:
   accumulate_grad_in_fp32: true
   clip_grad: 1.0
@@ -126,11 +127,12 @@ tokens:
   micro_batch_size: 16
   batch_accumulation_per_replica: 1
   val_check_interval: 100
-  limit_val_batches: 0           # eval hooks arrive in Phase 4
-  limit_test_batches: 0
+  limit_val_batches: 0           # eval never runs in the trainer: use
+  limit_test_batches: 0          # scripts/run_probe_sweep.py on a spare GPU
 checkpoints:
   checkpoints_path: ../astroPTv3_checkpoints/astropt3-70m
-  checkpoint_interval: 1000      # Pythia log-spaced schedule lands in Phase 4
+  checkpoint_schedule: pythia    # steps 1,2,4,...,512 + every interval
+  checkpoint_interval: 1000
   save_initial_state: false
   save_final_state: true
 tokenizer:

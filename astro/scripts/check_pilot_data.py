@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from astropt3.config_io import (  # noqa: E402
     load_model_config,
     resolve_data_root,
-    sequencer_kwargs_from_data_config,
 )
 from astropt3.data.mmu import MMUIterableDataset  # noqa: E402
 from astropt3.data.packing import ObjectSequencer, PackedCollator  # noqa: E402
@@ -39,9 +38,14 @@ CONFIG_PATH = ROOT / "configs" / "data" / "pilot_images_spectra.yaml"
 
 def sanity(dataset, sequencer, n_objects: int) -> None:
     print(f"=== decoded-object sanity ({n_objects} objects) ===")
+    lambda_min, lambda_max = float("inf"), float("-inf")
     for i, record in enumerate(dataset):
         if i >= n_objects:
             break
+        if record.get("spectrum") is not None:
+            lam_raw = record["spectrum"]["lambda"]
+            lambda_min = min(lambda_min, float(lam_raw.min()))
+            lambda_max = max(lambda_max, float(lam_raw.max()))
         seq = sequencer.build(record)
         parts = [f"object {seq.object_id}: {len(seq)} tokens"]
         for name, values in seq.values.items():
@@ -65,6 +69,10 @@ def sanity(dataset, sequencer, n_objects: int) -> None:
         f"(expect image patches ~N(0,1); spectra positions within "
         f"[{expected[0]:.3f}, {expected[1]:.3f}])"
     )
+    if lambda_min <= lambda_max:  # at least one spectrum seen
+        print(f"spectrum lambda range: [{lambda_min:.1f}, {lambda_max:.1f}] A")
+        if lambda_min < 3600.0 or lambda_max > 9824.0:
+            print("warning: lambda range outside the expected DESI 3600-9824 A")
 
 
 class RecordToBatch:
@@ -135,11 +143,7 @@ def main() -> int:
     args = parser.parse_args()
 
     model_config, _ = load_model_config(args.model_config)
-    seq_kwargs = sequencer_kwargs_from_data_config(data_config)
-    if not seq_kwargs:
-        print("note: normalization block empty — run compute_norm_stats.py first; "
-              "using uncalibrated asinh")
-    sequencer = ObjectSequencer(model_config, **seq_kwargs)
+    sequencer = ObjectSequencer(model_config)
     seq_len = args.seq_len or data_config["packing"]["seq_len"]
     collator = PackedCollator(model_config, seq_len=seq_len)
 

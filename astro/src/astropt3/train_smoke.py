@@ -78,6 +78,8 @@ def run(config_path, steps=50, objects_per_batch=4, seq_len=896, lr=3e-4, device
         }
         for g in opt.param_groups:
             g["lr"] = lr_at(step, steps, lr)
+        if config.tokeniser == "jetformer":
+            model.set_jet_noise_frac(step / steps)
         out = model(**batch)
         opt.zero_grad(set_to_none=True)
         out.loss.backward()

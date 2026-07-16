@@ -40,7 +40,7 @@ using `<|begin_mod|>`/placeholder/`<|end_mod|>` special tokens;
 ## Verified pilot-data schemas (checked 2026-07-07 via HF datasets-server + MMU builders)
 
 **`UniverseTBD/mmu_ssl_legacysurvey_north`** — 14,174,203 rows, ~4 TB:
-- `image` struct: `bands=["des-g","des-r","des-z"]`, `flux` float32 **(3, 152, 152)**
+- `image` struct: `band=["des-g","des-r","des-z"]`, `flux` float32 **(3, 152, 152)**
   (builder constant `_image_size=152`, `_pixel_scale=0.262`), `psf_fwhm`, `scale`.
 - Scalars: `flux_{g,r,z}`, `fiberflux_{g,r,z}`, `psfdepth_{g,r,z}`, `ebv`, `z_spec`.
 - `ra` f64, `dec` f64, `object_id` string, `_healpix_29` int64.
@@ -95,7 +95,8 @@ astroPTv3/
 │   │   │   ├── packing.py           # ObjectSequencer + PackedCollator (shared by HF & nanotron paths)
 │   │   │   ├── nanotron_loader.py   # adapter: PackedCollator batches → nanotron micro-batch dicts
 │   │   │   ├── synthetic.py         # network-free fixtures matching the verified MMU schemas
-│   │   │   └── transforms.py        # asinh stretch + per-patch standardization
+│   │   │   ├── band_registry.py     # physical per-band normalization (rescale → clamp → arcsinh)
+│   │   │   └── transforms.py        # per-patch standardization
 │   │   ├── train_smoke.py           # tiny plain-torch CPU loop (validation only, NOT the trainer)
 │   │   └── eval/{val_loss.py,linear_probe.py}
 │   ├── configs/
@@ -104,7 +105,6 @@ astroPTv3/
 │   │   └── data/pilot_images_spectra.yaml
 │   ├── scripts/
 │   │   ├── prepare_pilot_data.py    # lsdb crossmatch → parquet shards (login node, [data] env)
-│   │   ├── compute_norm_stats.py
 │   │   ├── count_params.py          # asserts each size within 10% of nominal
 │   │   ├── launch_slurm.sbatch      # torchrun → nanotron run_train.py, multi-node
 │   │   └── run_probe_sweep.py       # async linear probes over converted HF checkpoints
@@ -136,7 +136,9 @@ modalities never resize the embedding.
 
 ### Modality tokenization (pinned to verified schemas)
 
-- **Images**: `image.flux` (3,152,152) float32 → asinh stretch → einops
+- **Images**: `image.flux` (3,152,152) float32 → physical band-registry
+  normalization (rescale → clamp → arcsinh; superseded the asinh stretch,
+  see `docs/physical_norm_plan.md`) → einops
   `"c (h p1) (w p2) -> (h w) (p1 p2 c)"` with **patch 8** → **361 tokens** of
   `input_size=192`; per-patch standardization; integer patch-index positions
   (spiral option ported). Patch 8 chosen because 152 = 8×19 (16 doesn't divide
@@ -239,8 +241,9 @@ launch time in the YAML.
   disjoint, no near-duplicate leakage.
 - Training streams the local shards with `load_dataset("parquet", ...,
   streaming=True)` + `HF_DATASETS_OFFLINE=1` — no network/lsdb on compute nodes.
-- `compute_norm_stats.py` (100k sample) → asinh scale + normalization stats
-  into the data YAML; verify flux histograms before/after stretch.
+- Image normalization is physical (band-registry constants, no per-corpus
+  calibration; superseded the original `compute_norm_stats.py` percentile
+  calibration — see `docs/physical_norm_plan.md`).
 - `synthetic.py` generates records matching the **verified schemas** above —
   all tests and the CPU smoke loop run networkless.
 
@@ -263,8 +266,9 @@ forward/backward finite with grads on every param; `save_pretrained` →
 size; 50-step CPU smoke on synthetic: loss < 0.7× initial.
 
 ### Phase 2 — Pilot data prep + streaming dataset
-`prepare_pilot_data.py`, `compute_norm_stats.py`, `data/mmu.py`,
-`configs/data/pilot_images_spectra.yaml`.
+`prepare_pilot_data.py`, `data/mmu.py`,
+`configs/data/pilot_images_spectra.yaml` (the original `compute_norm_stats.py`
+calibration step was later retired for physical normalization).
 **Verify**: crossmatch logs matched/unmatched counts (expect ~0.5–1M matched,
 ~13M image-only); decoded-object sanity print (patch stats ~N(0,1) after
 stretch, λ range 3600–9824Å); dataloader-only throughput ≥2× training
@@ -366,6 +370,69 @@ table, profiling run instructions.
 completion: monotone-ish val loss per modality; image/spectra losses within
 ~5× after warmup (else tune loss_weight); probe R² for redshift improves
 across checkpoints.
+
+IN PROGRESS (2026-07-08, dev node, user's GPU reservation): real-data
+70M shakeout ahead of the cluster pilots.
+- Pilot data prep RUNS ON THE DEV NODE too (network confirmed): the full
+  `prepare_pilot_data.py` run is filling `../astroPTv3_data/pilot_v1`
+  (5,596 partitions, ~75 obj/s ≈ multi-day; journalled, resume any time,
+  any machine). A finished 2°-cone prep around the DESI SV3 rosette
+  (217.97, 32.62) sits in `../astroPTv3_data/pilot_sv3cone`: 26,452
+  objects, 7,354 with spectra (27.8%) — spectra-rich subset for probing.
+  NEVER point a cone run at the canonical dir: cone partitions are
+  row-filtered and would poison the resume journal.
+- `compute_norm_stats.py` ran on 10k real images → asinh p1/p99 into
+  the data yaml (historical: both retired when physical normalization
+  landed, see `docs/physical_norm_plan.md`). `check_pilot_data.py`: real images decode to exact
+  N(0,1) patches, spectra to 31 patches λ 3702–9784 Å; dataloader ~1,000
+  obj/s ≈ 400k tok/s per process at 8 workers (≥2× gate passes at DP=2).
+- Blocker found+fixed by the first 70M execution: upstream nanotron's
+  DDP + fp32-accum + ZeRO-1 comm hook routes to a dead reduce-scatter
+  branch (NotImplementedError) — every ZeRO-1 DDP run would have crashed
+  at step 1. Fork fix: all-reduce path (nanotron commit 0668f369).
+- 100-step DP=2 dry run (astropt3-70m-shakeout.yaml): loss 0.459→0.259,
+  ~240k tok/s total, 123 model TFLOPs/GPU (~39% MFU), peak 31.7 GiB/80.
+  20k-step run (2.6B tokens, Pythia checkpoints) + async probe sweep
+  launched on the reserved pair.
+- 2026-07-09: 70M 20k-step shakeout DONE; sweep: val loss plateaus at
+  0.203 from ~step 18k, redshift probe R² 0.28–0.32. 160M 20k-step
+  shakeout DONE the same day (astropt3-160m-shakeout.yaml; wandb + new
+  per-modality loss logging; final lm_loss 0.197 at 132 TFLOPs/GPU;
+  included an unplanned mid-run kill+resume). CAVEAT on both: the
+  shakeout mixes and their val splits carried almost no spectra (the prep
+  had not yet reached the DESI footprint), so these are effectively
+  image-only numbers — spectra_loss logged 0 in most 160M iterations and
+  the 70M val loss has no spectra component at all.
+- 2026-07-10 resume gap found by audit and FIXED: the shakeouts ran with
+  num_loading_workers: 8, and with workers the dataset state_dict() path
+  never engaged — NO checkpoint of either 20k run carries dataset_state/
+  (the 160M mid-run resume silently restarted the stream). Fix: with
+  workers > 0 `build_astropt3_dataloader` now returns torchdata's
+  StatefulDataLoader (new hard dep `torchdata>=0.10`; installed in the
+  gpuenv) whose state_dict embeds per-worker row-start snapshots; the
+  trainer saves it via the new `loader_state_dict()` helper. Workers > 0
+  without torchdata now refuses to start instead of training unresumably;
+  resume asserts the same worker count; legacy dataset-format states
+  still load at workers 0. CPU-verified by 4 new tests in
+  test_loader_resume.py (exact continuation at workers 0/2 × synthetic/
+  MMU); the GPU kill/resume gate in test_phase4_gpu.py is now
+  parametrized over workers {0,2} and also asserts dataset_state exists.
+- 2026-07-10 data prep: restarted (died ~02:34 without a traceback at
+  939/5596 partitions, all spectra-free — the DESI-footprint pixels
+  simply sort late in the HEALPix order). prepare_pilot_data.py now
+  processes partitions overlapping the spectra catalog's coverage FIRST
+  (`--spectra-first`, default on; journal-keyed resume makes reordering
+  safe): matched spectra went 0 → ~138k within hours and pilot_v1/val
+  gained its first ~2k spectra objects. Remaining ~4.3k partitions are
+  image-only tail, ~63 obj/s.
+- 2026-07-10 Phase 5 deliverables landed: `scripts/launch_slurm.sbatch`
+  (multi-node srun+torchrun, per-size node counts, DRY_RUN_STEPS=100
+  dry-run mode) and full nanotron pilot YAMLs for all eight sizes
+  (recipe-table parallelism, Pythia LRs, GBS 512×4096,
+  checkpoint_schedule: pythia; 70m updated to match). 160M probe sweep
+  re-launched against a frozen hardlink snapshot of pilot_v1/val
+  (../astroPTv3_data/pilot_v1_val_frozen_20260710 — the live val dir
+  grows while prep runs, and the sweep needs one fixed val set).
 
 ### Phase 6 — Scale-up + modality extension
 410M → 1.4B (TP=1), then 2.8B/6.9B/12B per the recipe table (dry run before
