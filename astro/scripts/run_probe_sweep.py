@@ -25,11 +25,13 @@ before samples/wandb existed are never revisited (use a fresh ``--out-dir``
 or delete their lines to re-log; HF conversions are cached, so re-eval is
 cheap).
 
-Every checkpoint the trainer writes is evaluated exactly once (steps 1, 2,
-4, ..., 512 then every ``checkpoint_interval``); ``--samples-every`` thins
-only the sample panels. ``--until-step`` bounds the sweep: steps above it are
-never evaluated, and with ``--watch`` polling stops once the trainer reaches
-it.
+By default every checkpoint the trainer writes is evaluated exactly once
+(steps 1, 2, 4, ..., 512 then every ``checkpoint_interval``).
+``--eval-every N`` thins that to exact multiples of N -- dropping the early
+powers of two, which the Pythia schedule keeps -- and ``--samples-every``
+thins the sample panels within whatever is evaluated. ``--until-step``
+bounds the sweep: steps above it are never evaluated, and with ``--watch``
+polling stops once the trainer reaches it.
 
 Usage (training machine, alongside a run):
     python astro/scripts/run_probe_sweep.py \
@@ -73,6 +75,28 @@ def processed_steps(results_path: Path) -> set[int]:
     if not results_path.exists():
         return set()
     return {json.loads(line)["step"] for line in results_path.read_text().splitlines() if line.strip()}
+
+
+def steps_to_eval(
+    completed: list[int],
+    done: set[int],
+    until_step: int | None = None,
+    eval_every: int = 1,
+) -> list[int]:
+    """Completed checkpoint steps still needing evaluation, ascending.
+
+    ``eval_every`` keeps only exact multiples -- unlike the Pythia
+    ``should_checkpoint`` schedule that writes the checkpoints, it does NOT
+    keep the early powers of two, so ``--eval-every 1000`` on a run with
+    ``checkpoint_interval: 1000`` skips steps 1..512 entirely.
+    """
+    return [
+        s
+        for s in completed
+        if s not in done
+        and (until_step is None or s <= until_step)
+        and (eval_every == 1 or s % eval_every == 0)
+    ]
 
 
 def convert_checkpoint(converter: Path, checkpoint: Path, save_path: Path) -> None:
@@ -166,6 +190,15 @@ def main():
     parser.add_argument("--seq-len", type=int, default=896)
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=1,
+        help="only evaluate checkpoint steps that are exact multiples of N "
+        "(default 1: every checkpoint). Unlike the Pythia checkpoint schedule "
+        "this does NOT keep the early powers of two, so --eval-every 1000 skips "
+        "steps 1..512",
+    )
     parser.add_argument("--watch", action="store_true", help="poll until --until-step is processed")
     parser.add_argument("--poll-interval", type=float, default=60.0)
     parser.add_argument(
@@ -245,11 +278,7 @@ def main():
     while True:
         done = processed_steps(results_path)
         completed = completed_steps(Path(args.checkpoints_dir))
-        todo = [
-            s
-            for s in completed
-            if s not in done and (args.until_step is None or s <= args.until_step)
-        ]
+        todo = steps_to_eval(completed, done, args.until_step, args.eval_every)
         for step in todo:
             print(f"[sweep] processing step {step}", flush=True)
             result = process_step(step, args, sample_records)
