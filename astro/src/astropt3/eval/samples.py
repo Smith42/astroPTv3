@@ -1,0 +1,268 @@
+"""Fixed-template sample rendering for converted HF checkpoints.
+
+Shared by ``scripts/generate.py`` (one-off, any checkpoint) and
+``scripts/run_probe_sweep.py`` (per-checkpoint evolution panels — see ADR
+0003). The template record fixes the token skeleton and positions; keeping
+the record(s) and the sampling seed fixed across a run's checkpoints means
+the rendered panels differ only through the model weights.
+
+Modes:
+- ``unconditional``:    sample every span the template has (jetformer only).
+- ``image-to-spectra``: teacher-force the image tokens, sample the spectra
+                        span (jetformer only).
+- ``reconstruct``:      one-step teacher-forced predictions for every span
+                        (works for affine checkpoints too).
+
+Images are rendered through the physical inverse normalization (band-registry
+keyed by the record's bands, the checkpoint's own ``image_norm_divisor``
+knee) — exact for jetformer checkpoints, qualitative for affine ones (their
+sequencer's per-patch standardization discards each patch's mean/std).
+Spectra are rendered in model patch space (no inverse flux normalization
+exists for them).
+"""
+
+import itertools
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from ..data.band_registry import physical_inverse
+from ..data.packing import ObjectSequencer
+from ..generation import generate, reconstruct
+from ..tokenization import unpatchify_image, unpatchify_spectrum
+
+MODES = ("unconditional", "image-to-spectra", "reconstruct")
+
+
+def load_template_record(data_root: str, record_index: int, need_spectrum: bool) -> dict:
+    if data_root == "synthetic":
+        from ..data.synthetic import make_record
+
+        record = make_record(record_index, image_only_fraction=0.0 if need_spectrum else 0.3)
+        return record
+    from ..data.mmu import MMUIterableDataset
+
+    dataset = MMUIterableDataset(data_root, rank=0, world_size=1, shuffle_buffer_size=0)
+    wanted = (
+        r for r in dataset if not need_spectrum or r.get("spectrum") is not None
+    )
+    record = next(itertools.islice(wanted, record_index, None), None)
+    if record is None:
+        raise ValueError(f"fewer than {record_index + 1} usable records in {data_root}")
+    return record
+
+
+def save_image_png(
+    values: np.ndarray,
+    path: Path,
+    title: str,
+    truth: np.ndarray | None = None,
+    truth_label: str = "truth",
+):
+    """[n, C, H, W] -> one PNG grid (per-image normalized RGB).
+
+    With ``truth`` [C, H, W] the ground-truth panel leads the grid.
+    """
+    import matplotlib.pyplot as plt
+
+    panels = ([(truth_label, truth)] if truth is not None else []) + [
+        (f"sample {i}", img) for i, img in enumerate(values)
+    ]
+    fig, axes = plt.subplots(1, len(panels), figsize=(3 * len(panels), 3.2), squeeze=False)
+    for ax, (label, img) in zip(axes[0], panels):
+        rgb = np.transpose(img, (1, 2, 0))
+        lo, hi = np.percentile(rgb, [1, 99])
+        ax.imshow(np.clip((rgb - lo) / (hi - lo + 1e-8), 0, 1))
+        ax.set_title(label, fontsize="small")
+        ax.axis("off")
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def save_spectra_png(
+    flux: np.ndarray,
+    lam: np.ndarray,
+    path: Path,
+    title: str,
+    truth: np.ndarray | None = None,
+    truth_label: str = "truth",
+):
+    """[n, W] flux + [W] wavelength -> overlaid flux-vs-wavelength PNG.
+
+    With ``truth`` [W] the ground-truth spectrum is drawn in black behind
+    the samples.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    if truth is not None:
+        ax.plot(lam, truth, lw=1.2, color="black", alpha=0.9, label=truth_label)
+    for i, f in enumerate(flux):
+        ax.plot(lam, f, lw=0.7, alpha=0.8, label=f"sample {i}")
+    ax.set_xlabel("wavelength [$\\AA$]")
+    ax.set_ylabel("flux (model patch space)")
+    ax.set_title(title)
+    if len(flux) <= 8:
+        ax.legend(fontsize="small")
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
+def default_modes(config) -> list[str]:
+    """The sampling modes a checkpoint supports (``generate`` is jetformer-only)."""
+    if config.tokeniser != "jetformer":
+        return ["reconstruct"]
+    modes = ["unconditional"]
+    if "spectra" in config.modality_registry().names():
+        modes.append("image-to-spectra")
+    return modes
+
+
+def sample_template(
+    model,
+    template,
+    mode: str,
+    *,
+    n: int = 4,
+    temperature: float = 1.0,
+    argmax: bool = False,
+    generator: torch.Generator | None = None,
+) -> dict:
+    """Run one sampling mode against a template: ``{name: [n, T, D]}``."""
+    if mode == "reconstruct":
+        return {m: v.unsqueeze(0) for m, v in reconstruct(model, template).items()}
+    if mode == "image-to-spectra":
+        gen_modalities = {"spectra"}
+    elif mode == "unconditional":
+        gen_modalities = set(template.masks)
+    else:
+        raise ValueError(f"unknown mode {mode!r} (expected one of {MODES})")
+    return generate(
+        model,
+        template,
+        gen_modalities,
+        n=n,
+        temperature=temperature,
+        argmax=argmax,
+        generator=generator,
+    )
+
+
+def render_sampled_tokens(
+    model,
+    record: dict,
+    template,
+    sampled: dict,
+    *,
+    out_dir: Path,
+    tag: str,
+    show_truth: bool,
+    truth_label: str = "truth",
+) -> dict:
+    """Invert sampled tokens and write one PNG per modality: ``{name: path}``."""
+    registry = model.config.modality_registry()
+    # keys the physical inverse normalization back to survey flux
+    bands = [str(b) for b in (record.get("image") or {}).get("band", [])]
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pngs = {}
+    for name, tokens in sampled.items():
+        tokens = tokens.cpu().float()  # bf16 -> f32 so matplotlib/numpy can ingest
+        mod = registry.get_config(name)
+        png = out_dir / f"{name}_{tag}.png"
+        if name == "images":
+            side = int(round((tokens.shape[1]) ** 0.5)) * mod.patch_size
+            channels = mod.input_size // (mod.patch_size**2)
+            # the checkpoint's own arcsinh knee, so the inverse matches
+            # the normalization its training data went through
+            divisor = model.config.image_norm_divisor
+            imgs = physical_inverse(
+                torch.stack([unpatchify_image(t, mod.patch_size, channels, side) for t in tokens]),
+                bands,
+                divisor=divisor,
+            )
+            truth = None
+            if show_truth:
+                truth = physical_inverse(
+                    unpatchify_image(template.values[name].float(), mod.patch_size, channels, side),
+                    bands,
+                    divisor=divisor,
+                ).numpy()
+            save_image_png(imgs.numpy(), png, f"{name} {tag}", truth=truth, truth_label=truth_label)
+        elif name == "spectra":
+            lam = np.asarray(record["spectrum"]["lambda"])
+            flux = torch.stack([unpatchify_spectrum(t, len(lam)) for t in tokens])
+            truth = (
+                unpatchify_spectrum(template.values[name].float(), len(lam)).numpy()
+                if show_truth
+                else None
+            )
+            save_spectra_png(flux.numpy(), lam, png, f"{name} {tag}", truth=truth, truth_label=truth_label)
+        pngs[name] = png
+    return pngs
+
+
+def sample_checkpoint(
+    checkpoint,
+    records: list[dict],
+    *,
+    modes: list[str] | None = None,
+    n: int = 4,
+    temperature: float = 1.0,
+    seed: int = 0,
+    out_dir: Path,
+    device=None,
+) -> dict:
+    """Sample + render every (record, mode) pair from a converted checkpoint.
+
+    ``records`` are pre-loaded template records (load once per sweep, not per
+    step). A fresh seeded generator per (record, mode) keeps the sampling
+    noise identical at every checkpoint, so a run's panels differ only
+    through the model. Returns ``{"{mode}/{name}/{object_id}": str(png)}``.
+    """
+    import astropt3  # noqa: F401  -- registers the Auto classes
+
+    from transformers import AutoModel
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.bfloat16 if str(device).startswith("cuda") else torch.float32
+    model = AutoModel.from_pretrained(checkpoint).to(device=device, dtype=dtype).eval()
+    if modes is None:
+        modes = default_modes(model.config)
+    sequencer = ObjectSequencer(model.config)
+
+    pngs = {}
+    for record in records:
+        template = sequencer.build(record)
+        for mode in modes:
+            if mode == "image-to-spectra" and "spectra" not in template.masks:
+                continue
+            generator = torch.Generator(device=device).manual_seed(seed)
+            sampled = sample_template(
+                model,
+                template,
+                mode,
+                n=n,
+                temperature=temperature,
+                generator=generator,
+            )
+            # unconditional samples aren't tied to the template's object, but
+            # its record still makes a useful visual reference
+            rendered = render_sampled_tokens(
+                model,
+                record,
+                template,
+                sampled,
+                out_dir=out_dir,
+                tag=f"{mode}_{template.object_id}_seed{seed}",
+                show_truth=True,
+                truth_label="truth (reference)" if mode == "unconditional" else "truth",
+            )
+            for name, png in rendered.items():
+                pngs[f"{mode}/{name}/{template.object_id}"] = str(png)
+    return pngs

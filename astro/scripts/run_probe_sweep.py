@@ -10,14 +10,27 @@ gated by ``latest.txt``, written last during a save):
 2. computes the fixed-batch validation loss (``astropt3.eval.val_loss``);
 3. ridge-probes redshift from pooled hidden states
    (``astropt3.eval.linear_probe``);
-4. appends one JSON line per step to ``{out}/probe_results.jsonl``.
+4. samples/renders fixed-template image + spectra panels
+   (``astropt3.eval.samples`` — ADR 0003) into ``{out}/samples/{step}``,
+   unless ``--sample-records none``;
+5. appends one JSON line per step to ``{out}/probe_results.jsonl``.
+
+``--wandb`` mirrors the scalars and sample panels to the sweep's OWN wandb
+run (project astropt3, job_type eval; NOT the trainer's run — the sweep lags
+training, which wandb's monotonic internal step won't tolerate). Panels use
+``checkpoint_step`` as their x-axis; the run id defaults to
+``eval-{checkpoints-dir name}`` so a restarted sweep resumes the same run.
+The JSONL stays the authoritative done-step record — steps already in it
+before samples/wandb existed are never revisited (use a fresh ``--out-dir``
+or delete their lines to re-log; HF conversions are cached, so re-eval is
+cheap).
 
 Usage (training machine, alongside a run):
     python astro/scripts/run_probe_sweep.py \
         --checkpoints-dir ../astroPTv3_checkpoints/astropt3-70m \
         --out-dir ../astroPTv3_eval/astropt3-70m \
         --data-root <val_shards_dir> \
-        --watch --until-step 143000
+        --watch --until-step 143000 --wandb
 """
 
 import argparse
@@ -76,8 +89,10 @@ def convert_checkpoint(converter: Path, checkpoint: Path, save_path: Path) -> No
     )
 
 
-def process_step(step: int, args) -> dict:
+def process_step(step: int, args, sample_records: list[dict]) -> dict:
+    from astropt3.checkpoint_schedule import should_checkpoint
     from astropt3.eval.linear_probe import probe_checkpoint
+    from astropt3.eval.samples import sample_checkpoint
     from astropt3.eval.val_loss import evaluate_checkpoint
 
     checkpoint = Path(args.checkpoints_dir) / str(step)
@@ -109,6 +124,17 @@ def process_step(step: int, args) -> dict:
     result["probe_r2"] = probe["r2"]
     result["probe_lambda"] = probe["lambda"]
     result["probe_target"] = probe["target"]
+    if sample_records and should_checkpoint(step, args.samples_every):
+        result["samples"] = sample_checkpoint(
+            hf_dir,
+            sample_records,
+            modes=None if args.sample_modes == "auto" else args.sample_modes.split(","),
+            n=args.sample_n,
+            temperature=args.sample_temperature,
+            seed=args.seed,
+            out_dir=Path(args.out_dir) / "samples" / str(step),
+            device=args.device,
+        )
     return result
 
 
@@ -129,26 +155,102 @@ def main():
     parser.add_argument("--watch", action="store_true", help="poll until --until-step is processed")
     parser.add_argument("--poll-interval", type=float, default=60.0)
     parser.add_argument("--until-step", type=int, default=None)
+    parser.add_argument(
+        "--sample-records",
+        default="0",
+        help="comma-separated template record indices for sample panels; 'none' disables",
+    )
+    parser.add_argument(
+        "--sample-modes",
+        default="auto",
+        help="'auto' (jetformer: unconditional+image-to-spectra, affine: reconstruct) "
+        "or a comma list of unconditional,image-to-spectra,reconstruct",
+    )
+    parser.add_argument("--sample-n", type=int, default=4, help="samples per mode")
+    parser.add_argument("--sample-temperature", type=float, default=1.0)
+    parser.add_argument(
+        "--samples-every",
+        type=int,
+        default=1,
+        help="sample when should_checkpoint(step, N): every pow2<=512 plus every Nth step",
+    )
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="mirror scalars + sample panels to the sweep's own wandb run (project astropt3)",
+    )
+    parser.add_argument(
+        "--wandb-run-id",
+        default=None,
+        help="wandb run id to resume across sweep restarts (default: eval-{checkpoints-dir name})",
+    )
     args = parser.parse_args()
+    if args.samples_every < 1:
+        parser.error("--samples-every must be >= 1 (disable sampling with --sample-records none)")
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "probe_results.jsonl"
+
+    # template records are fixed for the whole sweep (and, with a fixed seed,
+    # across sweeps of the same run), loaded once: streaming real shards for a
+    # spectrum-bearing record per step would be pure waste
+    sample_records = []
+    if args.sample_records != "none":
+        from astropt3.eval.samples import load_template_record
+
+        sample_records = [
+            load_template_record(args.data_root, int(i), need_spectrum=True)
+            for i in args.sample_records.split(",")
+        ]
+
+    wandb_run = None
+    if args.wandb:
+        import wandb
+
+        run_id = args.wandb_run_id or f"eval-{Path(args.checkpoints_dir).name}"
+        wandb_run = wandb.init(
+            project="astropt3",
+            id=run_id,
+            resume="allow",
+            name=run_id,
+            job_type="eval",
+            config={k: v for k, v in vars(args).items() if k not in ("wandb", "wandb_run_id")},
+        )
+        # panels plot against the checkpoint step, not wandb's internal step
+        # (which just counts log calls in this lagging sidecar run)
+        wandb_run.define_metric("checkpoint_step")
+        wandb_run.define_metric("*", step_metric="checkpoint_step")
 
     while True:
         done = processed_steps(results_path)
         todo = [s for s in completed_steps(Path(args.checkpoints_dir)) if s not in done]
         for step in todo:
             print(f"[sweep] processing step {step}", flush=True)
-            result = process_step(step, args)
+            result = process_step(step, args, sample_records)
             with open(results_path, "a") as f:
                 f.write(json.dumps(result) + "\n")
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        "checkpoint_step": step,
+                        "val/loss": result["val_loss"],
+                        **{f"val/loss_{m}": v for m, v in result["val_modality_losses"].items()},
+                        "probe/r2": result["probe_r2"],
+                        **{
+                            f"samples/{k}": wandb.Image(p)
+                            for k, p in result.get("samples", {}).items()
+                        },
+                    }
+                )
             print(f"[sweep] step {step}: val_loss={result['val_loss']:.4f} r2={result['probe_r2']:.4f}", flush=True)
             done.add(step)
         if not args.watch or (args.until_step is not None and args.until_step in done):
             break
         time.sleep(args.poll_interval)
 
+    if wandb_run is not None:
+        wandb_run.finish()
     print(f"[sweep] results in {results_path}", flush=True)
 
 
