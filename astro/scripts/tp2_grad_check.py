@@ -78,7 +78,7 @@ def gather_across_tp(tensor: torch.Tensor, tp_pg) -> list:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tokeniser", default="affine", choices=["affine", "aim", "jetformer"])
+    parser.add_argument("--tokeniser", default="affine", choices=["affine", "jetformer"])
     args = parser.parse_args()
     config = AstroPT3Config(
         tokeniser=args.tokeniser,
