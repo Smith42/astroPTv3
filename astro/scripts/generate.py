@@ -213,15 +213,20 @@ def main():
             if name == "images":
                 side = int(round((tokens.shape[1]) ** 0.5)) * mod.patch_size
                 channels = mod.input_size // (mod.patch_size**2)
+                # the checkpoint's own arcsinh knee, so the inverse matches
+                # the normalization its training data went through
+                divisor = model.config.image_norm_divisor
                 imgs = physical_inverse(
                     torch.stack([unpatchify_image(t, mod.patch_size, channels, side) for t in tokens]),
                     bands,
+                    divisor=divisor,
                 )
                 truth = None
                 if show_truth:
                     truth = physical_inverse(
                         unpatchify_image(template.values[name], mod.patch_size, channels, side),
                         bands,
+                        divisor=divisor,
                     ).numpy()
                 save_image_png(imgs.numpy(), png, f"{name} {tag}", truth=truth)
             elif name == "spectra":

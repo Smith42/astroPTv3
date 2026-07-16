@@ -50,6 +50,7 @@ from pathlib import Path
 import torch
 
 from ..configuration_astropt3 import AstroPT3Config
+from .band_registry import _DIV_FACTOR
 from .mmu import MMUIterableDataset
 from .packing import ObjectSequencer, PackedCollator
 from .synthetic import make_record
@@ -347,7 +348,7 @@ def build_astropt3_dataloader(
     config = hf_config_from_modalities(
         model_config.modalities,
         getattr(model_config, "tokeniser", "affine"),
-        # getattr with defaults so pre-jetformer fork configs still load
+        # getattr with defaults so older fork configs still load
         **{
             f: getattr(model_config, f, d)
             for f, d in [
@@ -356,6 +357,7 @@ def build_astropt3_dataloader(
                 ("jetformer_gmm_k", 4),
                 ("jetformer_noise_max", 0.1),
                 ("jetformer_noise_min", 0.0),
+                ("image_norm_divisor", _DIV_FACTOR),
             ]
         },
     )

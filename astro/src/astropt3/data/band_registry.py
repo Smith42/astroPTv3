@@ -143,36 +143,44 @@ def physical_factors(
     )
 
 
-def physical_normalize(flux: torch.Tensor, bands: list[str]) -> torch.Tensor:
+def physical_normalize(
+    flux: torch.Tensor, bands: list[str], divisor: float = _DIV_FACTOR
+) -> torch.Tensor:
     """Rescale to nanomaggies -> clamp bright pixels (lossy) -> arcsinh.
 
     The physical, invertible-up-to-the-clamp forward normalization. Raw bands
     (RGB composites) pass through untouched; an empty band list is vacuously
     all-RAW and also passes through (nothing to key the physics on).
+    ``divisor`` is the arcsinh knee in nanomaggies — pass the checkpoint's
+    ``config.image_norm_divisor`` so data and inverse stay in the regime the
+    model was trained on.
     """
     if all(b in RAW_BANDS for b in bands):
         return flux
     rescale, clamp = physical_factors(bands, flux.device, flux.dtype)
     flux = flux * rescale
     flux = flux.clamp(min=-clamp, max=clamp)
-    return torch.arcsinh(flux / _DIV_FACTOR) * _DIV_FACTOR
+    return torch.arcsinh(flux / divisor) * divisor
 
 
-def physical_inverse(flux: torch.Tensor, bands: list[str]) -> torch.Tensor:
+def physical_inverse(
+    flux: torch.Tensor, bands: list[str], divisor: float = _DIV_FACTOR
+) -> torch.Tensor:
     """Invert :func:`physical_normalize`: sinh -> un-rescale.
 
     The clamp is lossy: bright pixels above the ceiling are not recoverable
     (accepted, see the galactiktok ADR). Model output is clamped to the
     compressed ceiling first so sinh cannot overflow — the encoder clamps to
     the same physical ceiling, so this is the symmetric representable range,
-    not extra information loss.
+    not extra information loss. ``divisor`` must match the forward pass
+    (the checkpoint's ``config.image_norm_divisor``).
     """
     if all(b in RAW_BANDS for b in bands):
         return flux
     rescale, clamp = physical_factors(bands, flux.device, flux.dtype)
-    ceiling = torch.arcsinh(clamp / _DIV_FACTOR) * _DIV_FACTOR
+    ceiling = torch.arcsinh(clamp / divisor) * divisor
     flux = flux.clamp(min=-ceiling, max=ceiling)
-    flux = torch.sinh(flux / _DIV_FACTOR) * _DIV_FACTOR
+    flux = torch.sinh(flux / divisor) * divisor
     return flux / rescale
 
 

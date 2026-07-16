@@ -70,3 +70,36 @@ def test_roundtrip_below_clamp_is_exact_and_clamp_is_lossy():
     bright = torch.full((3, 2, 2), 2 * clamp_flux("des-g"), dtype=torch.float64)
     clipped = physical_inverse(physical_normalize(bright, DES_BANDS), DES_BANDS)
     assert torch.allclose(clipped, torch.full_like(bright, clamp_flux("des-g")))
+
+
+def test_non_default_divisor_changes_output_and_roundtrips():
+    torch.manual_seed(0)
+    flux = torch.randn(3, 8, 8).double() * 0.05
+    default = physical_normalize(flux, DES_BANDS)
+    moved = physical_normalize(flux, DES_BANDS, divisor=0.5)
+    assert not torch.allclose(default, moved)  # the knob actually acts
+    back = physical_inverse(moved, DES_BANDS, divisor=0.5)
+    assert torch.allclose(back, flux, atol=1e-9)
+
+
+def test_sequencer_uses_config_divisor(tiny_config):
+    """config.image_norm_divisor must reach the sequencer's normalization."""
+    from astropt3 import AstroPT3Config
+    from astropt3.data.packing import ObjectSequencer
+    from astropt3.data.synthetic import make_record
+    from astropt3.tokenization import patchify_image
+
+    record = make_record(3)
+    moved_config = AstroPT3Config(
+        **{**tiny_config.to_dict(), "tokeniser": "jetformer", "image_norm_divisor": 0.5}
+    )
+    seq = ObjectSequencer(moved_config).build(record)
+    flux = torch.as_tensor(record["image"]["flux"])
+    expected = patchify_image(
+        physical_normalize(flux, record["image"]["band"], divisor=0.5), 8
+    )
+    assert torch.allclose(seq.values["images"], expected)
+    default_seq = ObjectSequencer(
+        AstroPT3Config(**{**tiny_config.to_dict(), "tokeniser": "jetformer"})
+    ).build(record)
+    assert not torch.allclose(seq.values["images"], default_seq.values["images"])

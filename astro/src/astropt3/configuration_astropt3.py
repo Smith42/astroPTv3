@@ -69,11 +69,12 @@ class AstroPT3Config(SmolLM3Config):
         self.jetformer_noise_min = jetformer_noise_min
         self.huber_delta = huber_delta
         self.special_token_ce_weight = special_token_ce_weight
-        # self-describing checkpoints: the arcsinh divisor of the physical
-        # image normalization the training data went through (the default
-        # back-fills configs/checkpoints saved before the field existed —
-        # note pre-physical-norm PU-asinh checkpoints are incompatible
-        # regardless, see docs)
+        # arcsinh divisor of the physical image normalization; consumed by
+        # ObjectSequencer (forward) and scripts/generate.py (inverse), so a
+        # checkpoint always normalizes and inverts with the divisor it
+        # trained with (the default back-fills configs/checkpoints saved
+        # before the field existed — note pre-physical-norm PU-asinh
+        # checkpoints are incompatible regardless, see docs)
         self.image_norm_divisor = image_norm_divisor
         kwargs["use_cache"] = False  # reload passes it back through kwargs
         super().__init__(

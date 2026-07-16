@@ -32,7 +32,7 @@ from ..tokenization import (
     patchify_spectrum,
     spiralise,
 )
-from .band_registry import physical_normalize
+from .band_registry import _DIV_FACTOR, physical_normalize
 from .transforms import per_patch_standardize
 
 
@@ -65,13 +65,19 @@ class ObjectSequencer:
         # (which discards each patch's mean/std) is skipped — tokens are the
         # asinh-stretched (images) / raw (spectra) patch values.
         self.standardize = getattr(config, "tokeniser", "affine") != "jetformer"
+        # arcsinh knee of the physical image normalization; carried on the
+        # config so checkpoints are self-describing and the inverse
+        # (scripts/generate.py) uses the divisor the model trained with
+        self.image_norm_divisor = getattr(config, "image_norm_divisor", _DIV_FACTOR)
 
     def _images_tokens(self, record: dict):
         mod = self.registry.get_config("images")
         image = record["image"]
         flux = torch.as_tensor(image["flux"], dtype=torch.float32)
         # may arrive as a list or an array after a parquet round-trip
-        flux = physical_normalize(flux, [str(b) for b in image["band"]])
+        flux = physical_normalize(
+            flux, [str(b) for b in image["band"]], divisor=self.image_norm_divisor
+        )
         patches = patchify_image(flux, mod.patch_size)
         if self.standardize:
             patches = per_patch_standardize(patches)
