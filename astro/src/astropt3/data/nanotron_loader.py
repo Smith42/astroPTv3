@@ -358,6 +358,7 @@ def build_astropt3_dataloader(
                 ("jetformer_noise_max", 0.1),
                 ("jetformer_noise_min", 0.0),
                 ("image_norm_divisor", _DIV_FACTOR),
+                ("spiral", False),
             ]
         },
     )

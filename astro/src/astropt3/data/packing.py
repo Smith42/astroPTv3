@@ -56,13 +56,13 @@ class ObjectSeq:
 class ObjectSequencer:
     """Turn an MMU-schema record into an :class:`ObjectSeq`."""
 
-    def __init__(
-        self,
-        config: AstroPT3Config,
-        spiral: bool = False,
-    ):
+    def __init__(self, config: AstroPT3Config):
         self.registry = config.modality_registry()
-        self.spiral = spiral
+        # spiral patch order comes from the config only (ADR 0004): the
+        # checkpoint self-describes the order it trained in, and the inverse
+        # path keys off the same field — a caller-supplied override would
+        # reopen the silent-scramble mismatch, so there deliberately isn't one
+        self.spiral = getattr(config, "spiral", False)
         # jetformer models an exact likelihood in patch space, so the record
         # -> token map must stay invertible: per-patch standardization
         # (which discards each patch's mean/std) is skipped — tokens are the

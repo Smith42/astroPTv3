@@ -30,7 +30,7 @@ import torch
 from ..data.band_registry import physical_inverse
 from ..data.packing import ObjectSequencer
 from ..generation import generate, reconstruct
-from ..tokenization import unpatchify_image, unpatchify_spectrum
+from ..tokenization import antispiralise, unpatchify_image, unpatchify_spectrum
 
 MODES = ("unconditional", "image-to-spectra", "reconstruct")
 
@@ -205,17 +205,23 @@ def render_sampled_tokens(
             # the checkpoint's own arcsinh knee, so the inverse matches
             # the normalization its training data went through
             divisor = model.config.image_norm_divisor
+            # a spiral checkpoint's tokens (sampled AND template) are in
+            # spiral order; unpatchify expects raster, so undo the exact
+            # order the checkpoint trained in (ADR 0004)
+            spiral = getattr(model.config, "spiral", False)
+
+            def to_pixels(t):
+                return unpatchify_image(
+                    antispiralise(t) if spiral else t, mod.patch_size, channels, side
+                )
+
             imgs = physical_inverse(
-                torch.stack([unpatchify_image(t, mod.patch_size, channels, side) for t in tokens]),
-                bands,
-                divisor=divisor,
+                torch.stack([to_pixels(t) for t in tokens]), bands, divisor=divisor
             )
             truth = None
             if show_truth:
                 truth = physical_inverse(
-                    unpatchify_image(template.values[name].float(), mod.patch_size, channels, side),
-                    bands,
-                    divisor=divisor,
+                    to_pixels(template.values[name].float()), bands, divisor=divisor
                 ).numpy()
             save_image_png(imgs.numpy(), png, f"{name} {tag}", truth=truth, truth_label=truth_label)
         elif name == "spectra":
