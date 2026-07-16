@@ -25,12 +25,22 @@ before samples/wandb existed are never revisited (use a fresh ``--out-dir``
 or delete their lines to re-log; HF conversions are cached, so re-eval is
 cheap).
 
+By default every checkpoint the trainer writes is evaluated exactly once
+(steps 1, 2, 4, ..., 512 then every ``checkpoint_interval``).
+``--eval-every N`` thins that to exact multiples of N -- dropping the early
+powers of two, which the Pythia schedule keeps -- and ``--samples-every``
+thins the sample panels within whatever is evaluated. ``--until-step``
+bounds the sweep: steps above it are never evaluated, and with ``--watch``
+polling stops once the trainer reaches it.
+
 Usage (training machine, alongside a run):
     python astro/scripts/run_probe_sweep.py \
         --checkpoints-dir ../astroPTv3_checkpoints/astropt3-70m \
         --out-dir ../astroPTv3_eval/astropt3-70m \
         --data-root <val_shards_dir> \
         --watch --until-step 143000 --wandb
+
+Needs the ``[train]`` extra (matplotlib + wandb for the panels).
 """
 
 import argparse
@@ -65,6 +75,28 @@ def processed_steps(results_path: Path) -> set[int]:
     if not results_path.exists():
         return set()
     return {json.loads(line)["step"] for line in results_path.read_text().splitlines() if line.strip()}
+
+
+def steps_to_eval(
+    completed: list[int],
+    done: set[int],
+    until_step: int | None = None,
+    eval_every: int = 1,
+) -> list[int]:
+    """Completed checkpoint steps still needing evaluation, ascending.
+
+    ``eval_every`` keeps only exact multiples -- unlike the Pythia
+    ``should_checkpoint`` schedule that writes the checkpoints, it does NOT
+    keep the early powers of two, so ``--eval-every 1000`` on a run with
+    ``checkpoint_interval: 1000`` skips steps 1..512 entirely.
+    """
+    return [
+        s
+        for s in completed
+        if s not in done
+        and (until_step is None or s <= until_step)
+        and (eval_every == 1 or s % eval_every == 0)
+    ]
 
 
 def convert_checkpoint(converter: Path, checkpoint: Path, save_path: Path) -> None:
@@ -111,16 +143,22 @@ def process_step(step: int, args, sample_records: list[dict]) -> dict:
     )
     result["val_loss"] = val["loss"]
     result["val_modality_losses"] = val["modality_losses"]
-    probe = probe_checkpoint(
-        hf_dir,
-        args.data_root,
-        target=args.target,
-        n_objects=args.probe_objects,
-        seq_len=args.seq_len,
-        objects_per_batch=args.objects_per_batch,
-        device=args.device,
-        seed=args.seed,
-    )
+    try:
+        probe = probe_checkpoint(
+            hf_dir,
+            args.data_root,
+            target=args.target,
+            n_objects=args.probe_objects,
+            seq_len=args.seq_len,
+            objects_per_batch=args.objects_per_batch,
+            device=args.device,
+            seed=args.seed,
+        )
+    except ValueError as exc:
+        # a val corpus can carry too few labelled objects (shakeout_mix2 has no
+        # DESI matches at all); val loss + panels are still worth having
+        print(f"[sweep] probe skipped: {exc}", flush=True)
+        probe = {"r2": None, "lambda": None, "target": args.target}
     result["probe_r2"] = probe["r2"]
     result["probe_lambda"] = probe["lambda"]
     result["probe_target"] = probe["target"]
@@ -152,9 +190,24 @@ def main():
     parser.add_argument("--seq-len", type=int, default=896)
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=1,
+        help="only evaluate checkpoint steps that are exact multiples of N "
+        "(default 1: every checkpoint). Unlike the Pythia checkpoint schedule "
+        "this does NOT keep the early powers of two, so --eval-every 1000 skips "
+        "steps 1..512",
+    )
     parser.add_argument("--watch", action="store_true", help="poll until --until-step is processed")
     parser.add_argument("--poll-interval", type=float, default=60.0)
-    parser.add_argument("--until-step", type=int, default=None)
+    parser.add_argument(
+        "--until-step",
+        type=int,
+        default=None,
+        help="highest checkpoint step to evaluate; steps above it are never processed "
+        "(pass the run's train_steps to sweep the whole run)",
+    )
     parser.add_argument(
         "--sample-records",
         default="0",
@@ -200,7 +253,7 @@ def main():
         from astropt3.eval.samples import load_template_record
 
         sample_records = [
-            load_template_record(args.data_root, int(i), need_spectrum=True)
+            load_template_record(args.data_root, int(i), prefer_spectrum=True)
             for i in args.sample_records.split(",")
         ]
 
@@ -224,7 +277,8 @@ def main():
 
     while True:
         done = processed_steps(results_path)
-        todo = [s for s in completed_steps(Path(args.checkpoints_dir)) if s not in done]
+        completed = completed_steps(Path(args.checkpoints_dir))
+        todo = steps_to_eval(completed, done, args.until_step, args.eval_every)
         for step in todo:
             print(f"[sweep] processing step {step}", flush=True)
             result = process_step(step, args, sample_records)
@@ -236,16 +290,27 @@ def main():
                         "checkpoint_step": step,
                         "val/loss": result["val_loss"],
                         **{f"val/loss_{m}": v for m, v in result["val_modality_losses"].items()},
-                        "probe/r2": result["probe_r2"],
+                        **({} if result["probe_r2"] is None else {"probe/r2": result["probe_r2"]}),
                         **{
                             f"samples/{k}": wandb.Image(p)
                             for k, p in result.get("samples", {}).items()
                         },
                     }
                 )
-            print(f"[sweep] step {step}: val_loss={result['val_loss']:.4f} r2={result['probe_r2']:.4f}", flush=True)
+            r2 = result["probe_r2"]
+            print(
+                f"[sweep] step {step}: val_loss={result['val_loss']:.4f} "
+                f"r2={'n/a' if r2 is None else format(r2, '.4f')}",
+                flush=True,
+            )
             done.add(step)
-        if not args.watch or (args.until_step is not None and args.until_step in done):
+        if not args.watch:
+            break
+        # once the trainer is at/past --until-step, every in-range step is in
+        # `done` (they were all in this pass's todo), so the sweep is finished.
+        # Keyed on the trainer's progress, not on --until-step itself being a
+        # scheduled step, so an off-schedule bound still terminates.
+        if args.until_step is not None and max(completed, default=0) >= args.until_step:
             break
         time.sleep(args.poll_interval)
 

@@ -70,3 +70,42 @@ def test_ridge_no_signal_r2_near_zero():
     y = rng.normal(size=400)
     result = linear_probe.ridge_r2(X, y, seed=0)
     assert result["r2"] < 0.2
+
+
+def _sweep_module():
+    """run_probe_sweep.py is a script, not a package module: load it by path."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_probe_sweep.py"
+    spec = importlib.util.spec_from_file_location("run_probe_sweep", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_steps_to_eval_defaults_to_every_completed_step():
+    sweep = _sweep_module()
+    completed = [1, 2, 4, 512, 1000, 2000]
+    assert sweep.steps_to_eval(completed, done=set()) == completed
+    # already-evaluated steps are never revisited (the JSONL is authoritative)
+    assert sweep.steps_to_eval(completed, done={1, 2, 1000}) == [4, 512, 2000]
+
+
+def test_eval_every_drops_the_pythia_powers_of_two():
+    sweep = _sweep_module()
+    # the schedule WRITES 1,2,4,...,512 + every 1000; --eval-every 1000 keeps
+    # only the multiples, unlike should_checkpoint(step, 1000)
+    completed = [1, 2, 4, 8, 128, 512, 1000, 2000, 3000]
+    assert sweep.steps_to_eval(completed, done=set(), eval_every=1000) == [1000, 2000, 3000]
+
+
+def test_until_step_bounds_the_todo_list():
+    sweep = _sweep_module()
+    completed = [1, 2, 1000, 2000, 20000, 21000]
+    assert sweep.steps_to_eval(completed, done=set(), until_step=20000)[-1] == 20000
+    assert sweep.steps_to_eval(completed, done=set(), until_step=20000, eval_every=1000) == [
+        1000,
+        2000,
+        20000,
+    ]

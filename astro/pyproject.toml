@@ -33,6 +33,7 @@ train = [
     "nanotron",
     "flash-attn",
     "wandb",
+    "matplotlib>=3.8",  # eval sidecar sample panels (astropt3.eval.samples)
 ]
 dev = [
     "pytest>=8.0",

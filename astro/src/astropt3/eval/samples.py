@@ -35,22 +35,45 @@ from ..tokenization import unpatchify_image, unpatchify_spectrum
 MODES = ("unconditional", "image-to-spectra", "reconstruct")
 
 
-def load_template_record(data_root: str, record_index: int, need_spectrum: bool) -> dict:
+def load_template_record(data_root: str, record_index: int, prefer_spectrum: bool) -> dict:
+    """The ``record_index``-th val record, preferring spectrum-bearing ones.
+
+    ``prefer_spectrum`` is a preference, not a requirement: a corpus whose
+    crossmatch kept the redshift labels but not the spectrum arrays (or one
+    with no spectroscopic overlap at all, like ``shakeout_mix2``) carries
+    none, and an image-only template still renders every mode except
+    ``image-to-spectra``, which ``sample_checkpoint`` skips.
+    """
     if data_root == "synthetic":
         from ..data.synthetic import make_record
 
-        record = make_record(record_index, image_only_fraction=0.0 if need_spectrum else 0.3)
+        record = make_record(record_index, image_only_fraction=0.0 if prefer_spectrum else 0.3)
         return record
     from ..data.mmu import MMUIterableDataset
 
     dataset = MMUIterableDataset(data_root, rank=0, world_size=1, shuffle_buffer_size=0)
-    wanted = (
-        r for r in dataset if not need_spectrum or r.get("spectrum") is not None
+    if not prefer_spectrum:
+        record = next(itertools.islice(dataset, record_index, None), None)
+        if record is None:
+            raise ValueError(f"fewer than {record_index + 1} records in {data_root}")
+        return record
+
+    with_spectrum, image_only = [], []
+    for record in dataset:
+        if record.get("spectrum") is not None:
+            with_spectrum.append(record)
+            if len(with_spectrum) > record_index:
+                return with_spectrum[record_index]
+        elif len(image_only) <= record_index:
+            image_only.append(record)
+    if len(image_only) <= record_index:
+        raise ValueError(f"fewer than {record_index + 1} records in {data_root}")
+    print(
+        f"[samples] no spectrum-bearing records in {data_root}; "
+        f"falling back to image-only template {record_index}",
+        flush=True,
     )
-    record = next(itertools.islice(wanted, record_index, None), None)
-    if record is None:
-        raise ValueError(f"fewer than {record_index + 1} usable records in {data_root}")
-    return record
+    return image_only[record_index]
 
 
 def save_image_png(
@@ -136,6 +159,8 @@ def sample_template(
     if mode == "reconstruct":
         return {m: v.unsqueeze(0) for m, v in reconstruct(model, template).items()}
     if mode == "image-to-spectra":
+        if "spectra" not in template.masks:
+            raise ValueError("image-to-spectra needs a template record carrying a spectrum")
         gen_modalities = {"spectra"}
     elif mode == "unconditional":
         gen_modalities = set(template.masks)

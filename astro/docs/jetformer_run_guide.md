@@ -49,6 +49,13 @@ Run `astropt3-70m-jetformer` on 2×GH200 (DP=2, TP=1, PP=1), 20,000 steps,
   **synthetic** records mixed in via `synthetic_image_only_fraction: 0.3`.
   Spectra NLL plateaued (~260–280) and never really improved. If spectra
   matter, a dataset that actually carries spectrum arrays is required first.
+- **`shakeout_mix2/val` carries no labels at all** (full scan, 2026-07-16):
+  0 of 49,457 val rows have `Z` or a spectrum. The DESI matches live only in
+  the `cone-*` prep (7,354 of 26,373 train rows, footprint dec 32.7–34.6);
+  the `main-*` prep (2.2M rows) has none, and the cone's single val tile
+  (79 rows, dec 31.9–32.1) sits below the matched footprint. So on this root
+  the eval sidecar reports `r2=n/a` and renders image-only panels — both are
+  expected, not failures. A val root with DESI overlap is needed to probe.
 
 ---
 
