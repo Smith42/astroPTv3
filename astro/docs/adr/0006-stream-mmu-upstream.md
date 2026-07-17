@@ -73,7 +73,9 @@ design.
    - **spectra-only** — ~1.1M DESI spectra as single-modality spectrum
      sequences,
    - **crossmatch (inner)** — ~0.7M matched pairs as multimodal image+spectrum
-     sequences.
+     sequences. The pairs are **precomputed offline into a published
+     match-index** (see Performance); this stream reads native image + spectrum
+     partitions and joins them on the index in memory — no live spatial join.
 
    The join flips `how="left"` → `how="inner"`: image-only coverage now comes
    from the standalone images stream, so the join carries pairs only. A matched
@@ -94,9 +96,10 @@ design.
 
 4. **Resume is partition-granularity.** Per-source cursor
    `(epoch, partition_index)` over the deterministic, per-epoch-shuffled
-   partition order; on resume, rebuild the lazy crossmatch (cheap), skip whole
-   partitions up to `partition_index` (no download), and restart the in-flight
-   partition from its beginning. This **replays ≤ 1 partition of already-trained
+   partition order; on resume, reopen the native catalogs and reload the
+   match-index (cheap; no spatial join to rebuild), skip whole partitions up to
+   `partition_index` (no download), and restart the in-flight partition from its
+   beginning. This **replays ≤ 1 partition of already-trained
    records per kill** (a partition is thousands of objects). The Phase 4
    kill/resume gate and the `object_id_log` audit are rewritten from "no replay"
    to **"no replay beyond the in-flight partition."** The weighted-sampler RNG
@@ -129,9 +132,12 @@ design.
    schema distinct from what MMU publishes — the loader consumes native rows and
    adapts minimally.
 
-8. **lsdb/hats are lazy-imported** on the streaming path only (behind the
-   `synthetic` sentinel), so the CPU suite stays offline and lsdb-free. They
-   move from the `[data]` extra into the nanotron training env's dependencies.
+8. **lsdb is offline-only; train-time streaming is `pyarrow` + `hats`.** lsdb
+   runs only in the prep env, to compute the match-index once; no train-time
+   path needs its dask/KD-tree machinery. `pyarrow`/`hats` are lazy-imported on
+   the streaming path only (behind the `synthetic` sentinel), so the CPU suite
+   stays offline; they — not lsdb — move into the nanotron training env's
+   dependencies. lsdb stays in the `[data]`/prep extra.
 
 9. **Adapter test = checked-in cassette.** A handful of real crossmatch rows are
    captured once (online, login node) into a small repo fixture and replayed
@@ -147,6 +153,54 @@ design.
     clustering of HEALPix-ordered partitions. Because the stream is endless,
     uneven partition sizes never starve a rank at the optimizer all-reduce — each
     rank always has another partition to draw.
+
+## Performance
+
+Streaming must sustain **≥2× training-consumption per rank** so the GPU never
+starves; beyond that floor, throughput work stops ("as fast as possible" is not
+the target). The 75 obj/s of the old serial `prepare_pilot_data.py` prep is
+**not** that number — training runs `DP × num_workers` (~256 at pilot scale)
+loader processes, so the naive live path may already clear the floor by worker
+parallelism, or 256 concurrent engines may exhaust RAM. **A profiling spike
+settles it before anything is built** (see Open issues): one live worker over
+~5 real partitions, coarse timers on `partition read` vs `row decode` vs
+`tokenize`, so the optimization is aimed at the measured bottleneck rather than
+a guessed one.
+
+Three refinements shape the streaming path — chosen so they also survive scale
+(a 62 TB Legacy South imaging corpus grows the *images-only* stream; the
+crossmatch stays bounded by the smaller spectroscopic side, so imaging volume
+never inflates it):
+
+- **Precompute the crossmatch into a published match-index, not joined
+  records.** `lsdb.crossmatch` runs offline, once; the artifact published to HF
+  is only `(image_healpix, image_id, spectrum_healpix, spectrum_id,
+  dist_arcsec)` — ~0.7M rows, tens of MB, **no pixels duplicated** (joined
+  records would be ~280 GB of images already hosted in the LegacySurvey
+  catalog, and a second bespoke schema). The index is bounded by matched pairs,
+  so it survives arbitrarily large imaging corpora unchanged. This keeps the
+  "one native schema" win: the published artifact is pointers into MMU's data,
+  not a copy of it.
+- **lsdb offline-only; train-time streaming is `pyarrow` + `hats`.** Once the
+  join is an id-dict lookup, no train-time path needs lsdb's dask/KD-tree
+  engine: `hats` enumerates partitions + HEALPix order + `hf://` resolution,
+  `pyarrow`/`fsspec` stream partition files, and matches resolve through the
+  in-memory index. Removes the 256-dask-scheduler feasibility risk and drops a
+  distributed-join engine from a path that only reads files sequentially.
+- **Optimize the shared decode, images-first.** The 60% images-only stream does
+  no join and shares its decode/tokenize path with the other two, so a decode
+  win lifts all three; it is also the majority of every batch and the binding
+  throughput constraint. The decode (currently per-row `iterrows`/struct
+  coercion) becomes columnar per-partition — bulk pyarrow→numpy, sliced into
+  per-object records at the frozen `ObjectSequencer` boundary — contingent on
+  the flux column being fixed-shape, which the spike confirms. `ObjectSequencer`
+  / `PackedCollator` / `tokenization.py` are untouched.
+
+Prefetch is the existing DataLoader worker queue (`prefetch_factor` /
+`num_workers`); no custom prefetcher is built. Network-stall resilience and
+cross-epoch local partition caching are **out of scope** for the sub-epoch
+pilot — they live under the "network is a hard dependency" negative below, not
+the speed work.
 
 ## Options considered
 
@@ -201,9 +255,10 @@ schema and three-place dataset-onboarding this ADR removes.
   no-replay guarantee and its Phase 4 gate are relaxed accordingly.
 - **Reproducibility softened** by floating revisions — the corpus can change
   under a long run if MMU pushes upstream.
-- **lsdb/hats become training-env dependencies**, and `CatalogStream`'s
-  resume-relevant API (deterministic partition iteration + skip-to-partition) is
-  an **implementation risk** assumed here, not yet verified in code.
+- **`pyarrow`/`hats` become training-env dependencies** (lsdb stays offline).
+  That `hats` alone — without lsdb — exposes deterministic partition
+  enumeration, HEALPix order, and `hf://` resolution is an **implementation
+  risk** assumed here, not yet verified in code (see Open issues).
 - Interim fixed weights (0.60/0.15/0.25) are a guess; the small corpora
   (spectra, pairs) still carry over-memorization risk until the mixing issue
   tunes them.
@@ -213,10 +268,20 @@ schema and three-place dataset-onboarding this ADR removes.
 - **Multi-source weighted mixing** (GitHub issue): general, config-driven source
   list with tunable sampling weights, interleave, and per-source modality
   routing — supersedes the hardcoded three sources and the provisional weights.
-- **`CatalogStream` resume API:** verify it exposes deterministic partition
-  order and a skip-to-partition path; if not, the partition cursor needs a
-  different anchor (e.g. re-deriving `get_ordered_healpix_pixels()` and driving
-  `.partitions[i]` directly).
+- **Profiling spike (do first):** one live `pyarrow`/`hats` worker over ~5 real
+  partitions, timing `partition read` vs `row decode` vs `tokenize`, and
+  checking whether ~256 concurrent workers are RAM-feasible. Confirms whether
+  worker parallelism alone clears the floor and which path (if any) needs the
+  columnar decode — nothing else is built until this runs.
+- **`hats`-without-lsdb partition API:** verify `hats` alone exposes
+  deterministic partition enumeration, HEALPix order, and `hf://` resolution
+  (the pieces of the HATS abstraction the train-time stream needs). If it does
+  not, fall back to lsdb-at-train-time or reimplement partition discovery — the
+  latter being the worse option.
+- **Match-index build:** compute the crossmatch once with lsdb and publish
+  `(image_healpix, image_id, spectrum_healpix, spectrum_id, dist_arcsec)` to HF;
+  confirm matches for an image in partition `P` fall in the same/adjacent
+  spectrum partition so the in-memory join stays partition-local.
 - **Revision logging:** cheap run-start capture of each catalog's resolved HF
   revision into a `provenance.json`, restoring after-the-fact traceability under
   the float-to-latest decision.
@@ -226,7 +291,8 @@ schema and three-place dataset-onboarding this ADR removes.
 ## References
 
 - `astro/src/astropt3/data/nanotron_loader.py` — `PackedMicroBatches` (rewired
-  to three weighted `CatalogStream`s), per-source partition cursors, resume.
+  to three weighted `pyarrow`/`hats` partition streams + match-index join),
+  per-source partition cursors, resume.
 - `astro/src/astropt3/data/mmu.py` — `row_to_record` (moved in), streaming
   crossmatch dataset; deletions listed above.
 - `astro/src/astropt3/data/synthetic.py` — unchanged offline record source.
