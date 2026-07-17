@@ -229,6 +229,15 @@ launch time in the YAML.
 
 ### Data pipeline
 
+> **Superseded by [ADR 0006](docs/adr/0006-stream-mmu-upstream.md) (2026-07-17).**
+> The local-reshard + offline-compute-node design below (lsdb crossmatch →
+> `PILOT_FEATURES` parquet shards → offline `MMUIterableDataset`) is replaced by
+> streaming the MMU catalogs directly at train time (lsdb/HATS + `CatalogStream`,
+> internet required on compute nodes). Local shards, `prepare_pilot_data.py`,
+> `PILOT_FEATURES`, and `assign_split` are removed; see the ADR for the three
+> interleaved streams, partition-granularity resume, and reserved-partition val.
+> The description below is retained for historical context.
+
 - **Prep (login node, `[data]` env)**: `prepare_pilot_data.py` —
   `lsdb.open_catalog("hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north")`
   LEFT-crossmatch `mmu_desi_edr_sv3` (≤1″): all images kept, spectra attached
