@@ -16,6 +16,7 @@ import argparse
 import json
 import math
 import warnings
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -81,6 +82,42 @@ def collect_probe_objects(
             stacklevel=2,
         )
     return objects, np.asarray(targets, dtype=np.float64)
+
+
+def load_or_collect_probe_objects(
+    cache_path, config, data_root, target, n_objects, *, seed=0, pool_modality="images"
+):
+    """Disk-cached :func:`collect_probe_objects` (atomic tmp+rename write).
+
+    The collection scan can read the whole val split, so sweeps persist its
+    result under their out dir and every restart reloads it in seconds. The
+    cache is keyed on the collection arguments; a mismatch re-collects and
+    overwrites (delete the file to force a refresh after regenerating data).
+    """
+    key = {
+        "data_root": str(data_root),
+        "target": target,
+        "n_objects": n_objects,
+        "seed": seed,
+        "pool_modality": pool_modality,
+    }
+    cache_path = Path(cache_path)
+    if cache_path.exists():
+        payload = torch.load(cache_path, weights_only=False)
+        if payload.get("key") == key:
+            return payload["objects"], payload["targets"]
+        warnings.warn(
+            f"probe cache {cache_path} was built with {payload.get('key')}, "
+            f"not {key}; re-collecting",
+            stacklevel=2,
+        )
+    objects, targets = collect_probe_objects(
+        config, data_root, target, n_objects, seed=seed, pool_modality=pool_modality
+    )
+    tmp = cache_path.with_name(cache_path.name + ".tmp")
+    torch.save({"key": key, "objects": objects, "targets": targets}, tmp)
+    tmp.rename(cache_path)
+    return objects, targets
 
 
 @torch.no_grad()

@@ -87,6 +87,35 @@ def test_probe_uses_all_objects_when_stream_exhausted(tiny_config, tmp_path):
         linear_probe.collect_probe_objects(tiny_config, str(tmp_path), "NOT_A_TARGET", 8)
 
 
+def test_evaluate_accepts_prebuilt_batches(tiny_model, tiny_config):
+    # sweeps build the fixed val batches once; result must match fresh streaming
+    kwargs = dict(n_batches=2, micro_batch_size=2, seq_len=896)
+    batches = list(val_loss.val_batches(tiny_config, "synthetic", **kwargs))
+    fresh = val_loss.evaluate(tiny_model, "synthetic", **kwargs)
+    reused = val_loss.evaluate(tiny_model, "synthetic", batches=batches)
+    assert reused == fresh
+    # batches survive reuse: a second pass over the same list agrees
+    assert val_loss.evaluate(tiny_model, "synthetic", batches=batches) == fresh
+
+
+def test_probe_set_disk_cache_roundtrip(tiny_config, tmp_path):
+    cache = tmp_path / "probe_set.pt"
+    _, targets = linear_probe.load_or_collect_probe_objects(
+        cache, tiny_config, "synthetic", "Z", 6
+    )
+    assert cache.exists()
+    objects2, targets2 = linear_probe.load_or_collect_probe_objects(
+        cache, tiny_config, "synthetic", "Z", 6
+    )
+    assert len(objects2) == 6 and np.array_equal(targets, targets2)
+    # a mismatched key re-collects instead of serving a stale set
+    with pytest.warns(UserWarning, match="re-collecting"):
+        _, targets3 = linear_probe.load_or_collect_probe_objects(
+            cache, tiny_config, "synthetic", "Z", 4
+        )
+    assert targets3.shape == (4,) and np.array_equal(targets3, targets[:4])
+
+
 def test_probe_checkpoint_accepts_precollected_probe_set(tiny_model, tiny_config, tmp_path):
     # sweeps collect the probe set once and reuse it: same result as fresh collection
     ckpt = tmp_path / "ckpt"

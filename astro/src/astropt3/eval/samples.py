@@ -59,7 +59,13 @@ def load_template_record(
         return make_record(record_index, image_only_fraction=0.0 if prefer_spectrum else 0.3)
     from ..data.mmu import MMUIterableDataset
 
-    dataset = MMUIterableDataset(data_root, rank=0, world_size=1, shuffle_buffer_size=0)
+    # spectrum-only rows (ADR 0005) live in their own spectra/ shards, sorted
+    # AFTER every crossmatched shard in the stream — read the subdir directly
+    # rather than scanning the whole split to reach them; the record order
+    # within it is unchanged, so indices stay stable
+    spectra_dir = Path(data_root) / MMUIterableDataset.SPECTRA_SUBDIR
+    root = spectra_dir if spectrum_only and spectra_dir.is_dir() else data_root
+    dataset = MMUIterableDataset(root, rank=0, world_size=1, shuffle_buffer_size=0)
     if spectrum_only:
         wanted = (
             r
