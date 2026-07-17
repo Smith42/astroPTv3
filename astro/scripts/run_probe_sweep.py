@@ -132,8 +132,8 @@ def convert_checkpoint(converter: Path, checkpoint: Path, save_path: Path) -> No
     )
 
 
-def process_step(step: int, args, sample_records: list[dict]) -> dict:
-    from astropt3.eval.linear_probe import probe_checkpoint
+def process_step(step: int, args, sample_records: list[dict], probe_cache: list) -> dict:
+    from astropt3.eval.linear_probe import collect_probe_objects, probe_checkpoint
     from astropt3.eval.samples import sample_checkpoint
     from astropt3.eval.val_loss import evaluate_checkpoint
 
@@ -154,6 +154,22 @@ def process_step(step: int, args, sample_records: list[dict]) -> dict:
     result["val_loss"] = val["loss"]
     result["val_modality_losses"] = val["modality_losses"]
     try:
+        # the probe set depends only on the val stream, not on checkpoint
+        # weights, and collecting it can scan the whole val split — collect
+        # once per sweep and reuse it for every step
+        if not probe_cache:
+            import astropt3  # noqa: F401  -- registers the Auto classes
+            from transformers import AutoConfig
+
+            probe_cache.append(
+                collect_probe_objects(
+                    AutoConfig.from_pretrained(hf_dir),
+                    args.data_root,
+                    args.target,
+                    args.probe_objects,
+                    seed=args.seed,
+                )
+            )
         probe = probe_checkpoint(
             hf_dir,
             args.data_root,
@@ -163,6 +179,7 @@ def process_step(step: int, args, sample_records: list[dict]) -> dict:
             objects_per_batch=args.objects_per_batch,
             device=args.device,
             seed=args.seed,
+            probe_set=probe_cache[0],
         )
     except ValueError as exc:
         # a val corpus can carry too few labelled objects (shakeout_mix2 has no
@@ -302,6 +319,7 @@ def main():
         wandb_run.define_metric("checkpoint_step")
         wandb_run.define_metric("*", step_metric="checkpoint_step")
 
+    probe_cache: list = []  # one-slot (objects, targets) cache shared across steps
     while True:
         done = processed_steps(results_path)
         completed = completed_steps(Path(args.checkpoints_dir))
@@ -315,7 +333,7 @@ def main():
         )
         for step in todo:
             print(f"[sweep] processing step {step}", flush=True)
-            result = process_step(step, args, sample_records)
+            result = process_step(step, args, sample_records, probe_cache)
             with open(results_path, "a") as f:
                 f.write(json.dumps(result) + "\n")
             if wandb_run is not None:

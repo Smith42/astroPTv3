@@ -37,6 +37,10 @@ def _val_records(data_root, seed=0):
         yield from MMUIterableDataset(data_root, rank=0, world_size=1, seed=seed)
 
 
+# record key that feeds each poolable modality (mirrors ObjectSequencer)
+_POOL_RECORD_KEY = {"images": "image", "spectra": "spectrum"}
+
+
 def collect_probe_objects(
     config, data_root, target, n_objects, *, seed=0, pool_modality="images"
 ):
@@ -46,13 +50,18 @@ def collect_probe_objects(
     rows (ADR 0005) carry ``Z`` but have no image tokens to pool over. If
     the val stream is exhausted before ``n_objects`` qualify, all qualifying
     objects are used (with a warning); the stream is deterministic, so every
-    checkpoint in a sweep probes the same reduced set.
+    checkpoint in a sweep probes the same reduced set. The scan can cover
+    the whole val split, so sweep callers should collect once and pass the
+    result to :func:`probe_checkpoint` as ``probe_set``.
     """
     sequencer = ObjectSequencer(config)
+    source_key = _POOL_RECORD_KEY.get(pool_modality)
     objects, targets = [], []
     for record in _val_records(data_root, seed=seed):
         value = record.get(target)
         if value is None or not math.isfinite(float(value)):
+            continue
+        if source_key is not None and record.get(source_key) is None:
             continue
         obj = sequencer.build(record)
         if pool_modality not in obj.masks:
@@ -155,7 +164,12 @@ def probe_checkpoint(
     pool_modality="images",
     device=None,
     seed=0,
+    probe_set=None,
 ):
+    """Probe one checkpoint; ``probe_set`` is an optional pre-collected
+    ``(objects, targets)`` pair from :func:`collect_probe_objects` — the
+    probe set depends only on the data stream, not on checkpoint weights,
+    so sweeps should collect once and reuse it for every step."""
     import astropt3  # noqa: F401  -- registers the Auto classes
 
     from transformers import AutoModel
@@ -165,9 +179,11 @@ def probe_checkpoint(
     dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
     model = AutoModel.from_pretrained(checkpoint).to(device=device, dtype=dtype).eval()
 
-    objects, targets = collect_probe_objects(
-        model.config, data_root, target, n_objects, seed=seed, pool_modality=pool_modality
-    )
+    if probe_set is None:
+        probe_set = collect_probe_objects(
+            model.config, data_root, target, n_objects, seed=seed, pool_modality=pool_modality
+        )
+    objects, targets = probe_set
     X = embed_objects(
         model,
         model.config,

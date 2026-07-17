@@ -87,6 +87,19 @@ def test_probe_uses_all_objects_when_stream_exhausted(tiny_config, tmp_path):
         linear_probe.collect_probe_objects(tiny_config, str(tmp_path), "NOT_A_TARGET", 8)
 
 
+def test_probe_checkpoint_accepts_precollected_probe_set(tiny_model, tiny_config, tmp_path):
+    # sweeps collect the probe set once and reuse it: same result as fresh collection
+    ckpt = tmp_path / "ckpt"
+    tiny_model.save_pretrained(ckpt)
+    probe_set = linear_probe.collect_probe_objects(tiny_config, "synthetic", "Z", 12)
+    reused = linear_probe.probe_checkpoint(
+        ckpt, "synthetic", n_objects=12, probe_set=probe_set, device="cpu"
+    )
+    fresh = linear_probe.probe_checkpoint(ckpt, "synthetic", n_objects=12, device="cpu")
+    assert math.isfinite(reused["r2"]) and reused["r2"] == fresh["r2"]
+    assert reused["n_objects"] == fresh["n_objects"] == 12
+
+
 def test_embeddings_align_with_objects(tiny_model, tiny_config):
     objects, targets = linear_probe.collect_probe_objects(tiny_config, "synthetic", "Z", 6)
     X = linear_probe.embed_objects(tiny_model, tiny_config, objects, seq_len=896, objects_per_batch=4)
