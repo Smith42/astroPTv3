@@ -28,7 +28,7 @@ from astropt3.data.nanotron_loader import (
     build_astropt3_dataloader,
     loader_state_dict,
 )
-from astropt3.data.synthetic import record_stream
+from astropt3.data.synthetic import make_record, record_stream
 
 MBS = 2
 # two whole objects per row (objects are 180/147 tokens post-crop), so the
@@ -178,6 +178,65 @@ def test_legacy_dataset_state_requires_zero_workers(tiny_config, tmp_path):
     # at workers == 0 a legacy (dataset-format) file still resumes exactly
     loader = build_loader(tiny_config, "synthetic", 0, resume_state_dir=state_dir)
     assert flat_equal(next(iter(loader)), next(it))
+
+
+@pytest.fixture(scope="module")
+def oversampled_shard_dir(tmp_path_factory):
+    # main shards + a spectrum-only spectra/ shard set (ADR 0005 pilot_v2 layout)
+    out = tmp_path_factory.mktemp("resume_shards_v2")
+    records = list(record_stream(36))
+    for k in range(0, 36, 12):
+        mmu.write_shard(records[k : k + 12], out / f"shard-{k:05d}.parquet")
+    spec = [
+        make_record(i, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+        for i in range(100, 112)
+    ]
+    for k in range(0, 12, 6):
+        mmu.write_shard(spec[k : k + 6], out / "spectra" / f"shard-{k:05d}.parquet")
+    return out
+
+
+def test_resume_exact_under_spectra_oversampling(tiny_config, oversampled_shard_dir, tmp_path):
+    # the ADR 0005 weighted re-emit must keep the Phase 4 resume contract:
+    # checkpoint mid-stream and continue exactly through the duplicated
+    # (oversampled) shard region and across the epoch boundary
+    log_a = tmp_path / "a.log"
+    ds_a = make_stream(
+        tiny_config, oversampled_shard_dir, spectra_oversample=3, object_id_log=log_a
+    )
+    it_a = iter(ds_a)
+    consumed = list(islice(it_a, 8))
+    assert len(consumed) == 8
+    state = ds_a.state_dict()
+    assert state["spectra_oversample"] == 3
+    reference = list(islice(it_a, 6))
+
+    log_b = tmp_path / "b.log"
+    ds_b = make_stream(
+        tiny_config, oversampled_shard_dir, spectra_oversample=3, object_id_log=log_b
+    )
+    ds_b.load_state_dict(state)
+    resumed = list(islice(iter(ds_b), 6))
+    for i, (ref, res) in enumerate(zip(reference, resumed)):
+        assert flat_equal(ref, res), f"micro-batch {i} diverged after resume"
+    assert ds_b._epoch >= 1, "continuation never wrapped past the oversampled shards"
+
+    # the continuation really covered the spectrum-only repeats: each of the
+    # 12 spectrum-only objects (indices >= 100) is drawn 3x per epoch
+    from collections import Counter
+
+    lines = log_b.with_name(log_b.name + ".dp0").read_text().splitlines()
+    spec_counts = Counter(o for o in lines if int(o.rsplit("_", 1)[1]) >= 100)
+    assert len(spec_counts) == 12 and set(spec_counts.values()) == {3}
+
+
+def test_resume_rejects_spectra_oversample_mismatch(tiny_config, oversampled_shard_dir):
+    ds = make_stream(tiny_config, oversampled_shard_dir, spectra_oversample=3)
+    next(iter(ds))
+    state = ds.state_dict()
+    ds2 = make_stream(tiny_config, oversampled_shard_dir, spectra_oversample=1)
+    with pytest.raises(ValueError, match="spectra_oversample"):
+        ds2.load_state_dict(state)
 
 
 def test_mmu_resume_across_epoch_boundary(tiny_config, small_shard_dir):

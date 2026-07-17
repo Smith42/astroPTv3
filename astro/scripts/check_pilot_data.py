@@ -33,7 +33,7 @@ from astropt3.data.packing import ObjectSequencer, PackedCollator  # noqa: E402
 from astropt3.tokenization import normalize_wavelength  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = ROOT / "configs" / "data" / "pilot_images_spectra.yaml"
+CONFIG_PATH = ROOT / "configs" / "data" / "pilot_images_spectra_v2.yaml"
 
 
 def sanity(dataset, sequencer, n_objects: int) -> None:

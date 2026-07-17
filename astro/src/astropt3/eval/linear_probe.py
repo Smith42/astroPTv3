@@ -36,15 +36,24 @@ def _val_records(data_root, seed=0):
         yield from MMUIterableDataset(data_root, rank=0, world_size=1, seed=seed)
 
 
-def collect_probe_objects(config, data_root, target, n_objects, *, seed=0):
-    """First ``n_objects`` val objects that carry a finite ``target`` scalar."""
+def collect_probe_objects(
+    config, data_root, target, n_objects, *, seed=0, pool_modality="images"
+):
+    """First ``n_objects`` val objects that carry a finite ``target`` scalar.
+
+    Objects lacking the ``pool_modality`` are skipped — spectrum-only DESI
+    rows (ADR 0005) carry ``Z`` but have no image tokens to pool over.
+    """
     sequencer = ObjectSequencer(config)
     objects, targets = [], []
     for record in _val_records(data_root, seed=seed):
         value = record.get(target)
         if value is None or not math.isfinite(float(value)):
             continue
-        objects.append(sequencer.build(record))
+        obj = sequencer.build(record)
+        if pool_modality not in obj.masks:
+            continue
+        objects.append(obj)
         targets.append(float(value))
         if len(objects) >= n_objects:
             break
@@ -144,7 +153,9 @@ def probe_checkpoint(
     dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
     model = AutoModel.from_pretrained(checkpoint).to(device=device, dtype=dtype).eval()
 
-    objects, targets = collect_probe_objects(model.config, data_root, target, n_objects, seed=seed)
+    objects, targets = collect_probe_objects(
+        model.config, data_root, target, n_objects, seed=seed, pool_modality=pool_modality
+    )
     X = embed_objects(
         model,
         model.config,

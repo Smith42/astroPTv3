@@ -136,6 +136,8 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         data_root: str = SYNTHETIC_ROOT,
         shuffle_buffer_size: int = 0,
         synthetic_image_only_fraction: float = 0.3,
+        synthetic_spectrum_only_fraction: float = 0.0,
+        spectra_oversample: int = 1,
         rank: int = 0,
         world_size: int = 1,
         seed: int = 0,
@@ -149,6 +151,10 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self.data_root = str(data_root)
         self.shuffle_buffer_size = shuffle_buffer_size
         self.synthetic_image_only_fraction = synthetic_image_only_fraction
+        self.synthetic_spectrum_only_fraction = synthetic_spectrum_only_fraction
+        # ADR 0005: how many times each spectrum-only shard (the spectra/
+        # subdir of data_root) is listed per epoch — the draw-frequency knob
+        self.spectra_oversample = spectra_oversample
         self.rank = rank
         self.world_size = world_size
         self.seed = seed
@@ -188,6 +194,14 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 f"dataset state was saved for data_root={state['data_root']!r}, "
                 f"this stream reads {self.data_root!r}"
             )
+        if state.get("spectra_oversample") not in (None, self.spectra_oversample):
+            # the epoch's shard list is a function of the oversample factor,
+            # so the saved HF stream position only maps onto the same value
+            raise ValueError(
+                f"dataset state was saved with spectra_oversample="
+                f"{state['spectra_oversample']}, this stream uses "
+                f"{self.spectra_oversample}"
+            )
         self._resume_state = dict(state)
 
     def _snapshot(self, records: int) -> dict:
@@ -200,6 +214,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             "epoch": self._epoch,
             "hf_state": hf_state,
             "data_root": self.data_root,
+            "spectra_oversample": self.spectra_oversample,
         }
 
     # -- record sources -----------------------------------------------------
@@ -211,7 +226,11 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         offset = self.rank * n_workers + worker_id
         stride = self.world_size * n_workers
         for k in itertools.count(start_count):
-            yield make_record(offset + k * stride, image_only_fraction=self.synthetic_image_only_fraction)
+            yield make_record(
+                offset + k * stride,
+                image_only_fraction=self.synthetic_image_only_fraction,
+                spectrum_only_fraction=self.synthetic_spectrum_only_fraction,
+            )
 
     def _mmu_records(self, start_epoch: int, hf_state):
         """Endless stream over the shards, reshuffled per epoch.
@@ -226,6 +245,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             world_size=self.world_size,
             shuffle_buffer_size=self.shuffle_buffer_size,
             seed=self.seed,
+            spectra_repeat=self.spectra_oversample,
         )
         self._mmu_dataset = dataset
         for epoch in itertools.count(start_epoch):
@@ -368,6 +388,8 @@ def build_astropt3_dataloader(
         data_root=dataset_args.data_root,
         shuffle_buffer_size=getattr(dataset_args, "shuffle_buffer_size", 0),
         synthetic_image_only_fraction=getattr(dataset_args, "synthetic_image_only_fraction", 0.3),
+        synthetic_spectrum_only_fraction=getattr(dataset_args, "synthetic_spectrum_only_fraction", 0.0),
+        spectra_oversample=getattr(dataset_args, "spectra_oversample", 1),
         rank=dp_rank,
         world_size=dp_size,
         seed=seed,

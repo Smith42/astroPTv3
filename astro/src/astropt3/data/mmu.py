@@ -30,8 +30,10 @@ N_BANDS = IMAGE_SHAPE[0]
 # both catalogs (2026-07-07): the image struct uses ``band`` with per-band
 # ``psf_fwhm``/``scale`` lists, and DESI's ``ZWARN`` is a bool. ``spectrum``,
 # ``Z``, ``ZERR``, ``ZWARN`` and ``match_dist_arcsec`` are null for the ~13/14
-# of objects without a DESI match. Scalars beyond the model inputs (``z_spec``,
-# ``Z``, ``ebv``, ``flux_*``) ride along for the Phase 4 linear probes.
+# of objects without a DESI match; since ADR 0005 (``pilot_v2``) ``image`` is
+# symmetrically null (with the left-catalog scalars) for the non-crossmatched
+# DESI spectrum-only rows. Scalars beyond the model inputs (``z_spec``, ``Z``,
+# ``ebv``, ``flux_*``) ride along for the Phase 4 linear probes.
 PILOT_FEATURES = Features(
     {
         "object_id": Value("string"),
@@ -93,15 +95,18 @@ def normalize_record(rec: dict) -> dict:
     """Coerce a raw record (synthetic fixture or crossmatch row) to PILOT_FEATURES.
 
     Tolerates the schema drift between sources: scalar vs per-band
-    ``psf_fwhm``/``scale``, missing probe scalars.
+    ``psf_fwhm``/``scale``, missing probe scalars. ``image`` is optional
+    (spectrum-only DESI rows, ADR 0005), mirroring the optional ``spectrum``.
     """
-    image = rec["image"]
+    image = rec.get("image")
     out = {
         "object_id": str(rec["object_id"]),
         "ra": float(rec["ra"]),
         "dec": float(rec["dec"]),
         "_healpix_29": int(rec["_healpix_29"]),
-        "image": {
+        "image": None
+        if image is None
+        else {
             "flux": _image_flux(image["flux"]),
             "band": [str(b) for b in image["band"]],
             "psf_fwhm": _as_band_list(image.get("psf_fwhm", np.nan)),
@@ -135,27 +140,30 @@ def normalize_record(rec: dict) -> dict:
     return out
 
 
-def _spectrum_is_null(spec) -> bool:
-    if spec is None:
+def _struct_is_null(struct) -> bool:
+    if struct is None:
         return True
-    flux = spec.get("flux")
+    flux = struct.get("flux")
     return flux is None or len(flux) == 0
 
 
 def decode_record(example: dict) -> dict:
     """Shard example -> record dict shaped like ``synthetic.make_record`` output.
 
-    Image flux comes back as float32 (3, 152, 152); an unmatched object's
-    ``spectrum`` key is dropped entirely (the ``ObjectSequencer`` convention
-    for a missing modality).
+    Image flux comes back as float32 (3, 152, 152); a missing modality's key
+    (``spectrum`` for unmatched images, ``image`` for spectrum-only DESI
+    rows) is dropped entirely (the ``ObjectSequencer`` convention).
     """
     rec = dict(example)
-    image = dict(example["image"])
-    image["flux"] = np.asarray(image["flux"], dtype=np.float32)
-    rec["image"] = image
+    if _struct_is_null(example.get("image")):
+        rec.pop("image", None)
+    else:
+        image = dict(example["image"])
+        image["flux"] = np.asarray(image["flux"], dtype=np.float32)
+        rec["image"] = image
     rec["object_id"] = str(rec["object_id"])
     spec = rec.get("spectrum")
-    if _spectrum_is_null(spec):
+    if _struct_is_null(spec):
         rec.pop("spectrum", None)
     else:
         rec["spectrum"] = {
@@ -220,7 +228,17 @@ class MMUIterableDataset(torch.utils.data.IterableDataset):
     ``state_dict``/``load_state_dict`` pass through to the underlying
     stateful iterable for Phase 4 checkpoint-resume (like HF's own shuffle,
     the in-flight buffer is not part of the state).
+
+    Spectrum-only shards (ADR 0005) live in a ``spectra/`` subdirectory of
+    the split root, outside the top-level glob, and each is listed
+    ``spectra_repeat`` times in the epoch's file list — HF streams duplicate
+    files as distinct shards, so this IS the shard-level oversampling: the
+    per-epoch shard shuffle interleaves the repeats, and the file list is a
+    pure function of (seed, epoch, spectra_repeat) so checkpoint-resume
+    stays exact.
     """
+
+    SPECTRA_SUBDIR = "spectra"
 
     def __init__(
         self,
@@ -230,13 +248,21 @@ class MMUIterableDataset(torch.utils.data.IterableDataset):
         world_size: int = 1,
         shuffle_buffer_size: int = 0,
         seed: int = 0,
+        spectra_repeat: int = 1,
     ):
+        spectra_files = []
         if isinstance(data_files, (str, Path)):
             root = Path(data_files)
-            data_files = sorted(root.glob("*.parquet")) if root.is_dir() else [root]
-        if not data_files:
+            if root.is_dir():
+                spectra_files = sorted((root / self.SPECTRA_SUBDIR).glob("*.parquet"))
+                data_files = sorted(root.glob("*.parquet"))
+            else:
+                data_files = [root]
+        if not data_files and not spectra_files:
             raise ValueError("no parquet shards found")
         self._files = [str(p) for p in data_files]
+        self._spectra_files = [str(p) for p in spectra_files]
+        self._spectra_repeat = spectra_repeat
         self._rank = rank
         self._world_size = world_size
         self._buffer_size = shuffle_buffer_size
@@ -245,7 +271,7 @@ class MMUIterableDataset(torch.utils.data.IterableDataset):
         self._load()
 
     def _load(self) -> None:
-        files = list(self._files)
+        files = list(self._files) + self._spectra_files * self._spectra_repeat
         if self._buffer_size:
             np.random.default_rng((self._seed, self._epoch)).shuffle(files)
         ds = load_dataset(

@@ -30,6 +30,13 @@ def test_image_only_object(sequencer, image_only_record):
     assert "spectra" not in obj.masks
 
 
+def test_spectrum_only_object(sequencer, spectrum_only_record):
+    obj = sequencer.build(spectrum_only_record)
+    assert len(obj) == 34  # 1 bos + (1+31+1) spectra block
+    assert "images" not in obj.masks
+    assert obj.masks["spectra"].sum() == 31 and obj.values["spectra"].shape == (31, 256)
+
+
 def test_collator_packs_whole_objects(sequencer, collator):
     objs = [sequencer.build(r) for r in record_stream(6)]
     batch = collator(objs)

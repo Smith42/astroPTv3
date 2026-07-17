@@ -81,6 +81,91 @@ def test_unmatched_left_row_has_no_spectrum():
     assert normalized["Z"] is None
 
 
+def _desi_row(name, *, ra=150.0, dec=2.2, zwarn=False):
+    # a plain DESI catalog row (pass 2, ADR 0005 — no crossmatch columns)
+    return {
+        "object_id": name,
+        "ra": ra,
+        "dec": dec,
+        "_healpix_29": 12345678901234,
+        "spectrum": _spectrum_struct_dict(),
+        "Z": 0.43,
+        "ZERR": 0.001,
+        "ZWARN": zwarn,
+    }
+
+
+def test_spectra_only_records_filters_matched_and_zwarn():
+    pytest.importorskip("scipy")
+    arcsec = 1.0 / 3600.0
+    df = pd.DataFrame(
+        [
+            _desi_row("keep"),
+            _desi_row("matched", ra=200.0, dec=10.0),
+            _desi_row("bad-zwarn", zwarn=True),
+        ]
+    )
+    # one matched pair 0.5 arcsec from the "matched" row, far from the others
+    index = prepare.position_index([200.0 + 0.5 * arcsec / np.cos(np.radians(10.0))], [10.0])
+    records, n_zwarn, n_dup = prepare.spectra_only_records(df, index, radius_arcsec=1.0)
+    assert [r["object_id"] for r in records] == ["keep"]
+    assert n_zwarn == 1 and n_dup == 1
+    record = records[0]
+    assert "image" not in record and record["ZWARN"] is False
+    assert record["Z"] == pytest.approx(0.43)
+    normalized = normalize_record(record)
+    assert normalized["image"] is None
+    assert normalized["spectrum"]["flux"].shape == (SPECTRUM_LENGTH,)
+
+    # no matched pairs at all (empty index): nothing is de-duplicated
+    records, n_zwarn, n_dup = prepare.spectra_only_records(df, None, radius_arcsec=1.0)
+    assert len(records) == 2 and n_dup == 0
+
+
+def test_matched_positions_roundtrip(tmp_path):
+    pytest.importorskip("scipy")
+    from astropt3.data.mmu import write_shard
+    from astropt3.data.synthetic import make_record
+
+    matched = make_record(3)
+    assert "spectrum" in matched
+    matched["match_dist_arcsec"] = 0.3
+    write_shard([matched, make_record(1)], tmp_path / "train" / "s0.parquet")
+    ra, dec = prepare.load_matched_positions(tmp_path)
+    assert len(ra) == 1 and ra[0] == pytest.approx(matched["ra"])
+    # a spectrum at the matched position is dropped; 2 arcsec away is kept
+    df = pd.DataFrame(
+        [
+            _desi_row("dup", ra=matched["ra"], dec=matched["dec"]),
+            _desi_row("keep", ra=matched["ra"], dec=matched["dec"] + 2.0 / 3600.0),
+        ]
+    )
+    records, _, n_dup = prepare.spectra_only_records(
+        df, prepare.position_index(ra, dec), radius_arcsec=1.0
+    )
+    assert [r["object_id"] for r in records] == ["keep"] and n_dup == 1
+
+
+def test_write_partition_spectra_subdir(tmp_path):
+    from astropt3.data.synthetic import make_record
+
+    records = [
+        make_record(i, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+        for i in range(3)
+    ]
+    prepare.write_partition(
+        {"train": records, "val": []}, tmp_path, 5, 42, shard_size=4,
+        subdir=prepare.SPECTRA_SUBDIR,
+    )
+    assert [p.name for p in (tmp_path / "train" / "spectra").glob("*.parquet")] == [
+        "part-05-0000042-000.parquet"
+    ]
+    prepare.clean_partition(tmp_path, 5, 42)  # top level: no-op
+    assert len(list(tmp_path.glob("*/spectra/*.parquet"))) == 1
+    prepare.clean_partition(tmp_path, 5, 42, subdir=prepare.SPECTRA_SUBDIR)
+    assert list(tmp_path.glob("*/spectra/*.parquet")) == []
+
+
 def _ragged_band(fill: float) -> np.ndarray:
     # arrow nested lists surface as object arrays of per-row float arrays
     rows = np.empty(152, dtype=object)

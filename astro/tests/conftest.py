@@ -51,6 +51,14 @@ def image_only_record():
 
 
 @pytest.fixture(scope="session")
+def spectrum_only_record():
+    # ADR 0005: a non-crossmatched DESI row — spectrum, no image
+    record = make_record(3, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+    assert "image" not in record and "spectrum" in record
+    return record
+
+
+@pytest.fixture(scope="session")
 def tiny_model(tiny_config):
     torch.manual_seed(0)
     from astropt3 import AstroPT3Model

@@ -35,18 +35,33 @@ from ..tokenization import unpatchify_image, unpatchify_spectrum
 MODES = ("unconditional", "image-to-spectra", "reconstruct")
 
 
-def load_template_record(data_root: str, record_index: int, need_spectrum: bool) -> dict:
+def load_template_record(
+    data_root: str, record_index: int, need_spectrum: bool, spectrum_only: bool = False
+) -> dict:
+    """The ``record_index``-th usable template record.
+
+    ``spectrum_only=True`` selects the ADR-0005 spectrum-only rows (no
+    image) so a sweep can track pure-spectrum generation panels.
+    """
     if data_root == "synthetic":
         from ..data.synthetic import make_record
 
-        record = make_record(record_index, image_only_fraction=0.0 if need_spectrum else 0.3)
-        return record
+        if spectrum_only:
+            return make_record(record_index, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+        return make_record(record_index, image_only_fraction=0.0 if need_spectrum else 0.3)
     from ..data.mmu import MMUIterableDataset
 
     dataset = MMUIterableDataset(data_root, rank=0, world_size=1, shuffle_buffer_size=0)
-    wanted = (
-        r for r in dataset if not need_spectrum or r.get("spectrum") is not None
-    )
+    if spectrum_only:
+        wanted = (
+            r
+            for r in dataset
+            if r.get("spectrum") is not None and r.get("image") is None
+        )
+    else:
+        wanted = (
+            r for r in dataset if not need_spectrum or r.get("spectrum") is not None
+        )
     record = next(itertools.islice(wanted, record_index, None), None)
     if record is None:
         raise ValueError(f"fewer than {record_index + 1} usable records in {data_root}")
@@ -240,7 +255,9 @@ def sample_checkpoint(
     for record in records:
         template = sequencer.build(record)
         for mode in modes:
-            if mode == "image-to-spectra" and "spectra" not in template.masks:
+            if mode == "image-to-spectra" and not (
+                "spectra" in template.masks and "images" in template.masks
+            ):
                 continue
             generator = torch.Generator(device=device).manual_seed(seed)
             sampled = sample_template(

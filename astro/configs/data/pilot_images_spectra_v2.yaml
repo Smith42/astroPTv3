@@ -1,13 +1,15 @@
-# frozen: superseded by pilot_images_spectra_v2.yaml (ADR 0005)
 name: pilot_images_spectra
-version: pilot_v1
+version: pilot_v2
 sources:
   images: hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north
   spectra: hf://datasets/UniverseTBD/mmu_desi_edr_sv3
   crossmatch_radius_arcsec: 1.0
   crossmatch_how: left
+  # ADR 0005: second pass writes non-crossmatched ZWARN==0 DESI spectra as
+  # spectrum-only rows under {split}/spectra/ (oversampled at train time)
+  spectrum_only_pass: true
 paths:
-  root: ../astroPTv3_data/pilot_v1
+  root: ../astroPTv3_data/pilot_v2
 split:
   healpix_order: 7
   val_fraction: 0.02

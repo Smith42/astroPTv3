@@ -45,6 +45,28 @@ def test_probe_objects_carry_target(tiny_config):
     assert all("spectra" in o.masks for o in objects)
 
 
+def test_probe_skips_records_without_pool_modality(tiny_config, tmp_path):
+    # spectrum-only rows (ADR 0005) carry Z but have no image tokens to pool
+    from astropt3.data import mmu
+    from astropt3.data.synthetic import make_record
+
+    records = []
+    for i in range(6):
+        records.append(make_record(i, image_only_fraction=0.0, spectrum_only_fraction=1.0))
+        records.append(make_record(i + 100, image_only_fraction=0.0))
+    mmu.write_shard(records, tmp_path / "shard-00000.parquet")
+
+    objects, targets = linear_probe.collect_probe_objects(
+        tiny_config, str(tmp_path), "Z", 6, pool_modality="images"
+    )
+    assert all("images" in o.masks for o in objects)
+    # with a spectra pool the spectrum-only rows qualify: all 12 carry Z
+    objects, _ = linear_probe.collect_probe_objects(
+        tiny_config, str(tmp_path), "Z", 12, pool_modality="spectra"
+    )
+    assert len(objects) == 12
+
+
 def test_embeddings_align_with_objects(tiny_model, tiny_config):
     objects, targets = linear_probe.collect_probe_objects(tiny_config, "synthetic", "Z", 6)
     X = linear_probe.embed_objects(tiny_model, tiny_config, objects, seq_len=896, objects_per_batch=4)

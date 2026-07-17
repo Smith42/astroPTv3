@@ -158,7 +158,9 @@ def main():
     parser.add_argument(
         "--sample-records",
         default="0",
-        help="comma-separated template record indices for sample panels; 'none' disables",
+        help="comma-separated template record indices for sample panels; an "
+        "'s' prefix (e.g. 's0') selects a spectrum-only template (ADR 0005); "
+        "'none' disables",
     )
     parser.add_argument(
         "--sample-modes",
@@ -200,8 +202,13 @@ def main():
         from astropt3.eval.samples import load_template_record
 
         sample_records = [
-            load_template_record(args.data_root, int(i), need_spectrum=True)
-            for i in args.sample_records.split(",")
+            load_template_record(
+                args.data_root,
+                int(tok.lstrip("s")),
+                need_spectrum=True,
+                spectrum_only=tok.startswith("s"),
+            )
+            for tok in args.sample_records.split(",")
         ]
 
     wandb_run = None
