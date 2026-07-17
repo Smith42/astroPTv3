@@ -139,23 +139,31 @@ def save_spectra_png(
     truth: np.ndarray | None = None,
     truth_label: str = "truth",
 ):
-    """[n, W] flux + [W] wavelength -> overlaid flux-vs-wavelength PNG.
+    """[n, W] flux + [W] wavelength -> one subplot per spectrum, stacked.
 
-    With ``truth`` [W] the ground-truth spectrum is drawn in black behind
-    the samples.
+    With ``truth`` [W] the ground-truth spectrum leads the stack (mirroring
+    the image grid); shared axes keep the panels comparable.
     """
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(10, 4))
-    if truth is not None:
-        ax.plot(lam, truth, lw=1.2, color="black", alpha=0.9, label=truth_label)
-    for i, f in enumerate(flux):
-        ax.plot(lam, f, lw=0.7, alpha=0.8, label=f"sample {i}")
-    ax.set_xlabel("wavelength [$\\AA$]")
-    ax.set_ylabel("flux (model patch space)")
-    ax.set_title(title)
-    if len(flux) <= 8:
-        ax.legend(fontsize="small")
+    panels = ([(truth_label, truth)] if truth is not None else []) + [
+        (f"sample {i}", f) for i, f in enumerate(flux)
+    ]
+    fig, axes = plt.subplots(
+        len(panels),
+        1,
+        figsize=(10, 2 * len(panels)),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    for ax, (label, f) in zip(axes[:, 0], panels):
+        color = "black" if truth is not None and f is truth else None
+        ax.plot(lam, f, lw=0.7, color=color)
+        ax.set_title(label, fontsize="small")
+        ax.set_ylabel("flux (model patch space)")
+    axes[-1, 0].set_xlabel("wavelength [$\\AA$]")
+    fig.suptitle(title)
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
