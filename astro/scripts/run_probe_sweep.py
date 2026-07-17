@@ -28,8 +28,10 @@ cheap).
 By default every checkpoint the trainer writes is evaluated exactly once
 (steps 1, 2, 4, ..., 512 then every ``checkpoint_interval``).
 ``--eval-every N`` thins that to exact multiples of N -- dropping the early
-powers of two, which the Pythia schedule keeps -- and ``--samples-every``
-thins the sample panels within whatever is evaluated. ``--until-step``
+powers of two, which the Pythia schedule keeps -- and ``--samples-every`` /
+``--samples-floor`` set the cadence for the whole evaluation (val loss and
+probe included, not just the panels): ``should_checkpoint`` multiples at or
+above the floor. ``--until-step``
 bounds the sweep: steps above it are never evaluated, and with ``--watch``
 polling stops once the trainer reaches it.
 
@@ -82,6 +84,8 @@ def steps_to_eval(
     done: set[int],
     until_step: int | None = None,
     eval_every: int = 1,
+    samples_every: int = 1,
+    samples_floor: int = 0,
 ) -> list[int]:
     """Completed checkpoint steps still needing evaluation, ascending.
 
@@ -89,13 +93,20 @@ def steps_to_eval(
     ``should_checkpoint`` schedule that writes the checkpoints, it does NOT
     keep the early powers of two, so ``--eval-every 1000`` on a run with
     ``checkpoint_interval: 1000`` skips steps 1..512 entirely.
+    ``samples_every``/``samples_floor`` gate the WHOLE step -- val loss and
+    probe included, not just the panels: keep ``should_checkpoint``
+    multiples at or above the floor.
     """
+    from astropt3.checkpoint_schedule import should_checkpoint
+
     return [
         s
         for s in completed
         if s not in done
         and (until_step is None or s <= until_step)
         and (eval_every == 1 or s % eval_every == 0)
+        and s >= samples_floor
+        and should_checkpoint(s, samples_every)
     ]
 
 
@@ -122,7 +133,6 @@ def convert_checkpoint(converter: Path, checkpoint: Path, save_path: Path) -> No
 
 
 def process_step(step: int, args, sample_records: list[dict]) -> dict:
-    from astropt3.checkpoint_schedule import should_checkpoint
     from astropt3.eval.linear_probe import probe_checkpoint
     from astropt3.eval.samples import sample_checkpoint
     from astropt3.eval.val_loss import evaluate_checkpoint
@@ -162,7 +172,8 @@ def process_step(step: int, args, sample_records: list[dict]) -> dict:
     result["probe_r2"] = probe["r2"]
     result["probe_lambda"] = probe["lambda"]
     result["probe_target"] = probe["target"]
-    if sample_records and should_checkpoint(step, args.samples_every) and step >= args.samples_floor:
+    # steps_to_eval already applied the samples cadence: every scheduled step samples
+    if sample_records:
         result["samples"] = sample_checkpoint(
             hf_dir,
             sample_records,
@@ -226,14 +237,15 @@ def main():
         "--samples-floor",
         type=int,
         default=0,
-        help="never sample panels before this step (the Pythia schedule's early "
-        "pow2<=512 checkpoints are kept by default; set e.g. 1000 to suppress them)",
+        help="never evaluate (val loss, probe, or panels) before this step (the "
+        "Pythia schedule's early pow2<=512 checkpoints are kept by default; set "
+        "e.g. 1000 to suppress them)",
     )
     parser.add_argument(
         "--samples-every",
         type=int,
         default=1,
-        help="sample when should_checkpoint(step, N): every pow2<=512 plus every Nth step",
+        help="evaluate when should_checkpoint(step, N): every pow2<=512 plus every Nth step",
     )
     parser.add_argument(
         "--wandb",
@@ -286,7 +298,14 @@ def main():
     while True:
         done = processed_steps(results_path)
         completed = completed_steps(Path(args.checkpoints_dir))
-        todo = steps_to_eval(completed, done, args.until_step, args.eval_every)
+        todo = steps_to_eval(
+            completed,
+            done,
+            args.until_step,
+            args.eval_every,
+            args.samples_every,
+            args.samples_floor,
+        )
         for step in todo:
             print(f"[sweep] processing step {step}", flush=True)
             result = process_step(step, args, sample_records)
