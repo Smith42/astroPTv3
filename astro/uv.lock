@@ -207,6 +207,7 @@ dev = [
 ]
 train = [
     { name = "flash-attn" },
+    { name = "matplotlib" },
     { name = "nanotron" },
     { name = "wandb" },
 ]
@@ -219,6 +220,7 @@ requires-dist = [
     { name = "hats", marker = "extra == 'data'" },
     { name = "lsdb", marker = "extra == 'data'" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.8" },
+    { name = "matplotlib", marker = "extra == 'train'", specifier = ">=3.8" },
     { name = "nanotron", marker = "extra == 'train'", editable = "../nanotron" },
     { name = "nested-pandas", marker = "extra == 'data'" },
     { name = "numpy", specifier = ">=1.26" },

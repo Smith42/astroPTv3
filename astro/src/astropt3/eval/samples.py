@@ -30,25 +30,33 @@ import torch
 from ..data.band_registry import physical_inverse
 from ..data.packing import ObjectSequencer
 from ..generation import generate, reconstruct
-from ..tokenization import unpatchify_image, unpatchify_spectrum
+from ..tokenization import antispiralise, unpatchify_image, unpatchify_spectrum
 
 MODES = ("unconditional", "image-to-spectra", "reconstruct")
 
 
 def load_template_record(
-    data_root: str, record_index: int, need_spectrum: bool, spectrum_only: bool = False
+    data_root: str, record_index: int, prefer_spectrum: bool, spectrum_only: bool = False
 ) -> dict:
     """The ``record_index``-th usable template record.
 
+    ``prefer_spectrum`` is a preference, not a requirement: a corpus whose
+    crossmatch kept the redshift labels but not the spectrum arrays (or one
+    with no spectroscopic overlap at all, like ``shakeout_mix2``) carries
+    none, and an image-only template still renders every mode except
+    ``image-to-spectra``, which ``sample_checkpoint`` skips.
+
     ``spectrum_only=True`` selects the ADR-0005 spectrum-only rows (no
-    image) so a sweep can track pure-spectrum generation panels.
+    image) so a sweep can track pure-spectrum generation panels; unlike
+    ``prefer_spectrum`` this is a hard requirement — there is no image to
+    fall back to.
     """
     if data_root == "synthetic":
         from ..data.synthetic import make_record
 
         if spectrum_only:
             return make_record(record_index, image_only_fraction=0.0, spectrum_only_fraction=1.0)
-        return make_record(record_index, image_only_fraction=0.0 if need_spectrum else 0.3)
+        return make_record(record_index, image_only_fraction=0.0 if prefer_spectrum else 0.3)
     from ..data.mmu import MMUIterableDataset
 
     dataset = MMUIterableDataset(data_root, rank=0, world_size=1, shuffle_buffer_size=0)
@@ -58,14 +66,34 @@ def load_template_record(
             for r in dataset
             if r.get("spectrum") is not None and r.get("image") is None
         )
-    else:
-        wanted = (
-            r for r in dataset if not need_spectrum or r.get("spectrum") is not None
-        )
-    record = next(itertools.islice(wanted, record_index, None), None)
-    if record is None:
-        raise ValueError(f"fewer than {record_index + 1} usable records in {data_root}")
-    return record
+        record = next(itertools.islice(wanted, record_index, None), None)
+        if record is None:
+            raise ValueError(
+                f"fewer than {record_index + 1} spectrum-only records in {data_root}"
+            )
+        return record
+    if not prefer_spectrum:
+        record = next(itertools.islice(dataset, record_index, None), None)
+        if record is None:
+            raise ValueError(f"fewer than {record_index + 1} records in {data_root}")
+        return record
+
+    with_spectrum, image_only = [], []
+    for record in dataset:
+        if record.get("spectrum") is not None:
+            with_spectrum.append(record)
+            if len(with_spectrum) > record_index:
+                return with_spectrum[record_index]
+        elif len(image_only) <= record_index:
+            image_only.append(record)
+    if len(image_only) <= record_index:
+        raise ValueError(f"fewer than {record_index + 1} records in {data_root}")
+    print(
+        f"[samples] no spectrum-bearing records in {data_root}; "
+        f"falling back to image-only template {record_index}",
+        flush=True,
+    )
+    return image_only[record_index]
 
 
 def save_image_png(
@@ -151,6 +179,8 @@ def sample_template(
     if mode == "reconstruct":
         return {m: v.unsqueeze(0) for m, v in reconstruct(model, template).items()}
     if mode == "image-to-spectra":
+        if "spectra" not in template.masks:
+            raise ValueError("image-to-spectra needs a template record carrying a spectrum")
         gen_modalities = {"spectra"}
     elif mode == "unconditional":
         gen_modalities = set(template.masks)
@@ -195,17 +225,23 @@ def render_sampled_tokens(
             # the checkpoint's own arcsinh knee, so the inverse matches
             # the normalization its training data went through
             divisor = model.config.image_norm_divisor
+            # a spiral checkpoint's tokens (sampled AND template) are in
+            # spiral order; unpatchify expects raster, so undo the exact
+            # order the checkpoint trained in (ADR 0004)
+            spiral = getattr(model.config, "spiral", True)
+
+            def to_pixels(t):
+                return unpatchify_image(
+                    antispiralise(t) if spiral else t, mod.patch_size, channels, side
+                )
+
             imgs = physical_inverse(
-                torch.stack([unpatchify_image(t, mod.patch_size, channels, side) for t in tokens]),
-                bands,
-                divisor=divisor,
+                torch.stack([to_pixels(t) for t in tokens]), bands, divisor=divisor
             )
             truth = None
             if show_truth:
                 truth = physical_inverse(
-                    unpatchify_image(template.values[name].float(), mod.patch_size, channels, side),
-                    bands,
-                    divisor=divisor,
+                    to_pixels(template.values[name].float()), bands, divisor=divisor
                 ).numpy()
             save_image_png(imgs.numpy(), png, f"{name} {tag}", truth=truth, truth_label=truth_label)
         elif name == "spectra":
@@ -231,13 +267,16 @@ def sample_checkpoint(
     seed: int = 0,
     out_dir: Path,
     device=None,
+    step: int | None = None,
 ) -> dict:
     """Sample + render every (record, mode) pair from a converted checkpoint.
 
     ``records`` are pre-loaded template records (load once per sweep, not per
     step). A fresh seeded generator per (record, mode) keeps the sampling
     noise identical at every checkpoint, so a run's panels differ only
-    through the model. Returns ``{"{mode}/{name}/{object_id}": str(png)}``.
+    through the model. ``step``, when given, is folded into the PNG tag so
+    filenames are self-identifying across steps. Returns
+    ``{"{mode}/{name}/{object_id}": str(png)}``.
     """
     import astropt3  # noqa: F401  -- registers the Auto classes
 
@@ -276,7 +315,8 @@ def sample_checkpoint(
                 template,
                 sampled,
                 out_dir=out_dir,
-                tag=f"{mode}_{template.object_id}_seed{seed}",
+                tag=(f"step{step}_" if step is not None else "")
+            + f"{mode}_{template.object_id}_seed{seed}",
                 show_truth=True,
                 truth_label="truth (reference)" if mode == "unconditional" else "truth",
             )

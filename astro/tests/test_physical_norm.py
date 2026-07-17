@@ -87,7 +87,7 @@ def test_sequencer_uses_config_divisor(tiny_config):
     from astropt3 import AstroPT3Config
     from astropt3.data.packing import IMAGE_CROP, ObjectSequencer
     from astropt3.data.synthetic import make_record
-    from astropt3.tokenization import patchify_image
+    from astropt3.tokenization import antispiralise, patchify_image
 
     record = make_record(3)
     moved_config = AstroPT3Config(
@@ -101,7 +101,13 @@ def test_sequencer_uses_config_divisor(tiny_config):
     expected = patchify_image(
         physical_normalize(flux, record["image"]["band"], divisor=0.5), 8
     )
-    assert torch.allclose(seq.values["images"], expected)
+    # undo the config's spiral patch order before comparing to raster patchify
+    actual = (
+        antispiralise(seq.values["images"])
+        if getattr(moved_config, "spiral", False)
+        else seq.values["images"]
+    )
+    assert torch.allclose(actual, expected)
     default_seq = ObjectSequencer(
         AstroPT3Config(**{**tiny_config.to_dict(), "tokeniser": "jetformer"})
     ).build(record)

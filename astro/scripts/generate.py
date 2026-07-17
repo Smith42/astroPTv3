@@ -88,8 +88,9 @@ def main():
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = AutoModel.from_pretrained(args.checkpoint).to(device).eval()
 
-    # sampling modes want the full skeleton (image + spectra spans)
-    need_spectrum = args.mode != "reconstruct"
+    # sampling modes want the full skeleton (image + spectra spans) where the
+    # corpus has one; image-only corpora fall back to an image-only template
+    prefer_spectrum = args.mode != "reconstruct"
     record_indices = [int(i) for i in str(args.record_index).split(",")]
     sequencer = ObjectSequencer(model.config)
 
@@ -117,7 +118,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for record_index in record_indices:
-        record = load_template_record(args.data_root, record_index, need_spectrum)
+        record = load_template_record(args.data_root, record_index, prefer_spectrum)
         template = sequencer.build(record)
         print(f"template object {template.object_id!r}: spans {sorted(template.masks)}")
 

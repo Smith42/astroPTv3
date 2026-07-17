@@ -79,29 +79,19 @@ class ModalityRegistry:
 class Encoder(nn.Module):
     """Data space -> embedding space.
 
-    "affine" (default): a single linear projection.
-    "aim": 2-layer MLP with tanh-GELU, kept for astroPT back-compatibility.
-    "jetformer": same single linear projection as affine; the flow that
-        precedes it lives on the model (``AstroPT3Model.flows``).
+    "affine" (default) and "jetformer" both use a single linear projection;
+    the flow that precedes jetformer lives on the model
+    (``AstroPT3Model.flows``).
     """
 
     def __init__(self, hidden_size: int, in_size: int, tokeniser: str = "affine", bias: bool = False):
         super().__init__()
+        if tokeniser not in ("affine", "jetformer"):
+            raise ValueError(f"unknown tokeniser {tokeniser!r} (expected 'affine' or 'jetformer')")
         self.tokeniser = tokeniser
-        if tokeniser in ("affine", "jetformer"):
-            self.c_fc = nn.Linear(in_size, hidden_size, bias=bias)
-        elif tokeniser == "aim":
-            self.c_fc = nn.Linear(in_size, 4 * hidden_size, bias=bias)
-            self.gelu = nn.GELU(approximate="tanh")
-            self.c_proj = nn.Linear(4 * hidden_size, hidden_size, bias=bias)
-        else:
-            raise ValueError(
-                f"unknown tokeniser {tokeniser!r} (expected 'affine', 'aim' or 'jetformer')"
-            )
+        self.c_fc = nn.Linear(in_size, hidden_size, bias=bias)
 
     def forward(self, x):
-        if self.tokeniser == "aim":
-            return self.c_proj(self.gelu(self.c_fc(x)))
         return self.c_fc(x)
 
 
@@ -110,20 +100,13 @@ class Decoder(nn.Module):
 
     def __init__(self, hidden_size: int, out_size: int, tokeniser: str = "affine", bias: bool = False):
         super().__init__()
+        if tokeniser != "affine":
+            raise ValueError(f"unknown tokeniser {tokeniser!r} (Decoder supports only 'affine')")
         self.tokeniser = tokeniser
-        if tokeniser == "affine":
-            self.c_fc = nn.Linear(hidden_size, out_size, bias=bias)
-        elif tokeniser == "aim":
-            self.c_fc = nn.Linear(hidden_size, 4 * hidden_size, bias=bias)
-            self.gelu = nn.GELU(approximate="tanh")
-            self.c_proj = nn.Linear(4 * hidden_size, out_size, bias=bias)
-        else:
-            raise ValueError(f"unknown tokeniser {tokeniser!r} (expected 'affine' or 'aim')")
+        self.c_fc = nn.Linear(hidden_size, out_size, bias=bias)
 
     def forward(self, x):
-        if self.tokeniser == "affine":
-            return self.c_fc(x)
-        return self.c_proj(self.gelu(self.c_fc(x)))
+        return self.c_fc(x)
 
 
 class PositionEmbedder(nn.Module):
