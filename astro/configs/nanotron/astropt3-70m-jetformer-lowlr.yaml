@@ -41,6 +41,7 @@ model:
       max_positions: 1024
       loss_weight: 1.0
     tokeniser: jetformer
+    spiral: true  # center-outward image patch order (ADR 0004)
     jetformer_flow_steps: 4
     jetformer_flow_hidden: 128
     jetformer_gmm_k: 4

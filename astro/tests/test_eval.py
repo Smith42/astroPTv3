@@ -100,6 +100,24 @@ def test_eval_every_drops_the_pythia_powers_of_two():
     assert sweep.steps_to_eval(completed, done=set(), eval_every=1000) == [1000, 2000, 3000]
 
 
+def test_samples_cadence_gates_the_whole_step():
+    sweep = _sweep_module()
+    # --samples-every/--samples-floor suppress val loss + probe too, not just
+    # panels: keep should_checkpoint multiples at or above the floor
+    completed = [1, 2, 4, 8, 128, 512, 1000, 1500, 2000, 3000]
+    assert sweep.steps_to_eval(
+        completed, done=set(), samples_every=1000, samples_floor=1000
+    ) == [1000, 2000, 3000]
+    # floor alone keeps the interval multiples above it
+    assert sweep.steps_to_eval(completed, done=set(), samples_floor=500) == [
+        512,
+        1000,
+        1500,
+        2000,
+        3000,
+    ]
+
+
 def test_until_step_bounds_the_todo_list():
     sweep = _sweep_module()
     completed = [1, 2, 1000, 2000, 20000, 21000]

@@ -138,7 +138,7 @@ def test_jetformer_skips_per_patch_standardization(jet_config):
     from astropt3 import AstroPT3Config
     from astropt3.data.band_registry import physical_normalize
     from astropt3.data.synthetic import make_record
-    from astropt3.tokenization import patchify_image
+    from astropt3.tokenization import antispiralise, patchify_image
 
     record = make_record(3, image_only_fraction=0.0)
     jet_seq = ObjectSequencer(jet_config).build(record)
@@ -150,7 +150,13 @@ def test_jetformer_skips_per_patch_standardization(jet_config):
     flux = flux[..., top : top + IMAGE_CROP, left : left + IMAGE_CROP]
     flux = physical_normalize(flux, record["image"]["band"])
     expected = patchify_image(flux, 8)
-    assert torch.allclose(jet_seq.values["images"], expected)
+    # undo the config's spiral patch order before comparing to raster patchify
+    actual = (
+        antispiralise(jet_seq.values["images"])
+        if getattr(jet_config, "spiral", False)
+        else jet_seq.values["images"]
+    )
+    assert torch.allclose(actual, expected)
     # spectra tokens are the raw (mask-zeroed) flux patches
     assert torch.allclose(
         jet_seq.values["spectra"].flatten()[: len(record["spectrum"]["flux"])],

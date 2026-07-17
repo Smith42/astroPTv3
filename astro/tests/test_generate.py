@@ -162,6 +162,58 @@ def test_render_sampled_tokens_writes_pngs(smoke_model, template, tmp_path):
         assert all(p.exists() and p.stat().st_size > 0 for p in pngs.values())
 
 
+def test_spiral_checkpoint_decodes_pixel_identical_to_raster(jet_config, tmp_path):
+    """ADR 0004: the inverse path antispiralises iff the loaded config says
+    spiral, so a spiral checkpoint's image panels are pixel-identical to a
+    raster checkpoint's decode of the same underlying image."""
+    from types import SimpleNamespace
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    from astropt3 import AstroPT3Config
+    from astropt3.tokenization import antispiralise
+
+    spiral_config = AstroPT3Config(**{**jet_config.to_dict(), "spiral": True})
+    raster_config = AstroPT3Config(**{**jet_config.to_dict(), "spiral": False})
+    record = make_record(3, image_only_fraction=0.0)
+    spiral_template = ObjectSequencer(spiral_config).build(record)
+    raster_template = ObjectSequencer(raster_config).build(record)
+    # forward half: the sequencer spiralises image tokens iff config.spiral
+    assert not torch.equal(spiral_template.values["images"], raster_template.values["images"])
+    assert torch.equal(
+        antispiralise(spiral_template.values["images"]), raster_template.values["images"]
+    )
+    assert torch.equal(spiral_template.values["spectra"], raster_template.values["spectra"])
+
+    # inverse half, through the shared samples path: rendering each
+    # template's own tokens under its own config draws the same image
+    pixels = {}
+    for label, config, template in [
+        ("spiral", spiral_config, spiral_template),
+        ("raster", raster_config, raster_template),
+    ]:
+        pngs = render_sampled_tokens(
+            SimpleNamespace(config=config),  # render only reads model.config
+            record,
+            template,
+            {"images": template.values["images"].unsqueeze(0)},
+            out_dir=tmp_path / label,
+            tag="t",
+            show_truth=True,
+        )
+        pixels[label] = plt.imread(pngs["images"])
+    assert np.array_equal(pixels["spiral"], pixels["raster"])
+
+
+def test_sequencer_rejects_spiral_override(jet_config):
+    """ADR 0004: patch order comes from the checkpoint's config only — the
+    old per-call kwarg is gone, so a contradicting override fails loud."""
+    with pytest.raises(TypeError):
+        ObjectSequencer(jet_config, spiral=True)
+    assert ObjectSequencer(jet_config).spiral is jet_config.spiral
+
+
 def test_load_template_record_falls_back_when_corpus_has_no_spectra(tmp_path):
     """An image-only corpus (shakeout_mix2) still yields a usable template."""
     from astropt3.data import mmu

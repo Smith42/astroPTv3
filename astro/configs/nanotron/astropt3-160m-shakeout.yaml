@@ -77,6 +77,7 @@ model:
     rms_norm_eps: 1.0e-06
     rope_interleaved: false
     rope_theta: 100000.0
+    spiral: true  # center-outward image patch order (ADR 0004)
     tie_word_embeddings: false
     tokeniser: affine
     use_cache: false

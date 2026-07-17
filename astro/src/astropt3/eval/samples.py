@@ -30,7 +30,7 @@ import torch
 from ..data.band_registry import physical_inverse
 from ..data.packing import ObjectSequencer
 from ..generation import generate, reconstruct
-from ..tokenization import unpatchify_image, unpatchify_spectrum
+from ..tokenization import antispiralise, unpatchify_image, unpatchify_spectrum
 
 MODES = ("unconditional", "image-to-spectra", "reconstruct")
 
@@ -205,17 +205,23 @@ def render_sampled_tokens(
             # the checkpoint's own arcsinh knee, so the inverse matches
             # the normalization its training data went through
             divisor = model.config.image_norm_divisor
+            # a spiral checkpoint's tokens (sampled AND template) are in
+            # spiral order; unpatchify expects raster, so undo the exact
+            # order the checkpoint trained in (ADR 0004)
+            spiral = getattr(model.config, "spiral", True)
+
+            def to_pixels(t):
+                return unpatchify_image(
+                    antispiralise(t) if spiral else t, mod.patch_size, channels, side
+                )
+
             imgs = physical_inverse(
-                torch.stack([unpatchify_image(t, mod.patch_size, channels, side) for t in tokens]),
-                bands,
-                divisor=divisor,
+                torch.stack([to_pixels(t) for t in tokens]), bands, divisor=divisor
             )
             truth = None
             if show_truth:
                 truth = physical_inverse(
-                    unpatchify_image(template.values[name].float(), mod.patch_size, channels, side),
-                    bands,
-                    divisor=divisor,
+                    to_pixels(template.values[name].float()), bands, divisor=divisor
                 ).numpy()
             save_image_png(imgs.numpy(), png, f"{name} {tag}", truth=truth, truth_label=truth_label)
         elif name == "spectra":
@@ -241,13 +247,16 @@ def sample_checkpoint(
     seed: int = 0,
     out_dir: Path,
     device=None,
+    step: int | None = None,
 ) -> dict:
     """Sample + render every (record, mode) pair from a converted checkpoint.
 
     ``records`` are pre-loaded template records (load once per sweep, not per
     step). A fresh seeded generator per (record, mode) keeps the sampling
     noise identical at every checkpoint, so a run's panels differ only
-    through the model. Returns ``{"{mode}/{name}/{object_id}": str(png)}``.
+    through the model. ``step``, when given, is folded into the PNG tag so
+    filenames are self-identifying across steps. Returns
+    ``{"{mode}/{name}/{object_id}": str(png)}``.
     """
     import astropt3  # noqa: F401  -- registers the Auto classes
 
@@ -284,7 +293,8 @@ def sample_checkpoint(
                 template,
                 sampled,
                 out_dir=out_dir,
-                tag=f"{mode}_{template.object_id}_seed{seed}",
+                tag=(f"step{step}_" if step is not None else "")
+            + f"{mode}_{template.object_id}_seed{seed}",
                 show_truth=True,
                 truth_label="truth (reference)" if mode == "unconditional" else "truth",
             )
