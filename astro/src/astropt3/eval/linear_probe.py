@@ -15,6 +15,7 @@ Usage:
 import argparse
 import json
 import math
+import warnings
 
 import numpy as np
 import torch
@@ -42,7 +43,10 @@ def collect_probe_objects(
     """First ``n_objects`` val objects that carry a finite ``target`` scalar.
 
     Objects lacking the ``pool_modality`` are skipped — spectrum-only DESI
-    rows (ADR 0005) carry ``Z`` but have no image tokens to pool over.
+    rows (ADR 0005) carry ``Z`` but have no image tokens to pool over. If
+    the val stream is exhausted before ``n_objects`` qualify, all qualifying
+    objects are used (with a warning); the stream is deterministic, so every
+    checkpoint in a sweep probes the same reduced set.
     """
     sequencer = ObjectSequencer(config)
     objects, targets = [], []
@@ -57,8 +61,16 @@ def collect_probe_objects(
         targets.append(float(value))
         if len(objects) >= n_objects:
             break
+    if not objects:
+        raise ValueError(
+            f"no records carry target {target!r} with {pool_modality!r} tokens"
+        )
     if len(objects) < n_objects:
-        raise ValueError(f"only {len(objects)}/{n_objects} records carry target {target!r}")
+        warnings.warn(
+            f"val stream exhausted: probing {len(objects)}/{n_objects} records that "
+            f"carry target {target!r} with {pool_modality!r} tokens",
+            stacklevel=2,
+        )
     return objects, np.asarray(targets, dtype=np.float64)
 
 

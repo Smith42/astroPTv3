@@ -8,6 +8,7 @@ checkpoints and asserts learning across steps.
 import math
 
 import numpy as np
+import pytest
 import torch
 
 from astropt3.data.nanotron_loader import PackedMicroBatches
@@ -65,6 +66,25 @@ def test_probe_skips_records_without_pool_modality(tiny_config, tmp_path):
         tiny_config, str(tmp_path), "Z", 12, pool_modality="spectra"
     )
     assert len(objects) == 12
+
+
+def test_probe_uses_all_objects_when_stream_exhausted(tiny_config, tmp_path):
+    # a val split smaller than n_objects degrades to all qualifying records
+    from astropt3.data import mmu
+    from astropt3.data.synthetic import make_record
+
+    records = [make_record(i, image_only_fraction=0.0) for i in range(6)]
+    mmu.write_shard(records, tmp_path / "shard-00000.parquet")
+
+    with pytest.warns(UserWarning, match=r"6/2048"):
+        objects, targets = linear_probe.collect_probe_objects(
+            tiny_config, str(tmp_path), "Z", 2048
+        )
+    assert len(objects) == 6 and targets.shape == (6,)
+
+    # but zero qualifying records is still an error
+    with pytest.raises(ValueError, match="no records carry target"):
+        linear_probe.collect_probe_objects(tiny_config, str(tmp_path), "NOT_A_TARGET", 8)
 
 
 def test_embeddings_align_with_objects(tiny_model, tiny_config):
