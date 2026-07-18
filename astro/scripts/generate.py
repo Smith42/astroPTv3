@@ -49,7 +49,7 @@ def main():
     parser.add_argument("--checkpoint", required=True, help="HF checkpoint dir")
     parser.add_argument(
         "--mode",
-        choices=["unconditional", "image-to-spectra", "reconstruct"],
+        choices=["unconditional", "image-to-spectra", "spectra-to-images", "reconstruct"],
         default="unconditional",
     )
     parser.add_argument("--n", type=int, default=4, help="samples to draw")
@@ -81,6 +81,7 @@ def main():
 
     from astropt3.data.packing import ObjectSequencer
     from astropt3.eval.samples import (
+        build_template,
         load_template_record,
         render_sampled_tokens,
         sample_template,
@@ -120,7 +121,7 @@ def main():
 
     for record_index in record_indices:
         record = load_template_record(args.data_root, record_index, prefer_spectrum)
-        template = sequencer.build(record)
+        template = build_template(sequencer, record, args.mode)
         print(f"template object {template.object_id!r}: spans {sorted(template.masks)}")
 
         generator = None

@@ -69,7 +69,10 @@ stages is implicit and easy to break, so understand it before editing:
    record -> token map, and standardization discards each patch's
    mean/std), wrapped in frozen
    special tokens: `<|bos|> <|begin_m|> …placeholders… <|end_m|>` per
-   modality in **alphabetical registry order**. Images → 144 patch-8 tokens
+   modality in **alphabetical registry order** (with
+   `shuffle_modality_order`, bimodal objects reverse span order on
+   `crc32(object_id) ^ epoch` parity — 50/50, resume-exact — so the model
+   learns both conditioning directions; ADR 0005 amendment). Images → 144 patch-8 tokens
    (192 floats); spectra → 31 patch-256 tokens with normalized per-patch
    mean wavelength as a continuous position.
 3. **`PackedCollator`** greedily packs whole objects (never split) into

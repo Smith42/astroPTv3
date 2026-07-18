@@ -7,11 +7,18 @@ the record(s) and the sampling seed fixed across a run's checkpoints means
 the rendered panels differ only through the model weights.
 
 Modes:
-- ``unconditional``:    sample every span the template has (jetformer only).
-- ``image-to-spectra``: teacher-force the image tokens, sample the spectra
-                        span (jetformer only).
-- ``reconstruct``:      one-step teacher-forced predictions for every span
-                        (works for affine checkpoints too).
+- ``unconditional``:      sample every span the template has (jetformer only).
+- ``image-to-spectra``:   teacher-force the image tokens, sample the spectra
+                          span (jetformer only).
+- ``spectra-to-images``:  teacher-force the spectra tokens, sample the image
+                          span; the template is built spectra-first so the
+                          image span attends back to the spectrum. Only
+                          meaningful for checkpoints trained with
+                          ``shuffle_modality_order`` (ADR 0005 amendment) —
+                          fixed-order checkpoints never saw spectra-first
+                          sequences.
+- ``reconstruct``:        one-step teacher-forced predictions for every span
+                          (works for affine checkpoints too).
 
 Both modalities are rendered through their physical inverse normalization
 (images: band-registry keyed by the record's bands, the checkpoint's own
@@ -33,7 +40,18 @@ from ..data.packing import ObjectSequencer
 from ..generation import generate, reconstruct
 from ..tokenization import antispiralise, unpatchify_image, unpatchify_spectrum
 
-MODES = ("unconditional", "image-to-spectra", "reconstruct")
+MODES = ("unconditional", "image-to-spectra", "spectra-to-images", "reconstruct")
+
+
+def build_template(sequencer, record: dict, mode: str):
+    """The mode's template: spectra-first for ``spectra-to-images``.
+
+    Explicit order (not the sequencer's parity rule) so the conditioning
+    span always precedes the generated one under a causal mask.
+    """
+    if mode == "spectra-to-images":
+        return sequencer.build(record, modality_order=["spectra", "images"])
+    return sequencer.build(record)
 
 
 def load_template_record(
@@ -177,6 +195,10 @@ def default_modes(config) -> list[str]:
     modes = ["unconditional"]
     if "spectra" in config.modality_registry().names():
         modes.append("image-to-spectra")
+        # only checkpoints trained on both span orders can condition
+        # images on spectra (ADR 0005 amendment)
+        if getattr(config, "shuffle_modality_order", False):
+            modes.append("spectra-to-images")
     return modes
 
 
@@ -197,6 +219,17 @@ def sample_template(
         if "spectra" not in template.masks:
             raise ValueError("image-to-spectra needs a template record carrying a spectrum")
         gen_modalities = {"spectra"}
+    elif mode == "spectra-to-images":
+        if not {"images", "spectra"} <= set(template.masks):
+            raise ValueError("spectra-to-images needs a template carrying both modalities")
+        # conditioning only flows left to right under the causal mask
+        if int(template.masks["spectra"].nonzero()[0]) > int(
+            template.masks["images"].nonzero()[0]
+        ):
+            raise ValueError(
+                "spectra-to-images needs a spectra-first template (build_template)"
+            )
+        gen_modalities = {"images"}
     elif mode == "unconditional":
         gen_modalities = set(template.masks)
     else:
@@ -320,14 +353,21 @@ def sample_checkpoint(
     for record in records:
         template = sequencer.build(record)
         for mode in modes:
-            if mode == "image-to-spectra" and not (
+            if mode in ("image-to-spectra", "spectra-to-images") and not (
                 "spectra" in template.masks and "images" in template.masks
             ):
                 continue
+            # spectra-first skeleton for spectra-to-images; other modes keep
+            # the default template
+            mode_template = (
+                build_template(sequencer, record, mode)
+                if mode == "spectra-to-images"
+                else template
+            )
             generator = torch.Generator(device=device).manual_seed(seed)
             sampled = sample_template(
                 model,
-                template,
+                mode_template,
                 mode,
                 n=n,
                 temperature=temperature,

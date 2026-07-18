@@ -5,6 +5,13 @@ Per object (modalities in alphabetical registry order, only those present):
     <|bos|> <|begin_images|> p0 ... p360 <|end_images|>
             <|begin_spectra|> s0 ... s30 <|end_spectra|>
 
+With ``config.shuffle_modality_order`` (ADR 0005 amendment) bimodal objects
+reverse their span order on a deterministic 50/50 rule —
+``crc32(object_id) ^ epoch`` parity — so the causal model learns both
+p(spectra|images) and p(images|spectra); the parity flips each epoch so
+every object trains both directions, and being a pure function of
+(object_id, epoch) it is exact under checkpoint resume (no RNG state).
+
 The collator packs whole objects greedily into rows of ``seq_len`` tokens;
 objects are never split. ``position_ids`` restart at 0 on each object, which
 is both the RoPE position and the packed-document boundary signal
@@ -18,6 +25,7 @@ row-major (batch, time) order — the same order a boolean mask lookup
 ``tensor[mask]`` produces — so the model can align them without indices.
 """
 
+import zlib
 from dataclasses import dataclass
 
 import torch
@@ -78,6 +86,10 @@ class ObjectSequencer:
         self.spectra_norm_divisor = getattr(
             config, "spectra_norm_divisor", _SPECTRA_DIV_FACTOR
         )
+        # ADR 0005 amendment: randomized 50/50 bimodal span order (see the
+        # module docstring); carried on the config so checkpoints
+        # self-describe whether they trained on both orders
+        self.shuffle_modality_order = getattr(config, "shuffle_modality_order", False)
 
     def _images_tokens(self, record: dict):
         mod = self.registry.get_config("images")
@@ -116,7 +128,17 @@ class ObjectSequencer:
         positions = normalize_wavelength(lam_mean).unsqueeze(-1)
         return patches, positions
 
-    def build(self, record: dict) -> ObjectSeq:
+    def build(
+        self,
+        record: dict,
+        *,
+        epoch: int = 0,
+        modality_order: list[str] | None = None,
+    ) -> ObjectSeq:
+        """``modality_order`` pins an explicit span order (generation
+        templates, e.g. spectra-first for spectra-to-images); it must name
+        exactly the modalities the record carries. ``epoch`` feeds the
+        shuffle parity — training loaders pass their live epoch."""
         parts = {}
         for name in self.registry.names():
             if name == "images" and record.get("image") is not None:
@@ -126,9 +148,23 @@ class ObjectSequencer:
         if not parts:
             raise ValueError(f"record {record.get('object_id')!r} has no known modality")
 
+        order = list(parts)
+        if modality_order is not None:
+            if sorted(modality_order) != sorted(parts):
+                raise ValueError(
+                    f"modality_order {modality_order!r} must name exactly the "
+                    f"record's modalities {sorted(parts)}"
+                )
+            order = list(modality_order)
+        elif self.shuffle_modality_order and len(parts) > 1:
+            object_id = str(record.get("object_id", "")).encode()
+            if (zlib.crc32(object_id) ^ epoch) & 1:
+                order.reverse()
+
         ids = [BOS_ID]
         spans = {}
-        for name, (values, _) in parts.items():
+        for name in order:
+            values, _ = parts[name]
             begin_id, placeholder_id, end_id = modality_token_ids(name)
             ids.append(begin_id)
             spans[name] = (len(ids), len(ids) + len(values))

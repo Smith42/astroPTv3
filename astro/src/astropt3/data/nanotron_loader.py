@@ -297,7 +297,10 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
 
         try:
             for record in records:
-                obj = self.sequencer.build(record)
+                # live epoch feeds the modality-order parity (ADR 0005
+                # amendment); pure function of (object_id, epoch), so the
+                # resumed stream rebuilds identical sequences
+                obj = self.sequencer.build(record, epoch=self._epoch)
                 if len(obj) > self.seq_len:
                     raise ValueError(f"object of length {len(obj)} exceeds seq_len {self.seq_len}")
                 if used + len(obj) > self.seq_len:
@@ -380,6 +383,7 @@ def build_astropt3_dataloader(
                 ("jetformer_noise_min", 0.0),
                 ("image_norm_divisor", _DIV_FACTOR),
                 ("spectra_norm_divisor", _SPECTRA_DIV_FACTOR),
+                ("shuffle_modality_order", False),
                 ("spiral", True),
             ]
         },
