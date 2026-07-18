@@ -1,8 +1,11 @@
-"""Ridge linear probe: mean-pooled hidden states -> redshift ``Z``.
+"""Ridge linear probe: mean-pooled central hidden states -> redshift ``Z``.
 
 Streams validation records (val shards, or held-out synthetic indices),
 keeps those carrying the target scalar, embeds each object by mean-pooling
-the model's ``last_hidden_state`` over one modality's patch tokens, and fits
+the model's CENTRAL layer state (layer ``num_hidden_layers // 2`` — the
+astroPT convention; mid-depth decoder states probe better than the final
+layer, whose job is next-token emission) over one modality's patch tokens,
+and fits
 a closed-form ridge regression (numpy, no sklearn). The regularizer is
 chosen on an inner validation split; the reported R^2 is on a held-out test
 split. Fully deterministic for a given checkpoint.
@@ -122,8 +125,10 @@ def load_or_collect_probe_objects(
 
 @torch.no_grad()
 def embed_objects(model, config, objects, *, seq_len=896, objects_per_batch=8, pool_modality="images"):
-    """Mean-pool ``last_hidden_state`` over one modality's tokens, per object.
+    """Mean-pool the CENTRAL layer state over one modality's tokens, per object.
 
+    Central = ``hidden_states[num_hidden_layers // 2]`` (astroPT convention;
+    embeddings sit at index 0, so this is the output of the middle block).
     Objects are packed with the shared collator; each object's span in a row
     starts at its ``<|bos|>`` and the packed row-major object order equals
     the input order, so embeddings align with the targets by construction.
@@ -131,6 +136,7 @@ def embed_objects(model, config, objects, *, seq_len=896, objects_per_batch=8, p
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
     collator = PackedCollator(config, seq_len=seq_len)
+    central = config.num_hidden_layers // 2
     features = []
     for i in range(0, len(objects), objects_per_batch):
         batch = collator(objects[i : i + objects_per_batch])
@@ -142,7 +148,8 @@ def embed_objects(model, config, objects, *, seq_len=896, objects_per_batch=8, p
             )
             for k, v in batch.items()
         }
-        hidden = model(**kwargs).last_hidden_state  # [B, T, H]
+        out = model(**kwargs, compute_loss=False, output_hidden_states=True)
+        hidden = out.hidden_states[central]  # [B, T, H]
         input_ids = batch["input_ids"]
         mask = batch["modality_masks"].get(pool_modality)
         if mask is None:
