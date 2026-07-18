@@ -266,7 +266,16 @@ def main():
         "or a comma list of unconditional,image-to-spectra,reconstruct",
     )
     parser.add_argument("--sample-n", type=int, default=4, help="samples per mode")
-    parser.add_argument("--sample-temperature", type=float, default=1.0)
+    parser.add_argument(
+        "--sample-temperature",
+        type=float,
+        # 0.7, not 1.0: GIVT noise draws are miscalibrated at T=1 (measured
+        # in the J4 GH200 sessions — 15-20x too large, wrong sky texture),
+        # burying real structure in speckle on the panels; verified on the
+        # pilotv2-specnorm 20k checkpoint that T=0.7 renders faithful cores
+        # and sky. Panels only — val loss and the probe never sample.
+        default=0.7,
+    )
     parser.add_argument(
         "--samples-floor",
         type=int,
