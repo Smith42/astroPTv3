@@ -157,10 +157,15 @@ def test_jetformer_skips_per_patch_standardization(jet_config):
         else jet_seq.values["images"]
     )
     assert torch.allclose(actual, expected)
-    # spectra tokens are the raw (mask-zeroed) flux patches
+    # spectra tokens are the physically normalized (ADR 0007) mask-zeroed
+    # flux — invertible, but not per-patch standardized
+    from astropt3.data.spectral import spectral_normalize
+
+    sflux = torch.as_tensor(record["spectrum"]["flux"])
+    lam = torch.as_tensor(record["spectrum"]["lambda"])
     assert torch.allclose(
-        jet_seq.values["spectra"].flatten()[: len(record["spectrum"]["flux"])],
-        torch.as_tensor(record["spectrum"]["flux"]),
+        jet_seq.values["spectra"].flatten()[: len(sflux)],
+        spectral_normalize(sflux, lam),
     )
 
     # the affine sequencer still standardizes

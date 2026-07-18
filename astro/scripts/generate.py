@@ -20,9 +20,10 @@ Usage:
 
 Outputs land in ``--out`` as ``.npy`` (raw sampled values, data space) plus
 PNGs: a grid for images, flux-vs-wavelength for spectra. Non-unconditional
-modes lead with a ground-truth panel/trace from the template record. Image
-values get the physical inverse normalization (band-registry keyed by the
-template record's bands; no calibration file needed) — exact for jetformer
+modes lead with a ground-truth panel/trace from the template record. Both
+modalities get the physical inverse normalization (images: band-registry
+keyed by the template record's bands; spectra: the DESI f_ν map, ADR 0007;
+no calibration file needed) — exact for jetformer
 checkpoints (whose sequencer skips per-patch standardization precisely so
 the token map inverts back to flux); for affine checkpoints it is
 qualitative only, since standardization discards each patch's mean/std.

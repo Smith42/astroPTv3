@@ -13,12 +13,12 @@ Modes:
 - ``reconstruct``:      one-step teacher-forced predictions for every span
                         (works for affine checkpoints too).
 
-Images are rendered through the physical inverse normalization (band-registry
-keyed by the record's bands, the checkpoint's own ``image_norm_divisor``
-knee) — exact for jetformer checkpoints, qualitative for affine ones (their
-sequencer's per-patch standardization discards each patch's mean/std).
-Spectra are rendered in model patch space (no inverse flux normalization
-exists for them).
+Both modalities are rendered through their physical inverse normalization
+(images: band-registry keyed by the record's bands, the checkpoint's own
+``image_norm_divisor`` knee; spectra: the DESI f_ν map with the checkpoint's
+``spectra_norm_divisor`` knee, ADR 0007) — exact for jetformer checkpoints,
+qualitative for affine ones (their sequencer's per-patch standardization
+discards each patch's mean/std).
 """
 
 import itertools
@@ -28,6 +28,7 @@ import numpy as np
 import torch
 
 from ..data.band_registry import physical_inverse
+from ..data.spectral import spectral_inverse
 from ..data.packing import ObjectSequencer
 from ..generation import generate, reconstruct
 from ..tokenization import antispiralise, unpatchify_image, unpatchify_spectrum
@@ -161,7 +162,7 @@ def save_spectra_png(
         color = "black" if truth is not None and f is truth else None
         ax.plot(lam, f, lw=0.7, color=color)
         ax.set_title(label, fontsize="small")
-        ax.set_ylabel("flux (model patch space)")
+        ax.set_ylabel("f$_\\lambda$ [$10^{-17}$ erg s$^{-1}$ cm$^{-2}$ $\\AA^{-1}$]")
     axes[-1, 0].set_xlabel("wavelength [$\\AA$]")
     fig.suptitle(title)
     fig.tight_layout()
@@ -260,9 +261,20 @@ def render_sampled_tokens(
             save_image_png(imgs.numpy(), png, f"{name} {tag}", truth=truth, truth_label=truth_label)
         elif name == "spectra":
             lam = np.asarray(record["spectrum"]["lambda"])
-            flux = torch.stack([unpatchify_spectrum(t, len(lam)) for t in tokens])
+            lam_t = torch.as_tensor(lam, dtype=torch.float32)
+            # the checkpoint's own arcsinh knee, mirroring the image path
+            divisor = model.config.spectra_norm_divisor
+            flux = spectral_inverse(
+                torch.stack([unpatchify_spectrum(t, len(lam)) for t in tokens]),
+                lam_t,
+                divisor=divisor,
+            )
             truth = (
-                unpatchify_spectrum(template.values[name].float(), len(lam)).numpy()
+                spectral_inverse(
+                    unpatchify_spectrum(template.values[name].float(), len(lam)),
+                    lam_t,
+                    divisor=divisor,
+                ).numpy()
                 if show_truth
                 else None
             )

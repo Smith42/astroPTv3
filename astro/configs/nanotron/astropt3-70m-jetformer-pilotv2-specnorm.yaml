@@ -1,19 +1,13 @@
-# 70M JETFORMER run on the pilot_v2 corpus (ADR 0005): non-crossmatched
-# ZWARN==0 DESI spectra as spectrum-only rows under {train,val}/spectra/,
-# oversampled at draw time via spectra_oversample (each spectra/ shard
-# listed that many times per epoch). The factor targets ~25-30% of object
-# draws spectrum-bearing — recompute from the corpus journals
-# ((n_matched + R*n_spectrum_only) / (n_objects + R*n_spectrum_only)) if
-# the corpus grows; retunable without re-prep but NOT across a resume
-# (the stream state pins it). Otherwise identical to
-# astropt3-70m-jetformer.yaml (loss_weight stays 1:1 per the ADR).
-# Loss is the exact patch-space likelihood NLL_GMM(z) - logdet — negative
-# values are correct; watch grad norms early (nats-scale loss vs Huber's
-# ~0.1 scale is the main hyperparameter unknown; knobs if unstable are
-# jetformer_noise_max, learning_rate, clip_grad).
+# ADR 0007 A/B relaunch of astropt3-70m-jetformer-pilotv2: identical run
+# except the physical spectra normalization (spectra_norm_divisor: 10.0,
+# DESI f_λ → AB nMgy → arcsinh knee at the fiber sky-noise scale) and fresh
+# checkpoint/eval paths. The pilotv2 run (no spectra norm, spectra_loss
+# stalled ~180, grad_norm 300–800× clip) is the pre-norm baseline.
+# Expected per the ADR: spectra_loss starts O(10²) not O(10⁶) and trends
+# negative like images; grad_norm inside or near clip_grad after warmup.
 general:
   project: astropt3
-  run: astropt3-70m-jetformer-pilotv2
+  run: astropt3-70m-jetformer-pilotv2-specnorm
   seed: 42
   step: null
   consumed_train_samples: null
@@ -52,6 +46,7 @@ model:
     jetformer_gmm_k: 4
     jetformer_noise_max: 0.1
     jetformer_noise_min: 0.0
+    spectra_norm_divisor: 10.0  # ADR 0007 arcsinh knee (nMgy)
     huber_delta: 1.0
     hidden_size: 512
     num_hidden_layers: 23
@@ -96,7 +91,7 @@ data_stages:
       data_root: /work/nvme/bfvh/msmith10/astroPTv3_data/pilot_v2/train
       spectra_oversample: 2  # set from real corpus counts before launch
       shuffle_buffer_size: 2000
-      object_id_log: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-pilotv2/objects.log
+      object_id_log: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-pilotv2-specnorm/objects.log
     seed: 42
     num_loading_workers: 8
 optimizer:
@@ -130,10 +125,10 @@ tokens:
   limit_val_batches: 0
   limit_test_batches: 0
 checkpoints:
-  checkpoints_path: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-pilotv2
+  checkpoints_path: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-pilotv2-specnorm
   # resume from latest.txt when present (nanotron never auto-derives this);
   # workers>0 -> no dataset_state, so a resume re-draws the stream fresh
-  resume_checkpoint_path: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-pilotv2
+  resume_checkpoint_path: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-pilotv2-specnorm
   checkpoint_interval: 1000
   save_initial_state: false
   save_final_state: true

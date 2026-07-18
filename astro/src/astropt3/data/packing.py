@@ -33,6 +33,7 @@ from ..tokenization import (
     spiralise,
 )
 from .band_registry import _DIV_FACTOR, physical_normalize
+from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR, spectral_normalize
 from .transforms import per_patch_standardize
 
 # side of the central image crop applied before patchify, in pixels
@@ -72,6 +73,11 @@ class ObjectSequencer:
         # config so checkpoints are self-describing and the inverse
         # (scripts/generate.py) uses the divisor the model trained with
         self.image_norm_divisor = getattr(config, "image_norm_divisor", _DIV_FACTOR)
+        # spectra counterpart (ADR 0007): arcsinh knee of the DESI f_ν
+        # normalization, likewise carried on the config
+        self.spectra_norm_divisor = getattr(
+            config, "spectra_norm_divisor", _SPECTRA_DIV_FACTOR
+        )
 
     def _images_tokens(self, record: dict):
         mod = self.registry.get_config("images")
@@ -103,6 +109,7 @@ class ObjectSequencer:
         lam = torch.as_tensor(spec["lambda"], dtype=torch.float32)
         mask = torch.as_tensor(spec["mask"], dtype=torch.bool)
         flux = torch.where(mask, torch.zeros_like(flux), flux)
+        flux = spectral_normalize(flux, lam, divisor=self.spectra_norm_divisor)
         patches, lam_mean = patchify_spectrum(flux, lam, mod.patch_size)
         if self.standardize:
             patches = per_patch_standardize(patches)

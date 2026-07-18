@@ -51,6 +51,7 @@ import torch
 
 from ..configuration_astropt3 import AstroPT3Config
 from .band_registry import _DIV_FACTOR
+from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
 from .mmu import MMUIterableDataset
 from .packing import ObjectSequencer, PackedCollator
 from .synthetic import make_record
@@ -378,6 +379,7 @@ def build_astropt3_dataloader(
                 ("jetformer_noise_max", 0.1),
                 ("jetformer_noise_min", 0.0),
                 ("image_norm_divisor", _DIV_FACTOR),
+                ("spectra_norm_divisor", _SPECTRA_DIV_FACTOR),
                 ("spiral", True),
             ]
         },

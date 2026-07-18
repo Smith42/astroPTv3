@@ -60,7 +60,10 @@ stages is implicit and easy to break, so understand it before editing:
    (`data/band_registry.py`: rescale to nanomaggies → bright-pixel clamp →
    `arcsinh(x/0.01)` — tokens are flux in knee units of 0.01 nMgy = 10 pMgy,
    O(1) values, keyed on the record's band names — no per-corpus
-   calibration; unknown bands raise) + patchify (`tokenization.py`) + per-patch
+   calibration; unknown bands raise; spectra get the symmetric ADR 0007
+   treatment in `data/spectral.py`: DESI f_λ → AB nMgy via `f_ν = f_λ·λ²/c`
+   on the fixed DESI grid, then `arcsinh(f_ν/10 nMgy)`, invertible with no
+   side info; unknown grids raise) + patchify (`tokenization.py`) + per-patch
    standardization (`data/transforms.py`) per modality (jetformer configs
    SKIP the standardization — the exact-likelihood loss needs an invertible
    record -> token map, and standardization discards each patch's
