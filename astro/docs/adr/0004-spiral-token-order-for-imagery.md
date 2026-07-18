@@ -1,6 +1,6 @@
 # ADR 0004: Spiral token order as the default for imagery
 
-- **Status:** Accepted
+- **Status:** Implemented
 - **Date:** 2026-07-17
 - **References:**
   - `astro/src/astropt3/tokenization.py` — `spiralise` / `antispiralise`

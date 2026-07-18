@@ -1,6 +1,6 @@
 # ADR 0005: Include non-crossmatched DESI spectra as spectrum-only rows
 
-- **Status:** Accepted
+- **Status:** Implemented
 - **Date:** 2026-07-16
 - **References:**
   - `astro/PLAN.md` Phase 5 — the spectra-starved 70M/160M shakeout diagnosis motivating this decision
