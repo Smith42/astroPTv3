@@ -93,7 +93,10 @@ data_stages:
       shuffle_buffer_size: 2000
       object_id_log: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-pilotv2-specnorm/objects.log
     seed: 42
-    num_loading_workers: 8
+    # 4 (not 8): the slurm job's 68.7G memory cgroup OOM-killed a worker at
+    # step 2168 with 16 workers x ~3.8G RSS + trainer + sidecar; 4/rank still
+    # feeds ~14K tok/s/worker demand against ~72K measured capacity
+    num_loading_workers: 4
 optimizer:
   accumulate_grad_in_fp32: true
   clip_grad: 1.0
