@@ -7,7 +7,9 @@ from astropt3.tokenization import BOS_ID, PAD_ID, modality_token_ids
 
 
 def test_object_sequence_structure(sequencer, full_record):
-    obj = sequencer.build(full_record)
+    # pin the span order — the always-on ADR 0005 parity rule would
+    # otherwise pick it from crc32(object_id)
+    obj = sequencer.build(full_record, modality_order=["images", "spectra"])
     assert len(obj) == 180  # 1 bos + (1+144+1) images + (1+31+1) spectra
     begin_img, ph_img, end_img = modality_token_ids("images")
     begin_spec, ph_spec, end_spec = modality_token_ids("spectra")

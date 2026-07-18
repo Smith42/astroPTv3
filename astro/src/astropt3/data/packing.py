@@ -5,12 +5,13 @@ Per object (modalities in alphabetical registry order, only those present):
     <|bos|> <|begin_images|> p0 ... p360 <|end_images|>
             <|begin_spectra|> s0 ... s30 <|end_spectra|>
 
-With ``config.shuffle_modality_order`` (ADR 0005 amendment) bimodal objects
-reverse their span order on a deterministic 50/50 rule —
-``crc32(object_id) ^ epoch`` parity — so the causal model learns both
-p(spectra|images) and p(images|spectra); the parity flips each epoch so
-every object trains both directions, and being a pure function of
-(object_id, epoch) it is exact under checkpoint resume (no RNG state).
+Bimodal objects reverse their span order on a deterministic 50/50 rule —
+``crc32(object_id) ^ epoch`` parity (ADR 0005 amendment, always on) — so the
+causal model learns both p(spectra|images) and p(images|spectra); the parity
+flips each epoch so every object trains both directions, and being a pure
+function of (object_id, epoch) it is exact under checkpoint resume (no RNG
+state). Checkpoints trained before this rule (fixed images-first) are
+incompatible with sequences the rule builds — retrain.
 
 The collator packs whole objects greedily into rows of ``seq_len`` tokens;
 objects are never split. ``position_ids`` restart at 0 on each object, which
@@ -86,10 +87,6 @@ class ObjectSequencer:
         self.spectra_norm_divisor = getattr(
             config, "spectra_norm_divisor", _SPECTRA_DIV_FACTOR
         )
-        # ADR 0005 amendment: randomized 50/50 bimodal span order (see the
-        # module docstring); carried on the config so checkpoints
-        # self-describe whether they trained on both orders
-        self.shuffle_modality_order = getattr(config, "shuffle_modality_order", False)
 
     def _images_tokens(self, record: dict):
         mod = self.registry.get_config("images")
@@ -156,7 +153,8 @@ class ObjectSequencer:
                     f"record's modalities {sorted(parts)}"
                 )
             order = list(modality_order)
-        elif self.shuffle_modality_order and len(parts) > 1:
+        elif len(parts) > 1:
+            # ADR 0005 amendment, always on: 50/50 deterministic span order
             object_id = str(record.get("object_id", "")).encode()
             if (zlib.crc32(object_id) ^ epoch) & 1:
                 order.reverse()

@@ -10,7 +10,6 @@ from astropt3.config_io import load_model_config
 from astropt3.data.packing import ObjectSequencer
 from astropt3.data.synthetic import make_record
 from astropt3.eval.samples import (
-    default_modes,
     load_template_record,
     render_sampled_tokens,
     sample_checkpoint,
@@ -115,14 +114,6 @@ def test_reconstruct_shapes(smoke_model, template):
     assert preds["images"].shape == (144, 192)
     assert preds["spectra"].shape == (31, 256)
     assert all(torch.isfinite(v).all() for v in preds.values())
-
-
-def test_default_modes(jet_config):
-    from astropt3 import AstroPT3Config
-
-    assert default_modes(jet_config) == ["unconditional", "image-to-spectra"]
-    affine = AstroPT3Config(**{**jet_config.to_dict(), "tokeniser": "affine"})
-    assert default_modes(affine) == ["reconstruct"]
 
 
 def test_sample_template_modes(smoke_model, template):

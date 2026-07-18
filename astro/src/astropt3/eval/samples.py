@@ -12,11 +12,11 @@ Modes:
                           span (jetformer only).
 - ``spectra-to-images``:  teacher-force the spectra tokens, sample the image
                           span; the template is built spectra-first so the
-                          image span attends back to the spectrum. Only
-                          meaningful for checkpoints trained with
-                          ``shuffle_modality_order`` (ADR 0005 amendment) —
-                          fixed-order checkpoints never saw spectra-first
-                          sequences.
+                          image span attends back to the spectrum. Sound for
+                          any checkpoint trained under the always-on ADR 0005
+                          span-order rule; pre-rule fixed-order checkpoints
+                          never saw spectra-first sequences and sample
+                          garbage here.
 - ``reconstruct``:        one-step teacher-forced predictions for every span
                           (works for affine checkpoints too).
 
@@ -194,11 +194,7 @@ def default_modes(config) -> list[str]:
         return ["reconstruct"]
     modes = ["unconditional"]
     if "spectra" in config.modality_registry().names():
-        modes.append("image-to-spectra")
-        # only checkpoints trained on both span orders can condition
-        # images on spectra (ADR 0005 amendment)
-        if getattr(config, "shuffle_modality_order", False):
-            modes.append("spectra-to-images")
+        modes.extend(["image-to-spectra", "spectra-to-images"])
     return modes
 
 

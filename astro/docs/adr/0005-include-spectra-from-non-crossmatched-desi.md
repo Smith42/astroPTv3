@@ -108,11 +108,15 @@ same corpus and loss.
   make the order self-describing, value alignment is per-modality boolean
   masks in row-major order, and the `starts−1` loss alignment keys off the
   masks, not the span order.
-- The order flag is carried on the config (checkpoints self-describe,
-  `spiral` precedent) when implemented.
+- **Always on, no config knob** (user decision 2026-07-18, revising the
+  first draft's config-carried flag): every bimodal sequence everywhere is
+  built under the parity rule — one behavior, no per-run option to drift.
 - **Consequence: checkpoint break for spectra-bearing models** — fixed-order
   checkpoints have never seen a spectra-first sequence; retrain (mirrors
-  the ADR 0007 precedent). Generation gains a `spectra-to-images` mode.
+  the ADR 0007 precedent). Their post-rule evals (val batches, probe
+  embeddings, panels) are order-OOD; treat pre-rule runs
+  (pilotv2 baseline / specnorm / clip100) as frozen baselines evaluated
+  under pre-rule code. Generation gains a `spectra-to-images` mode.
 
 ### Oversampling realization (known subtlety)
 

@@ -48,7 +48,6 @@ class AstroPT3Config(SmolLM3Config):
         special_token_ce_weight: float = 0.0,
         image_norm_divisor: float = _DIV_FACTOR,
         spectra_norm_divisor: float = _SPECTRA_DIV_FACTOR,
-        shuffle_modality_order: bool = False,
         spiral: bool = True,
         vocab_size: int = VOCAB_SIZE,
         hidden_size: int = 512,
@@ -87,14 +86,6 @@ class AstroPT3Config(SmolLM3Config):
         # checkpoints saved before the field existed trained on raw DESI
         # flux and are incompatible regardless of the back-fill — retrain.
         self.spectra_norm_divisor = spectra_norm_divisor
-        # ADR 0005 amendment: randomized 50/50 bimodal span order so the
-        # model learns both conditioning directions (enables the
-        # spectra-to-images generation mode). Default False — NOT the spiral
-        # precedent's default-True — because existing fixed-order checkpoints
-        # (pilotv2 baseline/specnorm/clip100) are still being evaluated and
-        # have never seen spectra-first sequences; bimodal run configs going
-        # forward set it true explicitly.
-        self.shuffle_modality_order = shuffle_modality_order
         # center-outward spiral patch order for image tokens (ADR 0004).
         # The field is the single source of truth for the order a checkpoint
         # trained in: ObjectSequencer spiralises iff it is True, and the
