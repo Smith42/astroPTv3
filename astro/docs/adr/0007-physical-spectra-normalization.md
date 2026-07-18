@@ -1,6 +1,6 @@
 # ADR 0007: Physical nanomaggie normalization for the spectra modality
 
-- **Status:** Accepted (2026-07-18)
+- **Status:** Implemented (accepted 2026-07-18)
 - **Date:** 2026-07-17
 - **References:**
   - `astro/src/astropt3/data/band_registry.py` — the image-side physical

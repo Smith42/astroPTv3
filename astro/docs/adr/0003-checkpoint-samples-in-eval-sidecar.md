@@ -1,6 +1,6 @@
 # ADR 0003: Per-checkpoint sample panels in the eval sidecar
 
-- **Status:** Accepted
+- **Status:** Implemented
 - **Date:** 2026-07-16
 - **References:**
   - `astro/PLAN.md` Phase 4 — "Eval is fully outside the trainer" (the hard
