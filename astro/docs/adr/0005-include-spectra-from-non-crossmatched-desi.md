@@ -88,6 +88,32 @@ Emit the non-crossmatched DESI rows as **spectrum-only** objects (no image), and
 - **Prepare script:** add a **second pass** to `prepare_pilot_data.py` — an lsdb **right-anti-join** (spectra ⋈ images, keep unmatched right) or a full DESI scan de-duped against the matched set, filtered to `ZWARN==0`, normalized with `image=None`, and written as per-partition parquet shards into `pilot_v2/` alongside the re-emitted matched + image-only shards. One script, one corpus.
 - **Versioning:** new corpus **`pilot_v2`**; `pilot_v1` stays frozen. Retrain **from scratch** (Pythia schedule restarts at step 1) since both corpus content and schema change — `pilot_v1` checkpoints are not forward-compatible (mirrors the pre-physical-norm incompatibility precedent). `pilot_v2`'s val split now contains spectrum-only objects.
 
+### Amendment (2026-07-18) — randomized bimodal ordering for bidirectional conditioning
+
+**Decision: bimodal (matched) objects serialize their two modality spans in
+randomized order, 50/50 per draw.** The original fixed alphabetical order
+(`images` then `spectra`) means the causal model only ever learns
+`p(spectra | images)`; image tokens never attend to spectra, so
+spectra→image prediction does not exist in the model at any temperature.
+Randomizing the span order per object teaches both conditionals with the
+same corpus and loss.
+
+- 50/50 split, uniform per object draw — the simplest defensible choice;
+  no evidence yet that either direction deserves a protective bias (revisit
+  with a biased split only if the image→spectra direction measurably
+  degrades).
+- Single-modality objects (image-only, spectrum-only) are unaffected —
+  there is nothing to permute.
+- The rest of the pipeline is already order-agnostic: `<|begin_m|>` tokens
+  make the order self-describing, value alignment is per-modality boolean
+  masks in row-major order, and the `starts−1` loss alignment keys off the
+  masks, not the span order.
+- The order flag is carried on the config (checkpoints self-describe,
+  `spiral` precedent) when implemented.
+- **Consequence: checkpoint break for spectra-bearing models** — fixed-order
+  checkpoints have never seen a spectra-first sequence; retrain (mirrors
+  the ADR 0007 precedent). Generation gains a `spectra-to-images` mode.
+
 ### Oversampling realization (known subtlety)
 
 `MMUIterableDataset` streams parquet **shards** in order, sharded by DP rank via `split_dataset_by_node`; there is no per-record weighting intercept today. A weighted sampler to ~25–30% spectra draws must therefore operate at **shard-granularity** — favoring spectrum-bearing shards ~3–4× per epoch in the shard-order shuffle inside `_load`, or as a mix-aware wrapper around the record generator in `PackedMicroBatches._mmu_records` (the synthetic stream already has a `synthetic_image_only_fraction` knob to mirror). This argues for writing spectrum-only rows as a **distinct shard set** (they are spatially clustered in the DESI footprint, so this is natural) rather than interleaving them, so shard-level weighting stays clean. **Checkpoint-resume (Phase 4, state captured at the partial-row start) must be re-verified to remain exact under the weighted re-emit** — the one subtlety to test explicitly. Oversampling is strictly a **train-time** concern (the corpus is written once, oversampled at draw time; no physical duplication, so the ratio is retunable without re-prep).
