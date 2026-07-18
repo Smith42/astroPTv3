@@ -17,7 +17,7 @@ def test_forward_backward(tiny_config, sequencer, collator):
     batch = _batch(sequencer, collator, records)
     out = model(**batch)
     assert torch.isfinite(out.loss)
-    assert set(out.modality_losses) == {"images", "spectra"}
+    assert set(out.modality_losses) == {"images", "spectra", "Z", "ebv", "photometry"}
     assert all(torch.isfinite(v) for v in out.modality_losses.values())
     out.loss.backward()
     missing = [
@@ -79,10 +79,14 @@ def test_image_only_batch(tiny_model, sequencer, collator, image_only_record):
 
 
 def test_loss_matches_manual_computation(tiny_model, sequencer, collator, full_record):
-    """outputs.loss must equal the Huber losses recomputed from predictions."""
+    """outputs.loss must equal the Huber losses recomputed from predictions.
+
+    Scalar-free build: the scalar spans' GMM NLL terms are covered by
+    test_scalar_modalities' manual-loss check.
+    """
     import torch.nn.functional as F
 
-    batch = collator([sequencer.build(full_record)])
+    batch = collator([sequencer.build(full_record, include_scalars=False)])
     with torch.no_grad():
         out = tiny_model(**batch)
     manual = []

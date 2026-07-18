@@ -20,6 +20,10 @@ Sequence contract (built by data/packing.py):
   through ``flows[m]`` to a latent z that is both embedded and predicted,
   and the per-modality loss becomes ``mean(NLL_GMM(z) - logdet)`` — an exact
   likelihood in patch space (may be negative). Same left-shift alignment.
+- ADR 0008 scalar modalities (``ModalityConfig.scalar``) are GMM-headed
+  under BOTH tokenisers (``scalar_gmm_k`` mixture over the raw normalized
+  value; loss is plain ``gmm_nll``, no flow, no logdet — a scalar needs no
+  invertibility machinery and its odd dim cannot feed ``TinyFlow1D``).
 """
 
 from dataclasses import dataclass
@@ -78,6 +82,14 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
         self.model = SmolLM3Model(config)
         registry = config.modality_registry()
         self.modality_names = registry.names()
+        # ADR 0008: scalar modalities are GMM-headed under both tokenisers
+        # and never flow — one-token spans over raw normalized values
+        self.scalar_names = {
+            name
+            for name in self.modality_names
+            if getattr(registry.get_config(name), "scalar", False)
+        }
+        patch_names = [n for n in self.modality_names if n not in self.scalar_names]
         self.encoders = nn.ModuleDict(
             {
                 name: Encoder(config.hidden_size, registry.get_config(name).input_size, config.tokeniser)
@@ -95,7 +107,7 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
                         steps=config.jetformer_flow_steps,
                         hidden_dim=config.jetformer_flow_hidden,
                     )
-                    for name in self.modality_names
+                    for name in patch_names
                 }
             )
             self.decoders = nn.ModuleDict(
@@ -105,15 +117,21 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
                         registry.get_config(name).input_size,
                         config.jetformer_gmm_k,
                     )
-                    for name in self.modality_names
+                    for name in patch_names
                 }
             )
         else:
             self.decoders = nn.ModuleDict(
                 {
                     name: Decoder(config.hidden_size, registry.get_config(name).input_size, config.tokeniser)
-                    for name in self.modality_names
+                    for name in patch_names
                 }
+            )
+        for name in sorted(self.scalar_names):
+            self.decoders[name] = GMMHead(
+                config.hidden_size,
+                registry.get_config(name).input_size,
+                getattr(config, "scalar_gmm_k", 5),
             )
         self.pos_embeds = nn.ModuleDict(
             {
@@ -189,7 +207,9 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
         if self.config.tokeniser == "jetformer" and modality_values:
             flowed = {}
             for name in self.modality_names:
-                if name not in modality_values:
+                # scalars bypass the flow: their raw normalized value is both
+                # the embedded input and the GMM target (ADR 0008)
+                if name not in modality_values or name in self.scalar_names:
                     continue
                 flow = self.flows[name]
                 values = modality_values[name].to(next(flow.parameters()).dtype)
@@ -234,7 +254,17 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
                         f"modality '{name}' token at sequence position 0 has no "
                         "preceding token to predict it from (missing <|bos|>?)"
                     )
-                if self.config.tokeniser == "jetformer":
+                if name in self.scalar_names:
+                    # ADR 0008: GMM NLL on the raw normalized scalar, both
+                    # tokenisers — no flow, no logdet
+                    logits_pi, mu, log_sigma = self.decoders[name](
+                        hidden[left_shift_mask(mask)]
+                    )
+                    target = modality_values[name].to(mu.dtype)
+                    mod_loss = gmm_nll(target, logits_pi, mu, log_sigma).mean()
+                    pi = torch.softmax(logits_pi, dim=-1)
+                    predictions[name] = (pi.unsqueeze(-1) * mu).sum(dim=-2)
+                elif self.config.tokeniser == "jetformer":
                     logits_pi, mu, log_sigma = self.decoders[name](
                         hidden[left_shift_mask(mask)]
                     )

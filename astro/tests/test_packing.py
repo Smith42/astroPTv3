@@ -7,9 +7,11 @@ from astropt3.tokenization import BOS_ID, PAD_ID, modality_token_ids
 
 
 def test_object_sequence_structure(sequencer, full_record):
-    # pin the span order — the always-on ADR 0005 parity rule would
-    # otherwise pick it from crc32(object_id)
-    obj = sequencer.build(full_record, modality_order=["images", "spectra"])
+    # pin the span order (the ADR 0008 shuffle would otherwise pick it) and
+    # omit the scalar spans — their layout is covered by test_scalar_modalities
+    obj = sequencer.build(
+        full_record, modality_order=["images", "spectra"], include_scalars=False
+    )
     assert len(obj) == 180  # 1 bos + (1+144+1) images + (1+31+1) spectra
     begin_img, ph_img, end_img = modality_token_ids("images")
     begin_spec, ph_spec, end_spec = modality_token_ids("spectra")
@@ -28,15 +30,21 @@ def test_object_sequence_structure(sequencer, full_record):
 
 def test_image_only_object(sequencer, image_only_record):
     obj = sequencer.build(image_only_record)
-    assert len(obj) == 147  # 1 bos + 146 images block
-    assert "spectra" not in obj.masks
+    # 1 bos + 146 images block + (1+1+1) ebv + (1+1+1) photometry (ADR 0008)
+    assert len(obj) == 153
+    assert "spectra" not in obj.masks and "Z" not in obj.masks
+    assert {"ebv", "photometry"} <= set(obj.masks)
 
 
 def test_spectrum_only_object(sequencer, spectrum_only_record):
     obj = sequencer.build(spectrum_only_record)
-    assert len(obj) == 34  # 1 bos + (1+31+1) spectra block
+    # 1 bos + (1+31+1) spectra block + (1+1+1) Z span (ADR 0008)
+    assert len(obj) == 37
     assert "images" not in obj.masks
+    # image-catalog scalars are null on non-crossmatched rows
+    assert "ebv" not in obj.masks and "photometry" not in obj.masks
     assert obj.masks["spectra"].sum() == 31 and obj.values["spectra"].shape == (31, 256)
+    assert obj.masks["Z"].sum() == 1 and obj.values["Z"].shape == (1, 1)
 
 
 def test_collator_packs_whole_objects(sequencer, collator):

@@ -74,9 +74,12 @@ def test_absent_modality_ships_typed_empty_tensors(tiny_config, tiny_model):
     assert flat["spectra_values"].dtype == torch.float32
     assert flat["spectra_positions"].shape == (0, 1)  # continuous positions
     assert flat["spectra_positions"].dtype == torch.float32
+    # Z rides with the spectrum (ADR 0008): image-only records ship it empty
+    assert flat["Z_values"].shape == (0, 1)
+    assert flat["Z_positions"].dtype == torch.long
     out = tiny_model(**regroup(flat, tiny_config.modality_registry().names()))
     assert torch.isfinite(out.loss)
-    assert set(out.modality_losses) == {"images"}
+    assert set(out.modality_losses) == {"images", "ebv", "photometry"}
 
 
 def test_synthetic_stream_disjoint_across_ranks_and_workers(tiny_config):

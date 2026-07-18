@@ -204,6 +204,34 @@ def process_step(step: int, args, sample_records: list[dict], cache: dict) -> di
     result["probe_r2"] = probe["r2"]
     result["probe_lambda"] = probe["lambda"]
     result["probe_target"] = probe["target"]
+    # ADR 0008: autoregressive scalar head metrics for checkpoints whose
+    # config carries the target as a scalar modality; pre-0008 checkpoints
+    # simply skip (self-describing config)
+    if args.target in cache["config"].modality_registry().names():
+        from astropt3.eval.scalar_head import (
+            collect_scalar_objects,
+            evaluate_checkpoint as scalar_checkpoint,
+        )
+
+        try:
+            if "scalar_set" not in cache:
+                cache["scalar_set"] = collect_scalar_objects(
+                    cache["config"], args.data_root, args.target, args.probe_objects, seed=args.seed
+                )
+            head = scalar_checkpoint(
+                hf_dir,
+                args.data_root,
+                target=args.target,
+                seq_len=args.seq_len,
+                objects_per_batch=args.objects_per_batch,
+                device=args.device,
+                seed=args.seed,
+                scalar_set=cache["scalar_set"],
+            )
+            for key in ("nmad", "outlier_frac", "coverage_1sig", "bias"):
+                result[f"head_{key}"] = head[key]
+        except ValueError as exc:
+            print(f"[sweep] scalar head skipped: {exc}", flush=True)
     # steps_to_eval already applied the samples cadence: every scheduled step samples
     if sample_records:
         result["samples"] = sample_checkpoint(
@@ -369,6 +397,11 @@ def main():
                         "val/loss": result["val_loss"],
                         **{f"val/loss_{m}": v for m, v in result["val_modality_losses"].items()},
                         **({} if result["probe_r2"] is None else {"probe/r2": result["probe_r2"]}),
+                        **{
+                            f"head/{k.removeprefix('head_')}": result[k]
+                            for k in result
+                            if k.startswith("head_")
+                        },
                         **{
                             f"samples/{k}": wandb.Image(p)
                             for k, p in result.get("samples", {}).items()

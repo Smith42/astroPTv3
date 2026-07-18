@@ -19,8 +19,12 @@ def test_special_token_ids_frozen():
     assert PAD_ID == 0 and BOS_ID == 1
     assert modality_token_ids("images") == (2, 3, 4)
     assert modality_token_ids("spectra") == (5, 6, 7)
+    # ADR 0008 scalar modalities spend ids 8-16
+    assert modality_token_ids("Z") == (8, 9, 10)
+    assert modality_token_ids("ebv") == (11, 12, 13)
+    assert modality_token_ids("photometry") == (14, 15, 16)
     ids = set(special_token_map().values())
-    assert len(ids) == 8 and max(ids) < VOCAB_SIZE
+    assert len(ids) == 17 and max(ids) < VOCAB_SIZE
 
 
 def test_image_patchify_roundtrip():

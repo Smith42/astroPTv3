@@ -1,17 +1,24 @@
 """Object -> token sequence assembly and greedy packing into fixed-length batches.
 
-Per object (modalities in alphabetical registry order, only those present):
+Per object (only the modalities present):
 
     <|bos|> <|begin_images|> p0 ... p360 <|end_images|>
             <|begin_spectra|> s0 ... s30 <|end_spectra|>
+            <|begin_Z|> z <|end_Z|> ...
 
-Bimodal objects reverse their span order on a deterministic 50/50 rule —
-``crc32(object_id) ^ epoch`` parity (ADR 0005 amendment, always on) — so the
-causal model learns both p(spectra|images) and p(images|spectra); the parity
-flips each epoch so every object trains both directions, and being a pure
-function of (object_id, epoch) it is exact under checkpoint resume (no RNG
-state). Checkpoints trained before this rule (fixed images-first) are
+Multi-span objects serialize their spans in a UNIFORM random order, seeded
+on ``crc32(object_id) ^ epoch`` (ADR 0008, superseding the 0005 bimodal
+parity rule — at two spans the shuffle IS that rule's 50/50 flip). Every
+conditional among the present spans lands in the training distribution;
+the seed changes each epoch, and being a pure function of (object_id,
+epoch) the order is exact under checkpoint resume (no ambient RNG state).
+Checkpoints trained before these rules (fixed images-first) are
 incompatible with sequences the rule builds — retrain.
+
+ADR 0008 scalar modalities (Z / ebv / photometry) are one-token spans over
+the record's catalog scalars, normalized by ``data/scalar_registry.py``;
+``Z`` is gated on DESI's ``ZWARN == 0`` reliability flag. A missing scalar
+is an absent span — the ordinary modality-optional path.
 
 The collator packs whole objects greedily into rows of ``seq_len`` tokens;
 objects are never split. ``position_ids`` restart at 0 on each object, which
@@ -26,6 +33,8 @@ row-major (batch, time) order — the same order a boolean mask lookup
 ``tensor[mask]`` produces — so the model can align them without indices.
 """
 
+import math
+import random
 import zlib
 from dataclasses import dataclass
 
@@ -42,6 +51,7 @@ from ..tokenization import (
     spiralise,
 )
 from .band_registry import _DIV_FACTOR, physical_normalize
+from .scalar_registry import scalar_normalize
 from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR, spectral_normalize
 from .transforms import per_patch_standardize
 
@@ -125,20 +135,58 @@ class ObjectSequencer:
         positions = normalize_wavelength(lam_mean).unsqueeze(-1)
         return patches, positions
 
+    def _scalar_value(self, name: str, record: dict):
+        """The record's raw value(s) for a scalar modality, or None if absent.
+
+        Per-scalar missingness IS the modality-optional path: a None here
+        just means no span. ``Z`` additionally gates on DESI's ``ZWARN``
+        reliability flag (ADR 0008 reuses ADR 0005's cut; a missing flag on
+        a Z-bearing record — synthetic pre-ZWARN fixtures — passes).
+        """
+        if name == "photometry":
+            fluxes = [record.get(k) for k in ("flux_g", "flux_r", "flux_z")]
+            if any(f is None or not math.isfinite(float(f)) for f in fluxes):
+                return None
+            return [float(f) for f in fluxes]
+        value = record.get(name)
+        if value is None or not math.isfinite(float(value)):
+            return None
+        if name == "Z" and bool(record.get("ZWARN") or False):
+            return None
+        return [float(value)]
+
+    def _scalar_tokens(self, name: str, record: dict):
+        value = self._scalar_value(name, record)
+        if value is None:
+            return None
+        # one token of input_size values; per-patch standardization never
+        # applies (the mean/std of a single value are degenerate) — the
+        # scalar_registry transform is the whole normalization
+        values = scalar_normalize(name, torch.tensor([value], dtype=torch.float32))
+        return values, torch.zeros(1, dtype=torch.long)
+
     def build(
         self,
         record: dict,
         *,
         epoch: int = 0,
         modality_order: list[str] | None = None,
+        include_scalars: bool = True,
     ) -> ObjectSeq:
         """``modality_order`` pins an explicit span order (generation
         templates, e.g. spectra-first for spectra-to-images); it must name
-        exactly the modalities the record carries. ``epoch`` feeds the
-        shuffle parity — training loaders pass their live epoch."""
+        exactly the modalities the record carries. ``epoch`` seeds the span
+        shuffle — training loaders pass their live epoch.
+        ``include_scalars=False`` omits every scalar span (the linear probe
+        must pool over sequences that cannot contain the target, ADR 0008)."""
         parts = {}
         for name in self.registry.names():
-            if name == "images" and record.get("image") is not None:
+            if getattr(self.registry.get_config(name), "scalar", False):
+                if include_scalars:
+                    tokens = self._scalar_tokens(name, record)
+                    if tokens is not None:
+                        parts[name] = tokens
+            elif name == "images" and record.get("image") is not None:
                 parts[name] = self._images_tokens(record)
             elif name == "spectra" and record.get("spectrum") is not None:
                 parts[name] = self._spectra_tokens(record)
@@ -154,10 +202,11 @@ class ObjectSequencer:
                 )
             order = list(modality_order)
         elif len(parts) > 1:
-            # ADR 0005 amendment, always on: 50/50 deterministic span order
-            object_id = str(record.get("object_id", "")).encode()
-            if (zlib.crc32(object_id) ^ epoch) & 1:
-                order.reverse()
+            # ADR 0008: uniform span shuffle, seeded per (object_id, epoch) —
+            # deterministic and resume-exact; at N=2 this is exactly the
+            # superseded ADR 0005 parity rule's 50/50 flip in distribution
+            seed = zlib.crc32(str(record.get("object_id", "")).encode()) ^ epoch
+            random.Random(seed).shuffle(order)
 
         ids = [BOS_ID]
         spans = {}

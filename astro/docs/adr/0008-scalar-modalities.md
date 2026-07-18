@@ -1,6 +1,8 @@
 # ADR 0008: Scalar modalities for autoregressive label prediction
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-07-18) — implemented same day (`scalar_registry.py`,
+  scalar spans + uniform span shuffle in `packing.py`, GMM heads both
+  implementations, `eval/scalar_head.py`, probe scalar-free)
 - **Date:** 2026-07-18
 - **References:**
   - `astro/src/astropt3/tokenization.py` — `_MODALITY_ID_BLOCKS`, the frozen
@@ -29,7 +31,7 @@
 
 The model can only be probed for physical labels, never asked. `Z` is
 recovered post-hoc by a ridge probe on mean-pooled hidden states
-(`eval/linear_probe.py`, R²≈0.28–0.32 in the 70M/160M shakeouts); there is
+(`eval/linear_probe.py`, R²≈0.66–0.71 on the pilot_v2 70M runs); there is
 no way to condition on an image and have the model *emit* a redshift, and no
 way to sample a joint (image, spectrum, redshift). How do we give AstroPT3
 autoregressive scalar prediction — redshift now, sSFR and morphology later —
@@ -300,9 +302,9 @@ quality (comparable backward), head accuracy for the ADR 0008 capability.
 1. **Scalar losses non-zero and decreasing** across checkpoints for all
    three modalities.
 2. **Autoregressive `Z` beats the linear probe.** Head accuracy on the fixed
-   val split, reported as `Δz/(1+z)` scatter and outlier fraction, must
-   improve on the probe's R² ≈ 0.28–0.32 baseline. This is the ADR's reason
-   to exist.
+   val split, reported as `Δz/(1+z)` scatter (`nmad`) and outlier fraction,
+   must improve on the probe's R² ≈ 0.66–0.71 pilot_v2 baseline. This is the
+   ADR's reason to exist.
 3. **Image and spectra val loss not degraded** versus the `pilot_v2`
    baseline. This is the guard on `loss_weight = 0.1` — if it fails, the
    sweep moves the weight down, not the gate.

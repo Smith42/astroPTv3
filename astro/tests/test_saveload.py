@@ -16,7 +16,13 @@ def test_save_load_roundtrip(tmp_path, tiny_model, sequencer, collator):
     config = AutoConfig.from_pretrained(save_dir)
     assert config.model_type == "astropt3"
     assert config.tokeniser == "affine"
-    assert [m["name"] for m in config.modalities] == ["images", "spectra"]
+    assert [m["name"] for m in config.modalities] == [
+        "images",
+        "spectra",
+        "Z",
+        "ebv",
+        "photometry",
+    ]
 
     reloaded = AutoModel.from_pretrained(save_dir)
     reloaded.eval()

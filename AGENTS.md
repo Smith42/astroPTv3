@@ -69,12 +69,20 @@ stages is implicit and easy to break, so understand it before editing:
    record -> token map, and standardization discards each patch's
    mean/std), wrapped in frozen
    special tokens: `<|bos|> <|begin_m|> …placeholders… <|end_m|>` per
-   modality in **alphabetical registry order**, except bimodal objects
-   reverse span order on `crc32(object_id) ^ epoch` parity (50/50,
-   resume-exact, always on — teaches both conditioning directions; ADR
-   0005 amendment; pre-rule fixed-order checkpoints are incompatible). Images → 144 patch-8 tokens
+   modality, spans serialized in a **uniform random order seeded on
+   `crc32(object_id) ^ epoch`** (resume-exact, always on — every
+   conditional among the present spans lands in training; ADR 0008,
+   generalizing 0005's bimodal 50/50 flip; pre-rule fixed-order
+   checkpoints are incompatible). Images → 144 patch-8 tokens
    (192 floats); spectra → 31 patch-256 tokens with normalized per-patch
-   mean wavelength as a continuous position.
+   mean wavelength as a continuous position; ADR 0008 adds one-token
+   **scalar modalities** (`Z` gated on ZWARN==0, `ebv`, joint 3-band
+   `photometry`; `data/scalar_registry.py` fixed transforms, loss_weight
+   0.1) predicted by `GMMHead`s (`scalar_gmm_k`) under BOTH tokenisers —
+   no flow, no logdet, plain `gmm_nll` on the raw normalized value. The
+   linear probe builds scalar-free sequences (`include_scalars=False`)
+   so R² stays a representation metric; `eval/scalar_head.py` is the
+   ask-the-model metric (`nmad`/`outlier_frac`/`coverage_1sig`).
 3. **`PackedCollator`** greedily packs whole objects (never split) into
    fixed-length rows. Two invariants matter:
    - `position_ids` restart at 0 per object and **are the document mask**:
