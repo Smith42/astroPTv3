@@ -56,14 +56,4 @@ Spectra unchanged. Additive; gated on `uv run pytest` + the
 |-----|--------|
 | [`adr/0001-jetformer-inverse-variance-loss.md`](adr/0001-jetformer-inverse-variance-loss.md) | Rejected — ivar-weighted loss does not transfer to the jetformer likelihood head. |
 | [`adr/0002-ivar-weighted-huber-loss.md`](adr/0002-ivar-weighted-huber-loss.md) | Proposed (Parked) — ivar-weighted Huber for the affine tokeniser. |
-
-**Future ADR needed — spectra normalization.** Under `tokeniser: jetformer`
-spectra patches enter the flow as raw (mask-zeroed) DESI flux with no
-normalization at all: per-patch standardization is skipped for invertibility,
-and the physical band-registry normalization covers images only. The result
-is a badly conditioned target (smoke-run spectra NLL starts ~25× the image
-NLL at equal `loss_weight`, and the y3oak0l0 grad-norm blow-up was partly
-attributed to raw-flux-scale targets). A future ADR should decide a fixed,
-invertible physical spectra normalization — the symmetric counterpart of
-`data/band_registry.py` — alongside (not instead of) the parked ivar-loss
-question in ADR 0002.
+| [`adr/0007-physical-spectra-normalization.md`](adr/0007-physical-spectra-normalization.md) | Accepted — DESI spectra → AB nanomaggies, `arcsinh(f_ν/10 nMgy)` (`data/spectral.py`), the symmetric counterpart of `band_registry.py`. |

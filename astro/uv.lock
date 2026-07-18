@@ -198,6 +198,8 @@ data = [
     { name = "hats" },
     { name = "lsdb" },
     { name = "nested-pandas" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 dev = [
     { name = "matplotlib" },
@@ -224,6 +226,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "scipy", marker = "extra == 'data'" },
     { name = "torch", specifier = ">=2.6" },
     { name = "torchdata", specifier = ">=0.10" },
     { name = "transformers", specifier = ">=4.57" },

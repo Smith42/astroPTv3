@@ -25,6 +25,7 @@ data = [
     "lsdb",
     "hats",
     "nested-pandas",
+    "scipy",  # pass-2 matched-position KD-tree (ADR 0005)
 ]
 # Training machine only: the nanotron fork (../nanotron git submodule,
 # editable) plus flash-attn (needs a CUDA toolchain or a matching prebuilt

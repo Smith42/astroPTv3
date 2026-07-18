@@ -5,6 +5,14 @@ Per object (modalities in alphabetical registry order, only those present):
     <|bos|> <|begin_images|> p0 ... p360 <|end_images|>
             <|begin_spectra|> s0 ... s30 <|end_spectra|>
 
+Bimodal objects reverse their span order on a deterministic 50/50 rule —
+``crc32(object_id) ^ epoch`` parity (ADR 0005 amendment, always on) — so the
+causal model learns both p(spectra|images) and p(images|spectra); the parity
+flips each epoch so every object trains both directions, and being a pure
+function of (object_id, epoch) it is exact under checkpoint resume (no RNG
+state). Checkpoints trained before this rule (fixed images-first) are
+incompatible with sequences the rule builds — retrain.
+
 The collator packs whole objects greedily into rows of ``seq_len`` tokens;
 objects are never split. ``position_ids`` restart at 0 on each object, which
 is both the RoPE position and the packed-document boundary signal
@@ -18,6 +26,7 @@ row-major (batch, time) order — the same order a boolean mask lookup
 ``tensor[mask]`` produces — so the model can align them without indices.
 """
 
+import zlib
 from dataclasses import dataclass
 
 import torch
@@ -33,6 +42,7 @@ from ..tokenization import (
     spiralise,
 )
 from .band_registry import _DIV_FACTOR, physical_normalize
+from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR, spectral_normalize
 from .transforms import per_patch_standardize
 
 # side of the central image crop applied before patchify, in pixels
@@ -72,6 +82,11 @@ class ObjectSequencer:
         # config so checkpoints are self-describing and the inverse
         # (scripts/generate.py) uses the divisor the model trained with
         self.image_norm_divisor = getattr(config, "image_norm_divisor", _DIV_FACTOR)
+        # spectra counterpart (ADR 0007): arcsinh knee of the DESI f_ν
+        # normalization, likewise carried on the config
+        self.spectra_norm_divisor = getattr(
+            config, "spectra_norm_divisor", _SPECTRA_DIV_FACTOR
+        )
 
     def _images_tokens(self, record: dict):
         mod = self.registry.get_config("images")
@@ -103,13 +118,24 @@ class ObjectSequencer:
         lam = torch.as_tensor(spec["lambda"], dtype=torch.float32)
         mask = torch.as_tensor(spec["mask"], dtype=torch.bool)
         flux = torch.where(mask, torch.zeros_like(flux), flux)
+        flux = spectral_normalize(flux, lam, divisor=self.spectra_norm_divisor)
         patches, lam_mean = patchify_spectrum(flux, lam, mod.patch_size)
         if self.standardize:
             patches = per_patch_standardize(patches)
         positions = normalize_wavelength(lam_mean).unsqueeze(-1)
         return patches, positions
 
-    def build(self, record: dict) -> ObjectSeq:
+    def build(
+        self,
+        record: dict,
+        *,
+        epoch: int = 0,
+        modality_order: list[str] | None = None,
+    ) -> ObjectSeq:
+        """``modality_order`` pins an explicit span order (generation
+        templates, e.g. spectra-first for spectra-to-images); it must name
+        exactly the modalities the record carries. ``epoch`` feeds the
+        shuffle parity — training loaders pass their live epoch."""
         parts = {}
         for name in self.registry.names():
             if name == "images" and record.get("image") is not None:
@@ -119,9 +145,24 @@ class ObjectSequencer:
         if not parts:
             raise ValueError(f"record {record.get('object_id')!r} has no known modality")
 
+        order = list(parts)
+        if modality_order is not None:
+            if sorted(modality_order) != sorted(parts):
+                raise ValueError(
+                    f"modality_order {modality_order!r} must name exactly the "
+                    f"record's modalities {sorted(parts)}"
+                )
+            order = list(modality_order)
+        elif len(parts) > 1:
+            # ADR 0005 amendment, always on: 50/50 deterministic span order
+            object_id = str(record.get("object_id", "")).encode()
+            if (zlib.crc32(object_id) ^ epoch) & 1:
+                order.reverse()
+
         ids = [BOS_ID]
         spans = {}
-        for name, (values, _) in parts.items():
+        for name in order:
+            values, _ = parts[name]
             begin_id, placeholder_id, end_id = modality_token_ids(name)
             ids.append(begin_id)
             spans[name] = (len(ids), len(ids) + len(values))

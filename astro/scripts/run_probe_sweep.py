@@ -132,15 +132,36 @@ def convert_checkpoint(converter: Path, checkpoint: Path, save_path: Path) -> No
     )
 
 
-def process_step(step: int, args, sample_records: list[dict]) -> dict:
-    from astropt3.eval.linear_probe import probe_checkpoint
+def process_step(step: int, args, sample_records: list[dict], cache: dict) -> dict:
+    from astropt3.eval.linear_probe import load_or_collect_probe_objects, probe_checkpoint
     from astropt3.eval.samples import sample_checkpoint
-    from astropt3.eval.val_loss import evaluate_checkpoint
+    from astropt3.eval.val_loss import evaluate_checkpoint, val_batches
 
     checkpoint = Path(args.checkpoints_dir) / str(step)
     hf_dir = Path(args.out_dir) / "hf" / str(step)
     convert_checkpoint(Path(args.converter), checkpoint, hf_dir)
 
+    # the val batches and the probe set depend only on the data stream, never
+    # on checkpoint weights: build them for the first step and reuse for every
+    # later one (re-streaming/packing the val shards per checkpoint dominated
+    # sweep wall time). The probe set is also persisted under the out dir so
+    # sweep RESTARTS skip its whole-val-split collection scan.
+    if "config" not in cache:
+        import astropt3  # noqa: F401  -- registers the Auto classes
+        from transformers import AutoConfig
+
+        cache["config"] = AutoConfig.from_pretrained(hf_dir)
+    if "val_batches" not in cache:
+        cache["val_batches"] = list(
+            val_batches(
+                cache["config"],
+                args.data_root,
+                n_batches=args.val_batches,
+                micro_batch_size=args.micro_batch_size,
+                seq_len=args.seq_len,
+                seed=args.seed,
+            )
+        )
     result = {"step": step, "hf_checkpoint": str(hf_dir)}
     val = evaluate_checkpoint(
         hf_dir,
@@ -150,10 +171,20 @@ def process_step(step: int, args, sample_records: list[dict]) -> dict:
         seq_len=args.seq_len,
         device=args.device,
         seed=args.seed,
+        batches=cache["val_batches"],
     )
     result["val_loss"] = val["loss"]
     result["val_modality_losses"] = val["modality_losses"]
     try:
+        if "probe_set" not in cache:
+            cache["probe_set"] = load_or_collect_probe_objects(
+                Path(args.out_dir) / "probe_set.pt",
+                cache["config"],
+                args.data_root,
+                args.target,
+                args.probe_objects,
+                seed=args.seed,
+            )
         probe = probe_checkpoint(
             hf_dir,
             args.data_root,
@@ -163,6 +194,7 @@ def process_step(step: int, args, sample_records: list[dict]) -> dict:
             objects_per_batch=args.objects_per_batch,
             device=args.device,
             seed=args.seed,
+            probe_set=cache["probe_set"],
         )
     except ValueError as exc:
         # a val corpus can carry too few labelled objects (shakeout_mix2 has no
@@ -223,7 +255,9 @@ def main():
     parser.add_argument(
         "--sample-records",
         default="0",
-        help="comma-separated template record indices for sample panels; 'none' disables",
+        help="comma-separated template record indices for sample panels; an "
+        "'s' prefix (e.g. 's0') selects a spectrum-only template (ADR 0005); "
+        "'none' disables",
     )
     parser.add_argument(
         "--sample-modes",
@@ -232,7 +266,16 @@ def main():
         "or a comma list of unconditional,image-to-spectra,reconstruct",
     )
     parser.add_argument("--sample-n", type=int, default=4, help="samples per mode")
-    parser.add_argument("--sample-temperature", type=float, default=1.0)
+    parser.add_argument(
+        "--sample-temperature",
+        type=float,
+        # 0.7, not 1.0: GIVT noise draws are miscalibrated at T=1 (measured
+        # in the J4 GH200 sessions — 15-20x too large, wrong sky texture),
+        # burying real structure in speckle on the panels; verified on the
+        # pilotv2-specnorm 20k checkpoint that T=0.7 renders faithful cores
+        # and sky. Panels only — val loss and the probe never sample.
+        default=0.7,
+    )
     parser.add_argument(
         "--samples-floor",
         type=int,
@@ -273,8 +316,13 @@ def main():
         from astropt3.eval.samples import load_template_record
 
         sample_records = [
-            load_template_record(args.data_root, int(i), prefer_spectrum=True)
-            for i in args.sample_records.split(",")
+            load_template_record(
+                args.data_root,
+                int(tok.lstrip("s")),
+                prefer_spectrum=True,
+                spectrum_only=tok.startswith("s"),
+            )
+            for tok in args.sample_records.split(",")
         ]
 
     wandb_run = None
@@ -295,6 +343,9 @@ def main():
         wandb_run.define_metric("checkpoint_step")
         wandb_run.define_metric("*", step_metric="checkpoint_step")
 
+    # step-invariant artifacts (config, packed val batches, probe set) built
+    # once and shared across every evaluated step
+    cache: dict = {}
     while True:
         done = processed_steps(results_path)
         completed = completed_steps(Path(args.checkpoints_dir))
@@ -308,7 +359,7 @@ def main():
         )
         for step in todo:
             print(f"[sweep] processing step {step}", flush=True)
-            result = process_step(step, args, sample_records)
+            result = process_step(step, args, sample_records, cache)
             with open(results_path, "a") as f:
                 f.write(json.dumps(result) + "\n")
             if wandb_run is not None:

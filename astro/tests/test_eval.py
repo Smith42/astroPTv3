@@ -8,6 +8,7 @@ checkpoints and asserts learning across steps.
 import math
 
 import numpy as np
+import pytest
 import torch
 
 from astropt3.data.nanotron_loader import PackedMicroBatches
@@ -43,6 +44,89 @@ def test_probe_objects_carry_target(tiny_config):
     assert np.isfinite(targets).all()
     # Z only exists on spectra-bearing records
     assert all("spectra" in o.masks for o in objects)
+
+
+def test_probe_skips_records_without_pool_modality(tiny_config, tmp_path):
+    # spectrum-only rows (ADR 0005) carry Z but have no image tokens to pool
+    from astropt3.data import mmu
+    from astropt3.data.synthetic import make_record
+
+    records = []
+    for i in range(6):
+        records.append(make_record(i, image_only_fraction=0.0, spectrum_only_fraction=1.0))
+        records.append(make_record(i + 100, image_only_fraction=0.0))
+    mmu.write_shard(records, tmp_path / "shard-00000.parquet")
+
+    objects, targets = linear_probe.collect_probe_objects(
+        tiny_config, str(tmp_path), "Z", 6, pool_modality="images"
+    )
+    assert all("images" in o.masks for o in objects)
+    # with a spectra pool the spectrum-only rows qualify: all 12 carry Z
+    objects, _ = linear_probe.collect_probe_objects(
+        tiny_config, str(tmp_path), "Z", 12, pool_modality="spectra"
+    )
+    assert len(objects) == 12
+
+
+def test_probe_uses_all_objects_when_stream_exhausted(tiny_config, tmp_path):
+    # a val split smaller than n_objects degrades to all qualifying records
+    from astropt3.data import mmu
+    from astropt3.data.synthetic import make_record
+
+    records = [make_record(i, image_only_fraction=0.0) for i in range(6)]
+    mmu.write_shard(records, tmp_path / "shard-00000.parquet")
+
+    with pytest.warns(UserWarning, match=r"6/2048"):
+        objects, targets = linear_probe.collect_probe_objects(
+            tiny_config, str(tmp_path), "Z", 2048
+        )
+    assert len(objects) == 6 and targets.shape == (6,)
+
+    # but zero qualifying records is still an error
+    with pytest.raises(ValueError, match="no records carry target"):
+        linear_probe.collect_probe_objects(tiny_config, str(tmp_path), "NOT_A_TARGET", 8)
+
+
+def test_evaluate_accepts_prebuilt_batches(tiny_model, tiny_config):
+    # sweeps build the fixed val batches once; result must match fresh streaming
+    kwargs = dict(n_batches=2, micro_batch_size=2, seq_len=896)
+    batches = list(val_loss.val_batches(tiny_config, "synthetic", **kwargs))
+    fresh = val_loss.evaluate(tiny_model, "synthetic", **kwargs)
+    reused = val_loss.evaluate(tiny_model, "synthetic", batches=batches)
+    assert reused == fresh
+    # batches survive reuse: a second pass over the same list agrees
+    assert val_loss.evaluate(tiny_model, "synthetic", batches=batches) == fresh
+
+
+def test_probe_set_disk_cache_roundtrip(tiny_config, tmp_path):
+    cache = tmp_path / "probe_set.pt"
+    _, targets = linear_probe.load_or_collect_probe_objects(
+        cache, tiny_config, "synthetic", "Z", 6
+    )
+    assert cache.exists()
+    objects2, targets2 = linear_probe.load_or_collect_probe_objects(
+        cache, tiny_config, "synthetic", "Z", 6
+    )
+    assert len(objects2) == 6 and np.array_equal(targets, targets2)
+    # a mismatched key re-collects instead of serving a stale set
+    with pytest.warns(UserWarning, match="re-collecting"):
+        _, targets3 = linear_probe.load_or_collect_probe_objects(
+            cache, tiny_config, "synthetic", "Z", 4
+        )
+    assert targets3.shape == (4,) and np.array_equal(targets3, targets[:4])
+
+
+def test_probe_checkpoint_accepts_precollected_probe_set(tiny_model, tiny_config, tmp_path):
+    # sweeps collect the probe set once and reuse it: same result as fresh collection
+    ckpt = tmp_path / "ckpt"
+    tiny_model.save_pretrained(ckpt)
+    probe_set = linear_probe.collect_probe_objects(tiny_config, "synthetic", "Z", 12)
+    reused = linear_probe.probe_checkpoint(
+        ckpt, "synthetic", n_objects=12, probe_set=probe_set, device="cpu"
+    )
+    fresh = linear_probe.probe_checkpoint(ckpt, "synthetic", n_objects=12, device="cpu")
+    assert math.isfinite(reused["r2"]) and reused["r2"] == fresh["r2"]
+    assert reused["n_objects"] == fresh["n_objects"] == 12
 
 
 def test_embeddings_align_with_objects(tiny_model, tiny_config):

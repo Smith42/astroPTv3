@@ -52,6 +52,10 @@ class AstroPT3Output(ModelOutput):
     modality_losses: Optional[dict] = None
     predictions: Optional[dict] = None
     last_hidden_state: Optional[torch.FloatTensor] = None
+    # per-layer states (embeddings first, HF convention), populated only
+    # when forward(output_hidden_states=True); the linear probe pools the
+    # central layer from here (astroPT convention)
+    hidden_states: Optional[tuple] = None
 
 
 def left_shift_mask(mask: torch.Tensor) -> torch.Tensor:
@@ -169,6 +173,7 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         compute_loss: bool = True,
+        output_hidden_states: bool = False,
         **kwargs,
     ) -> AstroPT3Output:
         modality_values = modality_values or {}
@@ -204,12 +209,14 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
         inputs_embeds = self.assemble_inputs_embeds(
             input_ids, embed_values, modality_masks, modality_positions
         )
-        hidden = self.model(
+        body_out = self.model(
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
             attention_mask=attention_mask,
             use_cache=False,
-        ).last_hidden_state
+            output_hidden_states=output_hidden_states,
+        )
+        hidden = body_out.last_hidden_state
 
         predictions = {}
         modality_losses = {}
@@ -264,4 +271,5 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
             modality_losses=modality_losses,
             predictions=predictions,
             last_hidden_state=hidden,
+            hidden_states=getattr(body_out, "hidden_states", None),
         )

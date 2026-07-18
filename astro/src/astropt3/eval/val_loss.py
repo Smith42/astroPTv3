@@ -44,19 +44,29 @@ def val_batches(config, data_root, *, n_batches, micro_batch_size, seq_len, seed
 
 
 @torch.no_grad()
-def evaluate(model, data_root, *, n_batches=512, micro_batch_size=4, seq_len=896, seed=0):
-    """Mean loss (and per-modality means) over the fixed val batches."""
+def evaluate(model, data_root, *, n_batches=512, micro_batch_size=4, seq_len=896, seed=0, batches=None):
+    """Mean loss (and per-modality means) over the fixed val batches.
+
+    ``batches`` is an optional pre-built list from :func:`val_batches` — the
+    batches depend only on the data stream, not on checkpoint weights, so
+    sweeps should build them once and reuse them for every step instead of
+    re-streaming and re-packing the val shards per checkpoint.
+    """
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
     total, per_key, per_key_n = 0.0, {}, {}
     n = 0
-    for kwargs in val_batches(
-        model.config,
-        data_root,
-        n_batches=n_batches,
-        micro_batch_size=micro_batch_size,
-        seq_len=seq_len,
-        seed=seed,
+    for kwargs in (
+        batches
+        if batches is not None
+        else val_batches(
+            model.config,
+            data_root,
+            n_batches=n_batches,
+            micro_batch_size=micro_batch_size,
+            seq_len=seq_len,
+            seed=seed,
+        )
     ):
         kwargs = {
             k: ({kk: vv.to(device=device, dtype=dtype if vv.is_floating_point() else None) for kk, vv in v.items()} if isinstance(v, dict) else v.to(device))
@@ -78,7 +88,7 @@ def evaluate(model, data_root, *, n_batches=512, micro_batch_size=4, seq_len=896
 
 
 def evaluate_checkpoint(
-    checkpoint, data_root, *, n_batches=512, micro_batch_size=4, seq_len=896, device=None, seed=0
+    checkpoint, data_root, *, n_batches=512, micro_batch_size=4, seq_len=896, device=None, seed=0, batches=None
 ):
     import astropt3  # noqa: F401  -- registers the Auto classes
 
@@ -95,6 +105,7 @@ def evaluate_checkpoint(
         micro_batch_size=micro_batch_size,
         seq_len=seq_len,
         seed=seed,
+        batches=batches,
     )
     result["checkpoint"] = str(checkpoint)
     return result

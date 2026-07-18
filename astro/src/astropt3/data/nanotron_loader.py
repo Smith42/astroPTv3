@@ -51,6 +51,7 @@ import torch
 
 from ..configuration_astropt3 import AstroPT3Config
 from .band_registry import _DIV_FACTOR
+from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
 from .mmu import MMUIterableDataset
 from .packing import ObjectSequencer, PackedCollator
 from .synthetic import make_record
@@ -136,6 +137,8 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         data_root: str = SYNTHETIC_ROOT,
         shuffle_buffer_size: int = 0,
         synthetic_image_only_fraction: float = 0.3,
+        synthetic_spectrum_only_fraction: float = 0.0,
+        spectra_oversample: int = 1,
         rank: int = 0,
         world_size: int = 1,
         seed: int = 0,
@@ -149,6 +152,10 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self.data_root = str(data_root)
         self.shuffle_buffer_size = shuffle_buffer_size
         self.synthetic_image_only_fraction = synthetic_image_only_fraction
+        self.synthetic_spectrum_only_fraction = synthetic_spectrum_only_fraction
+        # ADR 0005: how many times each spectrum-only shard (the spectra/
+        # subdir of data_root) is listed per epoch — the draw-frequency knob
+        self.spectra_oversample = spectra_oversample
         self.rank = rank
         self.world_size = world_size
         self.seed = seed
@@ -188,6 +195,14 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 f"dataset state was saved for data_root={state['data_root']!r}, "
                 f"this stream reads {self.data_root!r}"
             )
+        if state.get("spectra_oversample") not in (None, self.spectra_oversample):
+            # the epoch's shard list is a function of the oversample factor,
+            # so the saved HF stream position only maps onto the same value
+            raise ValueError(
+                f"dataset state was saved with spectra_oversample="
+                f"{state['spectra_oversample']}, this stream uses "
+                f"{self.spectra_oversample}"
+            )
         self._resume_state = dict(state)
 
     def _snapshot(self, records: int) -> dict:
@@ -200,6 +215,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             "epoch": self._epoch,
             "hf_state": hf_state,
             "data_root": self.data_root,
+            "spectra_oversample": self.spectra_oversample,
         }
 
     # -- record sources -----------------------------------------------------
@@ -211,7 +227,11 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         offset = self.rank * n_workers + worker_id
         stride = self.world_size * n_workers
         for k in itertools.count(start_count):
-            yield make_record(offset + k * stride, image_only_fraction=self.synthetic_image_only_fraction)
+            yield make_record(
+                offset + k * stride,
+                image_only_fraction=self.synthetic_image_only_fraction,
+                spectrum_only_fraction=self.synthetic_spectrum_only_fraction,
+            )
 
     def _mmu_records(self, start_epoch: int, hf_state):
         """Endless stream over the shards, reshuffled per epoch.
@@ -226,6 +246,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             world_size=self.world_size,
             shuffle_buffer_size=self.shuffle_buffer_size,
             seed=self.seed,
+            spectra_repeat=self.spectra_oversample,
         )
         self._mmu_dataset = dataset
         for epoch in itertools.count(start_epoch):
@@ -276,7 +297,10 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
 
         try:
             for record in records:
-                obj = self.sequencer.build(record)
+                # live epoch feeds the modality-order parity (ADR 0005
+                # amendment); pure function of (object_id, epoch), so the
+                # resumed stream rebuilds identical sequences
+                obj = self.sequencer.build(record, epoch=self._epoch)
                 if len(obj) > self.seq_len:
                     raise ValueError(f"object of length {len(obj)} exceeds seq_len {self.seq_len}")
                 if used + len(obj) > self.seq_len:
@@ -358,6 +382,7 @@ def build_astropt3_dataloader(
                 ("jetformer_noise_max", 0.1),
                 ("jetformer_noise_min", 0.0),
                 ("image_norm_divisor", _DIV_FACTOR),
+                ("spectra_norm_divisor", _SPECTRA_DIV_FACTOR),
                 ("spiral", True),
             ]
         },
@@ -369,6 +394,8 @@ def build_astropt3_dataloader(
         data_root=dataset_args.data_root,
         shuffle_buffer_size=getattr(dataset_args, "shuffle_buffer_size", 0),
         synthetic_image_only_fraction=getattr(dataset_args, "synthetic_image_only_fraction", 0.3),
+        synthetic_spectrum_only_fraction=getattr(dataset_args, "synthetic_spectrum_only_fraction", 0.0),
+        spectra_oversample=getattr(dataset_args, "spectra_oversample", 1),
         rank=dp_rank,
         world_size=dp_size,
         seed=seed,

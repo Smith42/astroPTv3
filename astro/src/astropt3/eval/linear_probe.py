@@ -1,8 +1,11 @@
-"""Ridge linear probe: mean-pooled hidden states -> redshift ``Z``.
+"""Ridge linear probe: mean-pooled central hidden states -> redshift ``Z``.
 
 Streams validation records (val shards, or held-out synthetic indices),
 keeps those carrying the target scalar, embeds each object by mean-pooling
-the model's ``last_hidden_state`` over one modality's patch tokens, and fits
+the model's CENTRAL layer state (layer ``num_hidden_layers // 2`` — the
+astroPT convention; mid-depth decoder states probe better than the final
+layer, whose job is next-token emission) over one modality's patch tokens,
+and fits
 a closed-form ridge regression (numpy, no sklearn). The regularizer is
 chosen on an inner validation split; the reported R^2 is on a held-out test
 split. Fully deterministic for a given checkpoint.
@@ -15,6 +18,8 @@ Usage:
 import argparse
 import json
 import math
+import warnings
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -36,27 +41,94 @@ def _val_records(data_root, seed=0):
         yield from MMUIterableDataset(data_root, rank=0, world_size=1, seed=seed)
 
 
-def collect_probe_objects(config, data_root, target, n_objects, *, seed=0):
-    """First ``n_objects`` val objects that carry a finite ``target`` scalar."""
+# record key that feeds each poolable modality (mirrors ObjectSequencer)
+_POOL_RECORD_KEY = {"images": "image", "spectra": "spectrum"}
+
+
+def collect_probe_objects(
+    config, data_root, target, n_objects, *, seed=0, pool_modality="images"
+):
+    """First ``n_objects`` val objects that carry a finite ``target`` scalar.
+
+    Objects lacking the ``pool_modality`` are skipped — spectrum-only DESI
+    rows (ADR 0005) carry ``Z`` but have no image tokens to pool over. If
+    the val stream is exhausted before ``n_objects`` qualify, all qualifying
+    objects are used (with a warning); the stream is deterministic, so every
+    checkpoint in a sweep probes the same reduced set. The scan can cover
+    the whole val split, so sweep callers should collect once and pass the
+    result to :func:`probe_checkpoint` as ``probe_set``.
+    """
     sequencer = ObjectSequencer(config)
+    source_key = _POOL_RECORD_KEY.get(pool_modality)
     objects, targets = [], []
     for record in _val_records(data_root, seed=seed):
         value = record.get(target)
         if value is None or not math.isfinite(float(value)):
             continue
-        objects.append(sequencer.build(record))
+        if source_key is not None and record.get(source_key) is None:
+            continue
+        obj = sequencer.build(record)
+        if pool_modality not in obj.masks:
+            continue
+        objects.append(obj)
         targets.append(float(value))
         if len(objects) >= n_objects:
             break
+    if not objects:
+        raise ValueError(
+            f"no records carry target {target!r} with {pool_modality!r} tokens"
+        )
     if len(objects) < n_objects:
-        raise ValueError(f"only {len(objects)}/{n_objects} records carry target {target!r}")
+        warnings.warn(
+            f"val stream exhausted: probing {len(objects)}/{n_objects} records that "
+            f"carry target {target!r} with {pool_modality!r} tokens",
+            stacklevel=2,
+        )
     return objects, np.asarray(targets, dtype=np.float64)
+
+
+def load_or_collect_probe_objects(
+    cache_path, config, data_root, target, n_objects, *, seed=0, pool_modality="images"
+):
+    """Disk-cached :func:`collect_probe_objects` (atomic tmp+rename write).
+
+    The collection scan can read the whole val split, so sweeps persist its
+    result under their out dir and every restart reloads it in seconds. The
+    cache is keyed on the collection arguments; a mismatch re-collects and
+    overwrites (delete the file to force a refresh after regenerating data).
+    """
+    key = {
+        "data_root": str(data_root),
+        "target": target,
+        "n_objects": n_objects,
+        "seed": seed,
+        "pool_modality": pool_modality,
+    }
+    cache_path = Path(cache_path)
+    if cache_path.exists():
+        payload = torch.load(cache_path, weights_only=False)
+        if payload.get("key") == key:
+            return payload["objects"], payload["targets"]
+        warnings.warn(
+            f"probe cache {cache_path} was built with {payload.get('key')}, "
+            f"not {key}; re-collecting",
+            stacklevel=2,
+        )
+    objects, targets = collect_probe_objects(
+        config, data_root, target, n_objects, seed=seed, pool_modality=pool_modality
+    )
+    tmp = cache_path.with_name(cache_path.name + ".tmp")
+    torch.save({"key": key, "objects": objects, "targets": targets}, tmp)
+    tmp.rename(cache_path)
+    return objects, targets
 
 
 @torch.no_grad()
 def embed_objects(model, config, objects, *, seq_len=896, objects_per_batch=8, pool_modality="images"):
-    """Mean-pool ``last_hidden_state`` over one modality's tokens, per object.
+    """Mean-pool the CENTRAL layer state over one modality's tokens, per object.
 
+    Central = ``hidden_states[num_hidden_layers // 2]`` (astroPT convention;
+    embeddings sit at index 0, so this is the output of the middle block).
     Objects are packed with the shared collator; each object's span in a row
     starts at its ``<|bos|>`` and the packed row-major object order equals
     the input order, so embeddings align with the targets by construction.
@@ -64,6 +136,7 @@ def embed_objects(model, config, objects, *, seq_len=896, objects_per_batch=8, p
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
     collator = PackedCollator(config, seq_len=seq_len)
+    central = config.num_hidden_layers // 2
     features = []
     for i in range(0, len(objects), objects_per_batch):
         batch = collator(objects[i : i + objects_per_batch])
@@ -75,7 +148,8 @@ def embed_objects(model, config, objects, *, seq_len=896, objects_per_batch=8, p
             )
             for k, v in batch.items()
         }
-        hidden = model(**kwargs).last_hidden_state  # [B, T, H]
+        out = model(**kwargs, compute_loss=False, output_hidden_states=True)
+        hidden = out.hidden_states[central]  # [B, T, H]
         input_ids = batch["input_ids"]
         mask = batch["modality_masks"].get(pool_modality)
         if mask is None:
@@ -134,7 +208,12 @@ def probe_checkpoint(
     pool_modality="images",
     device=None,
     seed=0,
+    probe_set=None,
 ):
+    """Probe one checkpoint; ``probe_set`` is an optional pre-collected
+    ``(objects, targets)`` pair from :func:`collect_probe_objects` — the
+    probe set depends only on the data stream, not on checkpoint weights,
+    so sweeps should collect once and reuse it for every step."""
     import astropt3  # noqa: F401  -- registers the Auto classes
 
     from transformers import AutoModel
@@ -144,7 +223,11 @@ def probe_checkpoint(
     dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
     model = AutoModel.from_pretrained(checkpoint).to(device=device, dtype=dtype).eval()
 
-    objects, targets = collect_probe_objects(model.config, data_root, target, n_objects, seed=seed)
+    if probe_set is None:
+        probe_set = collect_probe_objects(
+            model.config, data_root, target, n_objects, seed=seed, pool_modality=pool_modality
+        )
+    objects, targets = probe_set
     X = embed_objects(
         model,
         model.config,

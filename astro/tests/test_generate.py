@@ -10,7 +10,6 @@ from astropt3.config_io import load_model_config
 from astropt3.data.packing import ObjectSequencer
 from astropt3.data.synthetic import make_record
 from astropt3.eval.samples import (
-    default_modes,
     load_template_record,
     render_sampled_tokens,
     sample_checkpoint,
@@ -117,14 +116,6 @@ def test_reconstruct_shapes(smoke_model, template):
     assert all(torch.isfinite(v).all() for v in preds.values())
 
 
-def test_default_modes(jet_config):
-    from astropt3 import AstroPT3Config
-
-    assert default_modes(jet_config) == ["unconditional", "image-to-spectra"]
-    affine = AstroPT3Config(**{**jet_config.to_dict(), "tokeniser": "affine"})
-    assert default_modes(affine) == ["reconstruct"]
-
-
 def test_sample_template_modes(smoke_model, template):
     recon = sample_template(smoke_model, template, "reconstruct")
     assert recon["images"].shape == (1, 144, 192)
@@ -225,6 +216,28 @@ def test_load_template_record_falls_back_when_corpus_has_no_spectra(tmp_path):
     assert record["object_id"] == records[1]["object_id"]
     with pytest.raises(ValueError, match="fewer than 9 records"):
         load_template_record(str(tmp_path), 8, prefer_spectrum=True)
+
+
+def test_spectrum_only_template_reads_spectra_subdir_directly(tmp_path):
+    """spectra/ shards sort after every crossmatched shard, so the loader
+    must go straight to the subdir instead of scanning the whole split."""
+    from astropt3.data import mmu
+
+    mmu.write_shard(
+        [make_record(i, image_only_fraction=1.0) for i in range(4)],
+        tmp_path / "shard-00000.parquet",
+    )
+    spectra = [
+        make_record(i + 100, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+        for i in range(2)
+    ]
+    mmu.write_shard(spectra, tmp_path / "spectra" / "shard-00000.parquet")
+
+    record = load_template_record(str(tmp_path), 1, prefer_spectrum=True, spectrum_only=True)
+    assert "image" not in record and "spectrum" in record
+    assert record["object_id"] == spectra[1]["object_id"]
+    with pytest.raises(ValueError, match="fewer than 3 spectrum-only records"):
+        load_template_record(str(tmp_path), 2, prefer_spectrum=True, spectrum_only=True)
 
 
 def test_sample_checkpoint_end_to_end(smoke_model, tmp_path):

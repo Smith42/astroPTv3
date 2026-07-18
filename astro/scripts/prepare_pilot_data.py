@@ -11,15 +11,27 @@ correct across partition borders. ``how="left"`` keeps every image row and
 attaches the nearest spectrum within the match radius where one exists
 (~0.5-1M matched, ~13M image-only expected).
 
+A second pass (ADR 0005, ``pilot_v2``) downloads the DESI catalog directly
+— no remote crossmatch, so no image partitions are pulled — and keeps the
+rows gated on ``ZWARN == 0`` that are NOT within the match radius of any
+matched pair already in the local corpus: an image has a match exactly when
+some spectrum lies within the radius, so "no local matched pair within the
+radius" is equivalent to the LEFT join's anti-side. The kept rows are
+written as spectrum-only records (``image`` null) into a ``spectra/``
+subdirectory of each split so train-time shard-level oversampling can
+target them; the two passes never emit the same spectrum twice. Run pass 2
+only after pass 1 has finished every spectra-coverage partition (the
+``--spectra-first`` default order), or the de-dup set is incomplete.
+
 The result keeps the left catalog's HEALPix partitioning; partitions are
 computed one at a time (bounded memory), each row is normalized to
 ``PILOT_FEATURES``, split train/val by coarse HEALPix tile, and written as
 per-partition parquet shards of ``--shard-size`` rows. A partition is
-journalled in ``progress.jsonl`` only after all its shards are renamed into
-place, and stale files of unjournalled partitions are deleted before redo,
-so rerunning after an interruption is exactly correct (no loss, no
-duplicates); matched/unmatched counts are logged throughout and written to
-``provenance.json``.
+journalled in ``progress.jsonl`` (``progress_spectra.jsonl`` for pass 2)
+only after all its shards are renamed into place, and stale files of
+unjournalled partitions are deleted before redo, so rerunning after an
+interruption is exactly correct (no loss, no duplicates); matched/unmatched
+counts are logged throughout and written to ``provenance.json``.
 
 Smoke run (a few partitions only):
 
@@ -42,11 +54,15 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from astropt3.config_io import resolve_data_root  # noqa: E402
-from astropt3.data.mmu import assign_split, write_shard  # noqa: E402
+from astropt3.data.mmu import MMUIterableDataset, assign_split, write_shard  # noqa: E402
 
 CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "configs" / "data" / "pilot_images_spectra.yaml"
+    Path(__file__).resolve().parents[1]
+    / "configs"
+    / "data"
+    / "pilot_images_spectra_v2.yaml"
 )
+SPECTRA_SUBDIR = MMUIterableDataset.SPECTRA_SUBDIR
 
 # Image-catalog columns copied into the shards; the right (DESI) side
 # contributes spectrum, Z, ZERR, ZWARN and the match distance.
@@ -115,6 +131,88 @@ def row_to_record(row, suffixes=("", "_desi")) -> dict:
     return record
 
 
+def spectra_row_to_record(row) -> dict:
+    """One DESI catalog row -> spectrum-only raw record (ADR 0005)."""
+    r = _Row(row)
+    healpix = r.get("_healpix_29")
+    if healpix is None:
+        healpix = row.name
+    record = {
+        "object_id": r.get("object_id"),
+        "ra": r.get("ra"),
+        "dec": r.get("dec"),
+        "_healpix_29": healpix,
+        "spectrum": _struct(r.get("spectrum")),
+    }
+    for key in ("Z", "ZERR"):
+        value = r.get(key)
+        if not _is_null(value):
+            record[key] = float(value)
+    zwarn = r.get("ZWARN")
+    if not _is_null(zwarn):
+        record["ZWARN"] = bool(zwarn)
+    return record
+
+
+def _radec_xyz(ra, dec) -> np.ndarray:
+    """Degrees -> unit vectors, so small-angle matching is a 3D KD-tree query."""
+    ra = np.radians(np.asarray(ra, dtype=np.float64))
+    dec = np.radians(np.asarray(dec, dtype=np.float64))
+    return np.column_stack(
+        [np.cos(dec) * np.cos(ra), np.cos(dec) * np.sin(ra), np.sin(dec)]
+    )
+
+
+def position_index(ra, dec):
+    """KD-tree over sky positions (None when empty)."""
+    from scipy.spatial import cKDTree
+
+    return cKDTree(_radec_xyz(ra, dec)) if len(ra) else None
+
+
+def load_matched_positions(out_dir: Path) -> tuple[np.ndarray, np.ndarray]:
+    """ra/dec of every matched pair in the local corpus (train + val shards)."""
+    import pyarrow.parquet as pq
+
+    ras, decs = [], []
+    for split in ("train", "val"):
+        for path in sorted((out_dir / split).glob("*.parquet")):
+            table = pq.read_table(path, columns=["ra", "dec", "match_dist_arcsec"])
+            matched = table.filter(table["match_dist_arcsec"].is_valid())
+            ras.append(matched["ra"].to_numpy())
+            decs.append(matched["dec"].to_numpy())
+    if not ras:
+        return np.empty(0), np.empty(0)
+    return np.concatenate(ras), np.concatenate(decs)
+
+
+def spectra_only_records(df, matched_index, radius_arcsec) -> tuple[list[dict], int, int]:
+    """The ``ZWARN == 0`` DESI rows with no matched pair within the radius.
+
+    Returns ``(records, n_zwarn_dropped, n_matched_dropped)``. A row within
+    ``radius_arcsec`` of a matched-pair position is skipped — pass 1 already
+    owns that spectrum (an image has a match iff a spectrum is in radius, so
+    this local test is equivalent to the LEFT join's anti-side).
+    """
+    is_dup = np.zeros(len(df), dtype=bool)
+    if len(df) and matched_index is not None:
+        chord = 2 * np.sin(np.radians(radius_arcsec / 3600.0) / 2)
+        dists, _ = matched_index.query(
+            _radec_xyz(df["ra"], df["dec"]), k=1, distance_upper_bound=chord * 1.001
+        )
+        is_dup = dists <= chord
+    records, n_zwarn = [], 0
+    for dup, (_, row) in zip(is_dup, df.iterrows()):
+        if dup:
+            continue
+        record = spectra_row_to_record(row)
+        if record.get("ZWARN") is not False:  # DESI reliable-spectrum gate
+            n_zwarn += 1
+            continue
+        records.append(record)
+    return records, n_zwarn, int(is_dup.sum())
+
+
 def pixel_overlaps(pixel: tuple, others: list) -> bool:
     """True if nested HEALPix ``(order, pixel)`` intersects any of ``others``.
 
@@ -146,22 +244,27 @@ def _partition_glob(order: int, pixel: int) -> str:
     return f"part-{order:02d}-{pixel:07d}-*"
 
 
-def clean_partition(out_dir: Path, order: int, pixel: int) -> None:
+def clean_partition(out_dir: Path, order: int, pixel: int, subdir: str = "") -> None:
     """Delete stale shards of a partition that was never journalled as done."""
     for split in ("train", "val"):
-        for stale in (out_dir / split).glob(_partition_glob(order, pixel)):
+        for stale in (out_dir / split / subdir).glob(_partition_glob(order, pixel)):
             stale.unlink()
 
 
 def write_partition(
-    records_by_split: dict, out_dir: Path, order: int, pixel: int, shard_size: int
+    records_by_split: dict,
+    out_dir: Path,
+    order: int,
+    pixel: int,
+    shard_size: int,
+    subdir: str = "",
 ) -> None:
     """Write one partition's records as per-split shards of <= shard_size rows."""
     for split, records in records_by_split.items():
         for k, start in enumerate(range(0, len(records), shard_size)):
             write_shard(
                 records[start : start + shard_size],
-                out_dir / split / f"part-{order:02d}-{pixel:07d}-{k:03d}.parquet",
+                out_dir / split / subdir / f"part-{order:02d}-{pixel:07d}-{k:03d}.parquet",
             )
 
 
@@ -205,6 +308,20 @@ def main() -> int:
         help="process partitions overlapping the spectra catalog's coverage "
         "first, so matched pairs land in the corpus early (the progress "
         "journal is keyed by pixel, so reordering is resume-safe)",
+    )
+    parser.add_argument(
+        "--spectrum-only-pass",
+        action=argparse.BooleanOptionalAction,
+        default=config["sources"].get("spectrum_only_pass", True),
+        help="ADR 0005 second pass: write non-crossmatched ZWARN==0 DESI "
+        "spectra as spectrum-only rows under {split}/spectra/",
+    )
+    parser.add_argument(
+        "--image-pass",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="--no-image-pass skips pass 1 (both journals make each pass "
+        "resume-idempotent, so the passes can run in either order)",
     )
     args = parser.parse_args()
 
@@ -254,7 +371,7 @@ def main() -> int:
     started = time.time()
     n_objects_at_start = counts["n_objects"]
     n_processed = len(done)
-    for i, pixel in indexed:
+    for i, pixel in indexed if args.image_pass else []:
         key = (pixel.order, pixel.pixel)
         if key in done:
             continue
@@ -303,6 +420,81 @@ def main() -> int:
             flush=True,
         )
 
+    spec_counts = {
+        "n_spectra_rows": 0,
+        "n_spectrum_only": 0,
+        "n_zwarn_dropped": 0,
+        "n_matched_dropped": 0,
+        "n_val": 0,
+    }
+    if args.spectrum_only_pass:
+        # ADR 0005 pass 2: full DESI scan, de-duped locally against the
+        # matched pairs pass 1 already wrote (no remote crossmatch — the
+        # image catalog is never touched)
+        matched_ra, matched_dec = load_matched_positions(args.out)
+        matched_index = position_index(matched_ra, matched_dec)
+        print(f"spectrum-only pass: de-dup index over {len(matched_ra)} matched pairs")
+        spec_catalog = spectra
+        if args.cone is not None:
+            spec_catalog = spec_catalog.cone_search(*args.cone)
+        spec_pixels = spec_catalog.get_ordered_healpix_pixels()
+        if args.limit_partitions is not None:
+            spec_pixels = spec_pixels[: args.limit_partitions]
+        print(f"spectrum-only pass: {len(spec_pixels)} spectra partitions")
+        spec_progress_path = args.out / "progress_spectra.jsonl"
+        spec_done = _load_progress(spec_progress_path)
+        for entry in spec_done.values():
+            for key in spec_counts:
+                spec_counts[key] += entry.get(key, 0)
+        if spec_done:
+            print(f"resuming pass 2: {len(spec_done)} partitions done ({spec_counts})")
+        for i, pixel in enumerate(spec_pixels):
+            key = (pixel.order, pixel.pixel)
+            if key in spec_done:
+                continue
+            clean_partition(args.out, pixel.order, pixel.pixel, subdir=SPECTRA_SUBDIR)
+            df = spec_catalog.partitions[i].compute()
+            records, n_zwarn, n_dup = spectra_only_records(
+                df, matched_index, args.radius_arcsec
+            )
+            records_by_split = {"train": [], "val": []}
+            for record in records:
+                split = assign_split(
+                    record["_healpix_29"],
+                    val_fraction=args.val_fraction,
+                    order=args.split_order,
+                    salt=args.split_salt,
+                )
+                records_by_split[split].append(record)
+            write_partition(
+                records_by_split,
+                args.out,
+                pixel.order,
+                pixel.pixel,
+                args.shard_size,
+                subdir=SPECTRA_SUBDIR,
+            )
+            entry = {
+                "order": int(pixel.order),
+                "pixel": int(pixel.pixel),
+                "n_spectra_rows": len(df),
+                "n_spectrum_only": len(records),
+                "n_zwarn_dropped": int(n_zwarn),
+                "n_matched_dropped": int(n_dup),
+                "n_val": len(records_by_split["val"]),
+            }
+            for k in spec_counts:
+                spec_counts[k] += entry[k]
+            with spec_progress_path.open("a") as fh:
+                fh.write(json.dumps(entry) + "\n")
+            print(
+                f"[pass2 {i + 1}/{len(spec_pixels)}] Norder={pixel.order} "
+                f"Npix={pixel.pixel}: {len(df)} spectra rows -> "
+                f"{len(records)} spectrum-only ({n_dup} matched, "
+                f"{n_zwarn} ZWARN-dropped) | totals: {spec_counts}",
+                flush=True,
+            )
+
     provenance = {
         "sources": {
             "images": args.images,
@@ -310,6 +502,8 @@ def main() -> int:
             "crossmatch_radius_arcsec": args.radius_arcsec,
             "crossmatch_how": "left",
             "n_neighbors": 1,
+            "spectrum_only_pass": bool(args.spectrum_only_pass),
+            "spectrum_only_dedup": "local full-DESI scan vs matched-pair positions",
         },
         "split": {
             "healpix_order": args.split_order,
@@ -320,6 +514,7 @@ def main() -> int:
             **counts,
             "n_image_only": counts["n_objects"] - counts["n_matched"],
             "n_train": counts["n_objects"] - counts["n_val"],
+            "spectrum_only": spec_counts,
         },
         "versions": {
             "lsdb": lsdb.__version__,

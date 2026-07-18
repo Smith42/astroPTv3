@@ -40,6 +40,43 @@ def test_roundtrip_matches_source_records(shard_dir):
             assert rec["Z"] == pytest.approx(source["Z"])
 
 
+def test_spectrum_only_roundtrip(tmp_path):
+    # ADR 0005: a spectrum-only record survives write/decode with no image key
+    records = [
+        make_record(3),
+        make_record(3, image_only_fraction=0.0, spectrum_only_fraction=1.0),
+    ]
+    mmu.write_shard(records, tmp_path / "shard-00000.parquet")
+    decoded = list(mmu.MMUIterableDataset(tmp_path))
+    assert "image" in decoded[0] and "image" not in decoded[1]
+    assert "spectrum" in decoded[1] and "z_spec" not in records[1]
+    np.testing.assert_array_equal(
+        decoded[1]["spectrum"]["flux"], records[1]["spectrum"]["flux"]
+    )
+
+
+def test_spectra_subdir_oversampled(shard_dir, tmp_path):
+    # spectra/ shards are listed spectra_repeat times per epoch (ADR 0005)
+    spec_records = [
+        make_record(i, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+        for i in range(100, 104)
+    ]
+    for f in sorted(shard_dir.glob("*.parquet")):
+        (tmp_path / f.name).symlink_to(f)
+    mmu.write_shard(spec_records, tmp_path / "spectra" / "shard-00000.parquet")
+
+    dataset = mmu.MMUIterableDataset(tmp_path, spectra_repeat=3)
+    assert dataset.n_shards == N_RECORDS // SHARD_SIZE + 3
+    ids = [r["object_id"] for r in dataset]
+    assert len(ids) == N_RECORDS + 3 * len(spec_records)
+    for rec in spec_records:
+        assert ids.count(rec["object_id"]) == 3
+
+    # repeat=1 includes the spectrum-only shard exactly once
+    ids1 = [r["object_id"] for r in mmu.MMUIterableDataset(tmp_path)]
+    assert len(ids1) == N_RECORDS + len(spec_records)
+
+
 def test_normalize_record_coerces_synthetic_schema():
     normalized = mmu.normalize_record(make_record(3))
     image = normalized["image"]

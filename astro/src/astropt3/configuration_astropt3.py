@@ -3,6 +3,7 @@
 from transformers.models.smollm3.configuration_smollm3 import SmolLM3Config
 
 from .data.band_registry import _DIV_FACTOR
+from .data.spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
 from .modalities import ModalityRegistry
 from .tokenization import VOCAB_SIZE
 
@@ -46,6 +47,7 @@ class AstroPT3Config(SmolLM3Config):
         huber_delta: float = 1.0,
         special_token_ce_weight: float = 0.0,
         image_norm_divisor: float = _DIV_FACTOR,
+        spectra_norm_divisor: float = _SPECTRA_DIV_FACTOR,
         spiral: bool = True,
         vocab_size: int = VOCAB_SIZE,
         hidden_size: int = 512,
@@ -78,6 +80,12 @@ class AstroPT3Config(SmolLM3Config):
         # before the field existed — note pre-physical-norm PU-asinh
         # checkpoints are incompatible regardless, see docs)
         self.image_norm_divisor = image_norm_divisor
+        # arcsinh knee (nMgy) of the physical spectra normalization (ADR
+        # 0007), the spectra counterpart of image_norm_divisor: consumed by
+        # ObjectSequencer (forward) and eval/samples.py (inverse). Spectra
+        # checkpoints saved before the field existed trained on raw DESI
+        # flux and are incompatible regardless of the back-fill — retrain.
+        self.spectra_norm_divisor = spectra_norm_divisor
         # center-outward spiral patch order for image tokens (ADR 0004).
         # The field is the single source of truth for the order a checkpoint
         # trained in: ObjectSequencer spiralises iff it is True, and the

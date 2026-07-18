@@ -20,9 +20,10 @@ Usage:
 
 Outputs land in ``--out`` as ``.npy`` (raw sampled values, data space) plus
 PNGs: a grid for images, flux-vs-wavelength for spectra. Non-unconditional
-modes lead with a ground-truth panel/trace from the template record. Image
-values get the physical inverse normalization (band-registry keyed by the
-template record's bands; no calibration file needed) — exact for jetformer
+modes lead with a ground-truth panel/trace from the template record. Both
+modalities get the physical inverse normalization (images: band-registry
+keyed by the template record's bands; spectra: the DESI f_ν map, ADR 0007;
+no calibration file needed) — exact for jetformer
 checkpoints (whose sequencer skips per-patch standardization precisely so
 the token map inverts back to flux); for affine checkpoints it is
 qualitative only, since standardization discards each patch's mean/std.
@@ -48,7 +49,7 @@ def main():
     parser.add_argument("--checkpoint", required=True, help="HF checkpoint dir")
     parser.add_argument(
         "--mode",
-        choices=["unconditional", "image-to-spectra", "reconstruct"],
+        choices=["unconditional", "image-to-spectra", "spectra-to-images", "reconstruct"],
         default="unconditional",
     )
     parser.add_argument("--n", type=int, default=4, help="samples to draw")
@@ -80,6 +81,7 @@ def main():
 
     from astropt3.data.packing import ObjectSequencer
     from astropt3.eval.samples import (
+        build_template,
         load_template_record,
         render_sampled_tokens,
         sample_template,
@@ -119,7 +121,7 @@ def main():
 
     for record_index in record_indices:
         record = load_template_record(args.data_root, record_index, prefer_spectrum)
-        template = sequencer.build(record)
+        template = build_template(sequencer, record, args.mode)
         print(f"template object {template.object_id!r}: spans {sorted(template.masks)}")
 
         generator = None

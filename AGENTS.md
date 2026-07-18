@@ -40,13 +40,19 @@ stages is implicit and easy to break, so understand it before editing:
 
 1. **Records** are MMU-schema dicts (`image.flux` float32 (3,152,152);
    `spectrum` with 7781-bin `flux/lambda/ivar/mask`). `data/synthetic.py`
-   generates schema-identical fixtures so everything runs offline; records
-   may lack `spectrum` (image-only is the common case, ~13M of 14M). Real
-   records flow through `data/mmu.py`: `scripts/prepare_pilot_data.py`
-   (login node, `[data]` env, network) lsdb-LEFT-crossmatches the two MMU
-   HATS collections into local parquet shards (train/val by hashing coarse
-   HEALPix tiles — spatially disjoint), and `MMUIterableDataset` streams
-   them back offline, sharded by DP rank and DataLoader worker.
+   generates schema-identical fixtures so everything runs offline; both
+   modalities are optional per record (image-only is the common case, ~13M
+   of 14M; spectrum-only rows are the non-crossmatched ZWARN==0 DESI
+   spectra of `pilot_v2`, ADR 0005). Real records flow through
+   `data/mmu.py`: `scripts/prepare_pilot_data.py` (login node, `[data]`
+   env, network) lsdb-LEFT-crossmatches the two MMU HATS collections into
+   local parquet shards (train/val by hashing coarse HEALPix tiles —
+   spatially disjoint), with a second spectra-LEFT-images pass writing the
+   unmatched spectra into a `spectra/` subdir of each split;
+   `MMUIterableDataset` streams everything back offline, sharded by DP rank
+   and DataLoader worker, listing each spectrum-only shard
+   `spectra_repeat`/`spectra_oversample` times per epoch (the ADR 0005
+   draw-frequency knob; `loss_weight` stays 1:1).
    `scripts/check_pilot_data.py` is the sanity/throughput gate.
 2. **`ObjectSequencer`** (`data/packing.py`) turns a record into an
    `ObjectSeq`: central 96×96 crop (`packing.IMAGE_CROP`; JWST cubes are
@@ -54,13 +60,19 @@ stages is implicit and easy to break, so understand it before editing:
    (`data/band_registry.py`: rescale to nanomaggies → bright-pixel clamp →
    `arcsinh(x/0.01)` — tokens are flux in knee units of 0.01 nMgy = 10 pMgy,
    O(1) values, keyed on the record's band names — no per-corpus
-   calibration; unknown bands raise) + patchify (`tokenization.py`) + per-patch
+   calibration; unknown bands raise; spectra get the symmetric ADR 0007
+   treatment in `data/spectral.py`: DESI f_λ → AB nMgy via `f_ν = f_λ·λ²/c`
+   on the fixed DESI grid, then `arcsinh(f_ν/10 nMgy)`, invertible with no
+   side info; unknown grids raise) + patchify (`tokenization.py`) + per-patch
    standardization (`data/transforms.py`) per modality (jetformer configs
    SKIP the standardization — the exact-likelihood loss needs an invertible
    record -> token map, and standardization discards each patch's
    mean/std), wrapped in frozen
    special tokens: `<|bos|> <|begin_m|> …placeholders… <|end_m|>` per
-   modality in **alphabetical registry order**. Images → 144 patch-8 tokens
+   modality in **alphabetical registry order**, except bimodal objects
+   reverse span order on `crc32(object_id) ^ epoch` parity (50/50,
+   resume-exact, always on — teaches both conditioning directions; ADR
+   0005 amendment; pre-rule fixed-order checkpoints are incompatible). Images → 144 patch-8 tokens
    (192 floats); spectra → 31 patch-256 tokens with normalized per-patch
    mean wavelength as a continuous position.
 3. **`PackedCollator`** greedily packs whole objects (never split) into

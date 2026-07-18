@@ -14,7 +14,9 @@ records mimic:
 Images contain a redshift-correlated Gaussian blob and spectra a continuum +
 emission line, so a smoke-trained model has real structure to learn. A
 fraction of records are image-only (no ``spectrum``), matching the pilot
-corpus where the DESI crossmatch covers only ~1/14 of the images.
+corpus where the DESI crossmatch covers only ~1/14 of the images; a
+(default-zero) fraction are spectrum-only (no ``image``), matching the
+non-crossmatched DESI rows of ``pilot_v2`` (ADR 0005).
 """
 
 import numpy as np
@@ -26,8 +28,18 @@ LAMBDA_MIN = 3600.0
 LAMBDA_MAX = 9824.0
 
 
-def make_record(index: int, image_only_fraction: float = 0.3) -> dict:
-    """Build one deterministic synthetic record keyed by ``index``."""
+def make_record(
+    index: int,
+    image_only_fraction: float = 0.3,
+    spectrum_only_fraction: float = 0.0,
+) -> dict:
+    """Build one deterministic synthetic record keyed by ``index``.
+
+    A record is image-only with probability ``image_only_fraction``,
+    spectrum-only with ``spectrum_only_fraction``, otherwise bimodal. The RNG
+    draw order never changes, so ``spectrum_only_fraction=0`` reproduces the
+    historical records exactly.
+    """
     rng = np.random.default_rng(index)
     z = float(rng.uniform(0.01, 1.5))
 
@@ -56,7 +68,8 @@ def make_record(index: int, image_only_fraction: float = 0.3) -> dict:
         "z_spec": z,
     }
 
-    if rng.uniform() >= image_only_fraction:
+    u = rng.uniform()
+    if u >= image_only_fraction:
         lam = np.linspace(LAMBDA_MIN, LAMBDA_MAX, SPECTRUM_LENGTH, dtype=np.float32)
         # steep continuum: intra-patch slope dominates the noise, so the
         # standardized patch shape is learnable (flat continua standardize
@@ -73,11 +86,24 @@ def make_record(index: int, image_only_fraction: float = 0.3) -> dict:
             "mask": np.zeros(SPECTRUM_LENGTH, dtype=bool),
         }
         record["Z"] = z
+        if u < image_only_fraction + spectrum_only_fraction:
+            # non-crossmatched DESI row (ADR 0005): a spectrum with no
+            # cutout image and no image-catalog scalars
+            del record["image"], record["z_spec"]
 
     return record
 
 
-def record_stream(n: int, image_only_fraction: float = 0.3, start: int = 0):
+def record_stream(
+    n: int,
+    image_only_fraction: float = 0.3,
+    start: int = 0,
+    spectrum_only_fraction: float = 0.0,
+):
     """Yield ``n`` deterministic records starting at ``start``."""
     for i in range(start, start + n):
-        yield make_record(i, image_only_fraction=image_only_fraction)
+        yield make_record(
+            i,
+            image_only_fraction=image_only_fraction,
+            spectrum_only_fraction=spectrum_only_fraction,
+        )

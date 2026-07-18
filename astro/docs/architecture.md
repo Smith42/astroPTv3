@@ -44,7 +44,12 @@ survey data to model input:
    `arcsinh(flux/0.01)` (flux in knee units: 0.01 nMgy = 10 picomaggies,
    so tokens are O(1)). No data-driven calibration; unknown bands
    raise, `rgb-*` composites pass through raw. Invertible up to the clamp
-   (`physical_inverse`). Spectra are not stretched; masked bins are zeroed.
+   (`physical_inverse`). Spectra get the symmetric treatment
+   (`data/spectral.py`, ADR 0007): masked bins zeroed → DESI f_λ converted
+   to AB nanomaggies per-pixel (`f_ν = f_λ·λ²/c`; the DESI grid is a format
+   constant, 3600–9824 Å × 0.8 Å, so the map inverts with no side info) →
+   `arcsinh(f_ν/10)` (knee = 10 nMgy, the fiber sky-noise scale). Exactly
+   invertible (`spectral_inverse`); unknown grids raise.
 
    > **Migration note:** checkpoints trained before this change (on the
    > percentile-calibrated Platonic-Universe asinh stretch) are
@@ -53,7 +58,11 @@ survey data to model input:
    > trained on a different target: declare incompatible, retrain. The same
    > applies to physnorm checkpoints trained before the switch to knee-unit
    > tokens (dropping the trailing `·divisor`) and the 96×96 central crop
-   > (361 → 144 image tokens): incompatible, retrain.
+   > (361 → 144 image tokens): incompatible, retrain. Likewise all
+   > spectra-bearing checkpoints trained before the physical spectra
+   > normalization (ADR 0007, raw-DESI-flux tokens): the config field
+   > `spectra_norm_divisor` back-fills, but the record→token map changed —
+   > incompatible, retrain.
 
 3. **Patchify** (`tokenization.py`):
    - images → central 96×96 crop (`packing.IMAGE_CROP`; JWST cubes are
