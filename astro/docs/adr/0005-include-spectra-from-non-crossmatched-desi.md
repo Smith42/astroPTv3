@@ -90,6 +90,17 @@ Emit the non-crossmatched DESI rows as **spectrum-only** objects (no image), and
 
 ### Amendment (2026-07-18) — randomized bimodal ordering for bidirectional conditioning
 
+> **Superseded by [ADR 0008](0008-scalar-modalities.md) (2026-07-18).** The
+> parity rule below is undefined once an object can carry more than two
+> spans, so ADR 0008 replaces it with a **uniform random shuffle of all
+> present spans**, seeded on the same `crc32(object_id) ^ epoch`. This is a
+> strict generalization, not a reversal: at two spans a uniform shuffle *is*
+> the 50/50 flip described here, so the behaviour documented below remains
+> accurate for bimodal objects and resume-exactness carries over unchanged.
+> ADR 0008 also **overrides** this ADR's `loss_weight = 1:1` principle for
+> scalar modalities only — the "no objective tilt" argument assumed
+> modalities of comparable token count (364 vs 31), which fails at 144:1.
+
 **Decision: bimodal (matched) objects serialize their two modality spans in
 randomized order, 50/50 per draw.** The original fixed alphabetical order
 (`images` then `spectra`) means the causal model only ever learns
