@@ -11,6 +11,9 @@ space where sigma reads directly as ``dz/(1+z)``:
 - ``outlier_frac``:  fraction with |residual| > 0.15
 - ``coverage_1sig``: fraction of truths inside the head's 1-sigma highest-
                      weight component interval (~0.68 when calibrated)
+- ``r2``:            R^2 of the point estimates in RAW target space (the
+                     scalar_registry inverse applied) — the apples-to-apples
+                     comparison against the linear probe's ridge R^2 on ``Z``
 
 Deterministic for a given checkpoint (teacher-forced, no sampling).
 
@@ -27,6 +30,7 @@ import numpy as np
 import torch
 
 from ..data.packing import ObjectSequencer, PackedCollator
+from ..data.scalar_registry import scalar_inverse
 from .linear_probe import _val_records
 
 OUTLIER_THRESHOLD = 0.15  # |d log(1+z)| — the standard photo-z outlier cut
@@ -100,6 +104,11 @@ def scalar_head_metrics(
         raise RuntimeError(f"{len(preds)} predictions for {len(targets)} targets")
 
     residuals = preds - targets
+    # R^2 in raw target space, comparable to the linear probe's ridge R^2
+    raw_pred = scalar_inverse(target, torch.from_numpy(preds)).numpy()
+    raw_true = scalar_inverse(target, torch.from_numpy(targets)).numpy()
+    ss_tot = ((raw_true - raw_true.mean()) ** 2).sum()
+    r2 = 1.0 - ((raw_true - raw_pred) ** 2).sum() / ss_tot if ss_tot > 0 else float("nan")
     return {
         "target": target,
         "n_objects": int(len(targets)),
@@ -107,6 +116,7 @@ def scalar_head_metrics(
         "outlier_frac": float((np.abs(residuals) > OUTLIER_THRESHOLD).mean()),
         "coverage_1sig": float((np.abs(residuals) <= sigmas).mean()),
         "bias": float(np.median(residuals)),
+        "r2": float(r2),
     }
 
 

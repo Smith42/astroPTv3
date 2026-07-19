@@ -105,5 +105,6 @@ def test_scalar_head_metrics(tiny_model):
         )
     result = scalar_head_metrics(tiny_model, objects, targets, target="Z")
     assert result["n_objects"] == 16
-    for key in ("nmad", "outlier_frac", "coverage_1sig", "bias"):
+    for key in ("nmad", "outlier_frac", "coverage_1sig", "bias", "r2"):
         assert torch.isfinite(torch.tensor(result[key])), key
+    assert result["r2"] <= 1.0

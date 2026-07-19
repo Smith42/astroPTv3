@@ -228,7 +228,7 @@ def process_step(step: int, args, sample_records: list[dict], cache: dict) -> di
                 seed=args.seed,
                 scalar_set=cache["scalar_set"],
             )
-            for key in ("nmad", "outlier_frac", "coverage_1sig", "bias"):
+            for key in ("nmad", "outlier_frac", "coverage_1sig", "bias", "r2"):
                 result[f"head_{key}"] = head[key]
         except ValueError as exc:
             print(f"[sweep] scalar head skipped: {exc}", flush=True)
