@@ -214,22 +214,33 @@ def process_step(step: int, args, sample_records: list[dict], cache: dict) -> di
         )
 
         try:
-            if "scalar_set" not in cache:
-                cache["scalar_set"] = collect_scalar_objects(
-                    cache["config"], args.data_root, args.target, args.probe_objects, seed=args.seed
+            # two conditioning contexts (ADR 0008): everything the record
+            # carries (spectro-z-like on matched rows) and spectrum-free
+            # (photometric z) — both trained by the uniform span shuffle
+            variants = {"head": (), "head_photz": ("spectrum",)}
+            for prefix, exclude in variants.items():
+                set_key = f"scalar_set_{prefix}"
+                if set_key not in cache:
+                    cache[set_key] = collect_scalar_objects(
+                        cache["config"],
+                        args.data_root,
+                        args.target,
+                        args.probe_objects,
+                        seed=args.seed,
+                        exclude_fields=exclude,
+                    )
+                head = scalar_checkpoint(
+                    hf_dir,
+                    args.data_root,
+                    target=args.target,
+                    seq_len=args.seq_len,
+                    objects_per_batch=args.objects_per_batch,
+                    device=args.device,
+                    seed=args.seed,
+                    scalar_set=cache[set_key],
                 )
-            head = scalar_checkpoint(
-                hf_dir,
-                args.data_root,
-                target=args.target,
-                seq_len=args.seq_len,
-                objects_per_batch=args.objects_per_batch,
-                device=args.device,
-                seed=args.seed,
-                scalar_set=cache["scalar_set"],
-            )
-            for key in ("nmad", "outlier_frac", "coverage_1sig", "bias", "r2"):
-                result[f"head_{key}"] = head[key]
+                for key in ("nmad", "outlier_frac", "coverage_1sig", "bias", "r2"):
+                    result[f"{prefix}_{key}"] = head[key]
         except ValueError as exc:
             print(f"[sweep] scalar head skipped: {exc}", flush=True)
     # steps_to_eval already applied the samples cadence: every scheduled step samples

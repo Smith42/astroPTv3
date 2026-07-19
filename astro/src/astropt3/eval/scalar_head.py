@@ -36,14 +36,25 @@ from .linear_probe import _val_records
 OUTLIER_THRESHOLD = 0.15  # |d log(1+z)| — the standard photo-z outlier cut
 
 
-def collect_scalar_objects(config, data_root, target, n_objects, *, seed=0):
+def collect_scalar_objects(
+    config, data_root, target, n_objects, *, seed=0, exclude_fields=()
+):
     """First ``n_objects`` val objects carrying the target span plus at least
-    one other span to condition on; the target span is pinned LAST."""
+    one other span to condition on; the target span is pinned LAST.
+
+    ``exclude_fields`` drops record fields before building, restricting the
+    conditioning context — e.g. ``("spectrum",)`` scores photometric
+    redshift (image + photometry conditioning only). Sound because the
+    uniform span shuffle puts every prefix combination in the training
+    distribution: sequences where the spectrum lands after Z train exactly
+    the spectrum-free conditional this evaluates.
+    """
     sequencer = ObjectSequencer(config)
     objects, targets = [], []
     for record in _val_records(data_root, seed=seed):
         if sequencer._scalar_value(target, record) is None:
             continue
+        record = {k: v for k, v in record.items() if k not in exclude_fields}
         # everything else the record carries, in registry order, target last
         probe = sequencer.build(record)
         others = [m for m in sorted(probe.masks) if m != target]
