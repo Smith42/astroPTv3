@@ -50,10 +50,12 @@ def _source(name: str) -> Source:
 
 
 def fake_open_stream(
-    *, split="train", seed=0, shard=0, num_shards=1, client=None, only=None
+    *, split="train", seed=0, shard=0, num_shards=1, match_index=None, only=None
 ) -> MMUStream:
     """``only`` restricts the corpus to one source (all weight on it), for
-    testing what happens when a modality shape never arrives."""
+    testing what happens when a modality shape never arrives. ``match_index``
+    is accepted and ignored: the fake always has all three sources, so the
+    signature just has to match the real ``open_stream``."""
     names = ("images", "spectra", "pairs")
     weights = None
     if only is not None:

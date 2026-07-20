@@ -31,6 +31,7 @@ only place lsdb is imported.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
@@ -309,14 +310,20 @@ class MMUStream:
         """
         order = partition_order(src.npartitions, self.seed, src.epoch)
         if self.val_partitions:
-            keep = order < self.val_partitions
+            # cap the reservation at a fifth of the source: sources differ by
+            # ~30x in partition count (5488 images vs ~200 pairs), and a flat K
+            # can swallow a small source whole, leaving train with nothing
+            reserved = min(self.val_partitions, max(1, src.npartitions // 5))
+            keep = order < reserved
             order = order[keep if self.split == "val" else ~keep]
         # partition-level DP/worker split: disjoint, no cross-rank coordination
         src.order = order[self.shard :: self.num_shards]
         if len(src.order) == 0:
             raise ValueError(
-                f"source {src.name!r} has no partitions for shard {self.shard}"
-                f"/{self.num_shards} (split={self.split})"
+                f"source {src.name!r} ({src.npartitions} partitions) has none "
+                f"left for shard {self.shard}/{self.num_shards} on split="
+                f"{self.split}; num_shards must not exceed the smallest "
+                "source's partition count"
             )
         src.cursor = 0
         self._rewind_partition(src)
@@ -566,6 +573,20 @@ def open_sources(
     return sources
 
 
+MATCH_INDEX_ENV = "ASTROPT3_MATCH_INDEX"
+
+
+def resolve_match_index(match_index: str | None = None) -> str | None:
+    """Explicit argument, else ``$ASTROPT3_MATCH_INDEX``, else None.
+
+    The index is a corpus-level constant, so the env var mirrors the existing
+    ``ASTROPT3_DATA_ROOT`` precedent and spares every eval entry point a
+    parameter it would only ever pass through. Training passes it explicitly
+    from the nanotron config, which wins.
+    """
+    return match_index or os.environ.get(MATCH_INDEX_ENV) or None
+
+
 def open_stream(
     *,
     split: str = "train",
@@ -579,6 +600,7 @@ def open_stream(
     Evaluation relies on that determinism: a fresh ``split="val"`` stream
     replays the identical records on every checkpoint.
     """
+    match_index = resolve_match_index(match_index)
     sources = open_sources(match_index=match_index)
     return MMUStream(
         sources,

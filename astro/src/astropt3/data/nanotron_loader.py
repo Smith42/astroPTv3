@@ -135,6 +135,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         seq_len: int,
         *,
         data_root: str = SYNTHETIC_ROOT,
+        match_index: str | None = None,
         synthetic_image_only_fraction: float = 0.3,
         synthetic_spectrum_only_fraction: float = 0.0,
         rank: int = 0,
@@ -157,6 +158,9 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 f"{self.data_root!r}; the local parquet corpus was removed by "
                 "ADR 0006 — the MMU catalogs are streamed live"
             )
+        # ADR 0006: the precomputed crossmatch; without it there is no pairs
+        # source and the corpus is images + spectra only
+        self.match_index = match_index
         self.synthetic_image_only_fraction = synthetic_image_only_fraction
         self.synthetic_spectrum_only_fraction = synthetic_spectrum_only_fraction
         self.rank = rank
@@ -235,11 +239,20 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
 
         n_workers = worker.num_workers if worker else 1
         worker_id = worker.id if worker else 0
+        from .streaming import resolve_match_index
+
+        if resolve_match_index(self.match_index) is None and self.rank == 0 and worker_id == 0:
+            print(
+                "[data] no match_index: streaming images + spectra only, with "
+                "NO cross-modal pairs (scripts/build_match_index.py)",
+                flush=True,
+            )
         stream = open_stream(
             split=self.split,
             seed=self.seed,
             shard=self.rank * n_workers + worker_id,
             num_shards=self.world_size * n_workers,
+            match_index=self.match_index,
         )
         if stream_state is not None:
             stream.load_state_dict(stream_state)
@@ -387,6 +400,7 @@ def build_astropt3_dataloader(
         micro_batch_size,
         sequence_length,
         data_root=dataset_args.data_root,
+        match_index=getattr(dataset_args, "match_index", None),
         synthetic_image_only_fraction=getattr(dataset_args, "synthetic_image_only_fraction", 0.3),
         synthetic_spectrum_only_fraction=getattr(dataset_args, "synthetic_spectrum_only_fraction", 0.0),
         rank=dp_rank,

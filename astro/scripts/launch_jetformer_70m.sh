@@ -40,6 +40,10 @@ if [[ -n "${EVAL_GPU:-}" ]]; then
     # ADR 0006: data_root is "mmu" or "synthetic"; the val split is selected
     # inside the loader (reserved partitions), not by a sibling directory
     VAL_ROOT=$(awk '$1 == "data_root:" {print $2; exit}' "$CONFIG")
+    # the eval sidecar reads the match-index from the env (ADR 0006); the
+    # trainer gets the same value explicitly from the config field
+    MATCH_INDEX=$(awk '$1 == "match_index:" {print $2; exit}' "$CONFIG")
+    [[ -n "$MATCH_INDEX" && "$MATCH_INDEX" != "null" ]] && export ASTROPT3_MATCH_INDEX="$MATCH_INDEX"
     TRAIN_STEPS=$(awk '$1 == "train_steps:" {print $2; exit}' "$CONFIG")
     EVAL_OUT=${EVAL_OUT:-$(dirname "$CKPTS")/eval/$(basename "$CKPTS")}
     mkdir -p "$EVAL_OUT"

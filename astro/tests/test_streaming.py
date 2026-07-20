@@ -129,12 +129,29 @@ def test_shards_are_disjoint_and_cover_the_catalog():
     assert sorted(pooled.tolist()) == list(range(NPART["images"]))
 
 
+def test_val_reservation_never_swallows_a_small_source():
+    """A flat K larger than a small source would leave train with nothing —
+    the smoke match-index (6 pairs partitions) hit exactly this."""
+    srcs = fake_sources(npart={"images": 40, "spectra": 40, "pairs": 6})
+    train = MMUStream(srcs, split="train", val_partitions=8)
+    val = MMUStream(fake_sources(npart={"images": 40, "spectra": 40, "pairs": 6}),
+                    split="val", val_partitions=8)
+    pairs_train = train.sources[2].order
+    pairs_val = val.sources[2].order
+    assert len(pairs_train) and len(pairs_val)
+    assert not set(pairs_train.tolist()) & set(pairs_val.tolist())
+
+
 def test_val_partitions_are_disjoint_from_train():
     kw = dict(val_partitions=3)
     train = MMUStream(fake_sources(), split="train", **kw).sources[0].order
     val = MMUStream(fake_sources(), split="val", **kw).sources[0].order
-    assert set(val.tolist()) == {0, 1, 2}
+    # val reserves the LOWEST partition indices (capped at a fifth of the
+    # source), train gets the rest, and the two never overlap
+    assert set(val.tolist()) == set(range(len(val)))
+    assert 0 < len(val) <= 3
     assert not set(train.tolist()) & set(val.tolist())
+    assert len(train) + len(val) == NPART["images"]
 
 
 def test_empty_partitions_are_skipped():
@@ -168,6 +185,23 @@ def test_state_rejects_a_mismatched_stream():
     take(stream, 10)
     with pytest.raises(ValueError, match="saved for"):
         MMUStream(fake_sources(), seed=2).load_state_dict(stream.state_dict())
+
+
+def test_match_index_resolution_prefers_the_explicit_argument(monkeypatch):
+    """Training passes the index from the nanotron config; eval falls back to
+    the env var so every eval entry point avoids a pass-through parameter."""
+    from astropt3.data.streaming import MATCH_INDEX_ENV, resolve_match_index
+
+    monkeypatch.delenv(MATCH_INDEX_ENV, raising=False)
+    assert resolve_match_index() is None
+    assert resolve_match_index("/explicit.parquet") == "/explicit.parquet"
+
+    monkeypatch.setenv(MATCH_INDEX_ENV, "/from-env.parquet")
+    assert resolve_match_index() == "/from-env.parquet"
+    assert resolve_match_index("/explicit.parquet") == "/explicit.parquet"
+
+    monkeypatch.setenv(MATCH_INDEX_ENV, "")  # unset-ish must not become a path
+    assert resolve_match_index() is None
 
 
 def test_match_index_round_trips(tmp_path):
