@@ -215,9 +215,13 @@ def test_match_index_round_trips(tmp_path):
     pq.write_table(
         pa.table(
             {
-                "image_partition": pa.array([7, 7, 9], pa.int32()),
+                # partitions are HEALPix cells, not positions in a listing —
+                # the artifact is published and must survive a re-partition
+                "image_order": pa.array([6, 6, 6], pa.int8()),
+                "image_pixel": pa.array([7, 7, 9], pa.int64()),
                 "image_id": ["i1", "i2", "i9"],
-                "spectrum_partition": pa.array([2, 3, 2], pa.int32()),
+                "spectrum_order": pa.array([8, 8, 8], pa.int8()),
+                "spectrum_pixel": pa.array([2, 3, 2], pa.int64()),
                 "spectrum_id": ["s1", "s2", "s9"],
                 "dist_arcsec": pa.array([0.1, 0.2, 0.3], pa.float32()),
             }
@@ -225,8 +229,8 @@ def test_match_index_round_trips(tmp_path):
         path,
     )
     matches, spectra_of = load_match_index(str(path))
-    assert matches == {7: {"i1": "s1", "i2": "s2"}, 9: {"i9": "s9"}}
-    assert spectra_of == {7: {2, 3}, 9: {2}}
+    assert matches == {(6, 7): {"i1": "s1", "i2": "s2"}, (6, 9): {"i9": "s9"}}
+    assert spectra_of == {(6, 7): {(8, 2), (8, 3)}, (6, 9): {(8, 2)}}
 
 
 def test_paired_partition_joins_on_the_index(monkeypatch):

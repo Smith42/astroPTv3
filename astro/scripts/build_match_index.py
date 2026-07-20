@@ -14,10 +14,17 @@ arbitrarily larger imaging corpus never inflates it.
     uv run --extra data python scripts/build_match_index.py --out match_index.parquet
     uv run --extra data python scripts/build_match_index.py --limit-partitions 8 \\
         --out /tmp/match_index_smoke.parquet      # smoke index for tests
+    uv run --extra data python scripts/build_match_index.py \\
+        --out match_index.parquet --upload-to UniverseTBD/astropt3-match-index
 
-Partition columns are indices into the catalog's HEALPix-ordered partition
-list — the same order `streaming._partition_files` produces, so the loader
-indexes straight into it.
+The published artifact is consumed straight from the hub — pyarrow resolves
+``hf://`` through huggingface_hub, so ``match_index:
+hf://datasets/<repo>/match_index.parquet`` needs no download step.
+
+Partitions are identified by their HEALPix ``(order, pixel)`` cell rather
+than by position in a catalog listing, so the artifact stays valid if MMU
+adds or drops partitions; the loader resolves cells to paths through hats
+and raises if the index references a partition the catalog no longer has.
 """
 
 import argparse
@@ -41,27 +48,30 @@ from astropt3.data.streaming import (  # noqa: E402
 # quadtree to whichever order that catalog actually partitions at
 HEALPIX_ORDER = 12
 
+# Partitions are identified by their HEALPix cell, NOT by position in the
+# catalog's partition list: this artifact is published and outlives any one
+# listing, and a positional index would silently shift if MMU ever adds or
+# drops a partition.
 SCHEMA = pa.schema(
     [
-        ("image_partition", pa.int32()),
+        ("image_order", pa.int8()),
+        ("image_pixel", pa.int64()),
         ("image_id", pa.string()),
-        ("spectrum_partition", pa.int32()),
+        ("spectrum_order", pa.int8()),
+        ("spectrum_pixel", pa.int64()),
         ("spectrum_id", pa.string()),
         ("dist_arcsec", pa.float32()),
     ]
 )
 
 
-def partition_lookup(catalog) -> dict:
-    """(order, pixel) -> index into the HEALPix-ordered partition list."""
-    return {
-        (int(p.order), int(p.pixel)): i
-        for i, p in enumerate(catalog.get_ordered_healpix_pixels())
-    }
+def partition_cells(catalog) -> set:
+    """The (order, pixel) cells this catalog actually partitions at."""
+    return {(int(p.order), int(p.pixel)) for p in catalog.get_ordered_healpix_pixels()}
 
 
-def containing_partition(order: int, pixel: int, lookup: dict) -> int:
-    """Index of the catalog partition covering this HEALPix cell.
+def containing_partition(order: int, pixel: int, cells: set) -> tuple:
+    """The (order, pixel) of the catalog partition covering this HEALPix cell.
 
     A crossmatch partition is refined to the FINER of the two sides, so its
     pixel is often a sub-pixel of the image partition that holds the row
@@ -71,9 +81,8 @@ def containing_partition(order: int, pixel: int, lookup: dict) -> int:
     """
     order, pixel = int(order), int(pixel)
     while order >= 0:
-        found = lookup.get((order, pixel))
-        if found is not None:
-            return found
+        if (order, pixel) in cells:
+            return (order, pixel)
         order -= 1
         pixel >>= 2
     raise KeyError(f"no partition covers HEALPix cell (order={order}, pixel={pixel})")
@@ -86,6 +95,17 @@ def main() -> int:
     parser.add_argument("--spectra", default=SPECTRA_CATALOG)
     parser.add_argument("--radius-arcsec", type=float, default=CROSSMATCH_RADIUS_ARCSEC)
     parser.add_argument(
+        "--upload-to",
+        default=None,
+        metavar="REPO_ID",
+        help="also upload to this HF dataset repo (needs `hf auth login` or $HF_TOKEN)",
+    )
+    parser.add_argument(
+        "--upload-path",
+        default="match_index.parquet",
+        help="path within the HF repo (default: match_index.parquet)",
+    )
+    parser.add_argument(
         "--limit-partitions",
         type=int,
         default=None,
@@ -97,8 +117,8 @@ def main() -> int:
 
     images = lsdb.open_catalog(args.images)
     spectra = lsdb.open_catalog(args.spectra)
-    image_index = partition_lookup(images)
-    spectrum_index = partition_lookup(spectra)
+    image_cells = partition_cells(images)
+    spectrum_cells_available = partition_cells(spectra)
 
     pairs = images.crossmatch(
         spectra,
@@ -120,7 +140,7 @@ def main() -> int:
         frame = pairs.get_partition(pixel.order, pixel.pixel).compute()
         if len(frame) == 0:
             continue
-        img_part = containing_partition(pixel.order, pixel.pixel, image_index)
+        img_order, img_pixel = containing_partition(pixel.order, pixel.pixel, image_cells)
         # only the LEFT catalog's _healpix_29 survives the join (as the frame
         # index); the right side contributes ra_desi/dec_desi, so the matched
         # spectrum's cell is recomputed from its coordinates
@@ -130,15 +150,14 @@ def main() -> int:
             frame["dec_desi"].to_numpy(dtype="float64"),
         )
         for i, (_, row) in enumerate(frame.iterrows()):
-            rows["image_partition"].append(img_part)
-            rows["image_id"].append(str(row["object_id"]))
-            rows["spectrum_partition"].append(
-                containing_partition(
-                    HEALPIX_ORDER,
-                    spectrum_cells[i],
-                    spectrum_index,
-                )
+            spec_order, spec_pixel = containing_partition(
+                HEALPIX_ORDER, spectrum_cells[i], spectrum_cells_available
             )
+            rows["image_order"].append(img_order)
+            rows["image_pixel"].append(img_pixel)
+            rows["image_id"].append(str(row["object_id"]))
+            rows["spectrum_order"].append(spec_order)
+            rows["spectrum_pixel"].append(spec_pixel)
             rows["spectrum_id"].append(str(row["object_id_desi"]))
             rows["dist_arcsec"].append(float(row.get("_dist_arcsec", 0.0)))
         print(
@@ -151,6 +170,25 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.table(rows, schema=SCHEMA), args.out)
     print(f"wrote {len(rows['image_id'])} matches -> {args.out}")
+
+    if args.upload_to:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        api.create_repo(args.upload_to, repo_type="dataset", exist_ok=True)
+        api.upload_file(
+            path_or_fileobj=str(args.out),
+            path_in_repo=args.upload_path,
+            repo_id=args.upload_to,
+            repo_type="dataset",
+            commit_message=(
+                f"match index: {len(rows['image_id'])} pairs, "
+                f"{args.radius_arcsec}\" radius"
+            ),
+        )
+        url = f"hf://datasets/{args.upload_to}/{args.upload_path}"
+        print(f"uploaded -> {url}")
+        print(f"use it with: match_index: {url}")
     return 0
 
 

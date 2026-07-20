@@ -431,19 +431,27 @@ def _hf_filesystem():
     return HfFileSystem()
 
 
-def _partition_files(url: str) -> list[str]:
-    """Deterministic HEALPix-ordered parquet paths for a HATS catalog."""
+def _partition_index(url: str) -> tuple[list[str], dict]:
+    """HEALPix-ordered parquet paths, plus a ``(order, pixel) -> path`` map.
+
+    The ordered list drives the images/spectra sources (position is internal
+    and never leaves the process). The map resolves the match-index, which
+    identifies partitions by HEALPix cell so the published artifact does not
+    depend on this listing's ordering.
+    """
     import hats
     from hats.io import paths
 
     collection = hats.read_hats(url)
     catalog = getattr(collection, "main_catalog", collection)
-    return [
-        str(paths.pixel_catalog_file(catalog.catalog_base_dir, pixel)).replace(
+    files, by_cell = [], {}
+    for pixel in catalog.get_healpix_pixels():
+        path = str(paths.pixel_catalog_file(catalog.catalog_base_dir, pixel)).replace(
             "hf://datasets/", "datasets/"
         )
-        for pixel in catalog.get_healpix_pixels()
-    ]
+        files.append(path)
+        by_cell[(int(pixel.order), int(pixel.pixel))] = path
+    return files, by_cell
 
 
 class _ParquetPartition:
@@ -504,25 +512,29 @@ class _PairedPartition:
 
 
 def load_match_index(path: str):
-    """The precomputed crossmatch: image partition -> {image_id: spectrum_id}.
+    """The precomputed crossmatch, keyed by HEALPix cell.
 
-    Built offline by ``scripts/build_match_index.py``; ~0.7M rows of ids, tens
-    of MB, no pixels duplicated. Returns
-    ``(by_image_partition, spectrum_partitions_for_image_partition)``.
+    Built offline by ``scripts/build_match_index.py``; ids only, tens of MB,
+    no pixels duplicated. ``path`` may be local or an ``hf://`` URL — pyarrow
+    resolves the latter through huggingface_hub's fsspec registration, so a
+    published index needs no extra plumbing.
+
+    Returns ``(matches, spectra_of)`` keyed by the image partition's
+    ``(order, pixel)``.
     """
     import pyarrow.parquet as pq
 
     table = pq.read_table(path).to_pydict()
-    matches: dict[int, dict] = {}
-    spectra_of: dict[int, set] = {}
-    for img_part, img_id, spec_part, spec_id in zip(
-        table["image_partition"],
-        table["image_id"],
-        table["spectrum_partition"],
-        table["spectrum_id"],
-    ):
-        matches.setdefault(img_part, {})[img_id] = spec_id
-        spectra_of.setdefault(img_part, set()).add(spec_part)
+    matches: dict[tuple, dict] = {}
+    spectra_of: dict[tuple, set] = {}
+    for i in range(len(table["image_id"])):
+        image_cell = (int(table["image_order"][i]), int(table["image_pixel"][i]))
+        spectrum_cell = (
+            int(table["spectrum_order"][i]),
+            int(table["spectrum_pixel"][i]),
+        )
+        matches.setdefault(image_cell, {})[table["image_id"][i]] = table["spectrum_id"][i]
+        spectra_of.setdefault(image_cell, set()).add(spectrum_cell)
     return matches, spectra_of
 
 
@@ -537,8 +549,8 @@ def open_sources(
     pairs source is unavailable and the corpus is images + spectra only.
     """
     fs = _hf_filesystem()
-    image_files = _partition_files(images_catalog)
-    spectra_files = _partition_files(spectra_catalog)
+    image_files, image_by_cell = _partition_index(images_catalog)
+    spectra_files, spectra_by_cell = _partition_index(spectra_catalog)
 
     sources = [
         Source(
@@ -558,14 +570,23 @@ def open_sources(
         return sources
 
     matches, spectra_of = load_match_index(match_index)
-    paired = sorted(matches)  # image partitions carrying at least one match
+    # image cells carrying at least one match; sorted so the source's
+    # partition indices are deterministic across processes
+    paired = sorted(matches)
+    missing = [cell for cell in paired if cell not in image_by_cell]
+    if missing:
+        raise ValueError(
+            f"match index references {len(missing)} image partitions absent "
+            f"from {images_catalog} (first: {missing[0]}); the index was built "
+            "against a different catalog revision — rebuild it"
+        )
 
     def open_paired(i: int) -> _PairedPartition:
-        part = paired[i]
+        cell = paired[i]
         return _PairedPartition(
-            image_files[part],
-            matches[part],
-            [spectra_files[s] for s in sorted(spectra_of[part])],
+            image_by_cell[cell],
+            matches[cell],
+            [spectra_by_cell[s] for s in sorted(spectra_of[cell])],
             fs,
         )
 
