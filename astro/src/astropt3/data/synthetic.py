@@ -54,10 +54,12 @@ def make_record(
     flux = amps[:, None, None] * blob[None, :, :]
     flux += rng.normal(0.0, 0.001, size=flux.shape).astype(np.float32)
 
+    ra = float(rng.uniform(0, 360))
+    dec = float(rng.uniform(-1.6, 81.5))
     record = {
         "object_id": f"synth_{index:08d}",
-        "ra": float(rng.uniform(0, 360)),
-        "dec": float(rng.uniform(-1.6, 81.5)),
+        "ra": ra,
+        "dec": dec,
         "_healpix_29": int(rng.integers(0, 2**40)),
         "image": {
             "flux": flux.astype(np.float32),
@@ -66,6 +68,14 @@ def make_record(
             "scale": 0.262,
         },
         "z_spec": z,
+        # ADR 0008 image-catalog scalars, DERIVED rather than drawn (the rng
+        # draw order is frozen so historical records reproduce exactly):
+        # aperture fluxes summed from the blob itself (nMgy, correlated with
+        # the image and z like real photometry), ebv as a smooth sky function
+        "flux_g": float(flux[0].sum()),
+        "flux_r": float(flux[1].sum()),
+        "flux_z": float(flux[2].sum()),
+        "ebv": 0.02 + 0.08 * (dec + 1.6) / 83.1,
     }
 
     u = rng.uniform()
@@ -86,10 +96,12 @@ def make_record(
             "mask": np.zeros(SPECTRUM_LENGTH, dtype=bool),
         }
         record["Z"] = z
+        record["ZWARN"] = False  # DESI reliability flag; gates the Z span (ADR 0008)
         if u < image_only_fraction + spectrum_only_fraction:
             # non-crossmatched DESI row (ADR 0005): a spectrum with no
             # cutout image and no image-catalog scalars
             del record["image"], record["z_spec"]
+            del record["flux_g"], record["flux_r"], record["flux_z"], record["ebv"]
 
     return record
 

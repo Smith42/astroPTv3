@@ -12,6 +12,11 @@ from .tokenization import VOCAB_SIZE
 #   tokens of 8*8*3 = 192 (max_positions 361 is a harmless ceiling)
 # - spectra: 7781-bin DESI spectra, patch 256 -> 31 tokens; position = per-patch
 #   mean wavelength, normalized, projected by an affine PositionEmbedder
+# - Z / ebv / photometry: ADR 0008 scalar modalities — one-token spans over
+#   the catalog scalars the records already carry, GMM-headed under both
+#   tokenisers. loss_weight 0.1 keeps the objective dominated by images and
+#   spectra (the per-token mean that balanced 364-vs-31 tokens creates the
+#   imbalance at 144:1 — the ADR's scoped override of 0005's 1:1 principle).
 DEFAULT_MODALITIES = [
     {
         "name": "images",
@@ -29,6 +34,35 @@ DEFAULT_MODALITIES = [
         "pos_input_size": 1,
         "loss_weight": 1.0,
     },
+    {
+        "name": "Z",
+        "input_size": 1,
+        "patch_size": 1,
+        "pos_type": "index",
+        "max_positions": 1,
+        "loss_weight": 0.1,
+        "scalar": True,
+    },
+    {
+        "name": "ebv",
+        "input_size": 1,
+        "patch_size": 1,
+        "pos_type": "index",
+        "max_positions": 1,
+        "loss_weight": 0.1,
+        "scalar": True,
+    },
+    {
+        # one joint 3-dim span (g, r, z), not three modalities: colour is
+        # the physical quantity, and a joint GMM models it directly
+        "name": "photometry",
+        "input_size": 3,
+        "patch_size": 1,
+        "pos_type": "index",
+        "max_positions": 1,
+        "loss_weight": 0.1,
+        "scalar": True,
+    },
 ]
 
 
@@ -44,6 +78,7 @@ class AstroPT3Config(SmolLM3Config):
         jetformer_gmm_k: int = 4,
         jetformer_noise_max: float = 0.1,
         jetformer_noise_min: float = 0.0,
+        scalar_gmm_k: int = 5,
         huber_delta: float = 1.0,
         special_token_ce_weight: float = 0.0,
         image_norm_divisor: float = _DIV_FACTOR,
@@ -71,6 +106,9 @@ class AstroPT3Config(SmolLM3Config):
         self.jetformer_gmm_k = jetformer_gmm_k
         self.jetformer_noise_max = jetformer_noise_max
         self.jetformer_noise_min = jetformer_noise_min
+        # mixture count of the ADR 0008 scalar GMM heads (photometric-redshift
+        # posteriors are multimodal; K=5 is the ADR's unswept starting point)
+        self.scalar_gmm_k = scalar_gmm_k
         self.huber_delta = huber_delta
         self.special_token_ce_weight = special_token_ce_weight
         # arcsinh divisor of the physical image normalization; consumed by

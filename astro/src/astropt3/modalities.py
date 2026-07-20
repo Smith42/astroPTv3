@@ -30,6 +30,11 @@ class ModalityConfig:
         pos_input_size: dimensionality of the continuous position vector.
         max_positions: number of learned positions when pos_type == "index".
         loss_weight: weight of this modality's Huber loss term.
+        scalar: ADR 0008 scalar modality — a one-token span holding a
+            physical quantity (Z, ebv, photometry). Scalars bypass the
+            jetformer flow (their dims are odd and a flow buys nothing on a
+            scalar) and are predicted by a ``GMMHead`` under BOTH tokenisers,
+            with ``gmm_nll`` on the raw normalized value as the loss.
     """
 
     name: str
@@ -39,6 +44,7 @@ class ModalityConfig:
     pos_input_size: int = 1
     max_positions: int = 1024
     loss_weight: float = 1.0
+    scalar: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -49,6 +55,7 @@ class ModalityConfig:
             "pos_input_size": self.pos_input_size,
             "max_positions": self.max_positions,
             "loss_weight": self.loss_weight,
+            "scalar": self.scalar,
         }
 
 

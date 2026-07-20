@@ -44,14 +44,21 @@ MODES = ("unconditional", "image-to-spectra", "spectra-to-images", "reconstruct"
 
 
 def build_template(sequencer, record: dict, mode: str):
-    """The mode's template: spectra-first for ``spectra-to-images``.
+    """The mode's template: pinned span order, no scalar spans.
 
-    Explicit order (not the sequencer's parity rule) so the conditioning
-    span always precedes the generated one under a causal mask.
+    Explicit order (not the sequencer's shuffle) so the conditioning span
+    always precedes the generated one under a causal mask. Scalar spans are
+    omitted (ADR 0008): a Z span ahead of a generated span would leak the
+    label into the panel, and scalar-free templates keep the panels
+    comparable with pre-0008 runs.
     """
+    present = [
+        m for m in ("images", "spectra")
+        if record.get({"images": "image", "spectra": "spectrum"}[m]) is not None
+    ]
     if mode == "spectra-to-images":
-        return sequencer.build(record, modality_order=["spectra", "images"])
-    return sequencer.build(record)
+        present = list(reversed(present))
+    return sequencer.build(record, modality_order=present, include_scalars=False)
 
 
 def load_template_record(
@@ -260,6 +267,8 @@ def render_sampled_tokens(
     out_dir.mkdir(parents=True, exist_ok=True)
     pngs = {}
     for name, tokens in sampled.items():
+        if name not in ("images", "spectra"):
+            continue  # scalar spans have no panel rendering
         tokens = tokens.cpu().float()  # bf16 -> f32 so matplotlib/numpy can ingest
         mod = registry.get_config(name)
         png = out_dir / f"{name}_{tag}.png"
@@ -347,14 +356,15 @@ def sample_checkpoint(
 
     pngs = {}
     for record in records:
-        template = sequencer.build(record)
+        # scalar-free, images-first reference template (ADR 0008)
+        template = build_template(sequencer, record, "unconditional")
         for mode in modes:
             if mode in ("image-to-spectra", "spectra-to-images") and not (
                 "spectra" in template.masks and "images" in template.masks
             ):
                 continue
             # spectra-first skeleton for spectra-to-images; other modes keep
-            # the default template
+            # the images-first template
             mode_template = (
                 build_template(sequencer, record, mode)
                 if mode == "spectra-to-images"

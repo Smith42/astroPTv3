@@ -2,9 +2,10 @@
 
 The special-token map is FROZEN: released checkpoints depend on these ids.
 64 ids are reserved so that adding modalities never resizes the embedding.
-Layout: 0 <|pad|>, 1 <|bos|>, then 3 consecutive ids per modality in
-alphabetical registry order: <|begin_m|>, <|m|> (placeholder), <|end_m|>.
-ids 8-63 are reserved for future modalities (time series, tabular, ...).
+Layout: 0 <|pad|>, 1 <|bos|>, then 3 consecutive ids per modality in the
+order the modalities were ADDED (never reordered): <|begin_m|>, <|m|>
+(placeholder), <|end_m|>. ids 8-16 are spent on the ADR 0008 scalar
+modalities; ids 17-63 remain reserved for future modalities.
 
 Patchification is pinned to the verified MMU schemas:
 - images:  float32 (3, 152, 152) cubes, center-cropped to 96x96 by the
@@ -25,6 +26,10 @@ BOS_ID = 1
 _MODALITY_ID_BLOCKS = {
     "images": 2,  # begin=2, placeholder=3, end=4
     "spectra": 5,  # begin=5, placeholder=6, end=7
+    # ADR 0008 scalar modalities (one-token spans, GMM heads)
+    "Z": 8,  # begin=8, placeholder=9, end=10
+    "ebv": 11,  # begin=11, placeholder=12, end=13
+    "photometry": 14,  # begin=14, placeholder=15, end=16
 }
 
 

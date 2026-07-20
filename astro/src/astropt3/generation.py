@@ -105,7 +105,10 @@ def generate(
         z = sample_gmm(
             logits_pi, mu, log_sigma, temperature=temperature, argmax=argmax, generator=generator
         )
-        x, _ = model.flows[m_t](z, reverse=True)
+        if m_t in model.scalar_names:
+            x = z  # scalar GMMs predict raw normalized values — no flow (ADR 0008)
+        else:
+            x, _ = model.flows[m_t](z, reverse=True)
         values[m_t] = torch.cat([values[m_t], x.unsqueeze(1)], dim=1)
 
     return {m: values[m] for m in generate_modalities}
@@ -129,7 +132,7 @@ def reconstruct(model, template: ObjectSeq) -> dict:
     out = model(**batch)
     preds = {}
     for m, pred in out.predictions.items():
-        if model.config.tokeniser == "jetformer":
+        if model.config.tokeniser == "jetformer" and m not in model.scalar_names:
             pred, _ = model.flows[m](pred, reverse=True)
         preds[m] = pred
     return preds

@@ -93,7 +93,7 @@ def test_forward_backward(jet_config, jet_batch):
     model.train()
     out = model(**jet_batch)
     assert torch.isfinite(out.loss)
-    assert set(out.modality_losses) == {"images", "spectra"}
+    assert set(out.modality_losses) == {"images", "spectra", "Z", "ebv", "photometry"}
     out.loss.backward()
     missing = [
         n for n, p in model.named_parameters() if p.requires_grad and p.grad is None

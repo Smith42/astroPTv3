@@ -67,7 +67,10 @@ def collect_probe_objects(
             continue
         if source_key is not None and record.get(source_key) is None:
             continue
-        obj = sequencer.build(record)
+        # scalar-free sequences (ADR 0008): a Z span in the pooled sequence
+        # would turn probe R^2 into a copying metric and break comparability
+        # with every pre-0008 run
+        obj = sequencer.build(record, include_scalars=False)
         if pool_modality not in obj.masks:
             continue
         objects.append(obj)
