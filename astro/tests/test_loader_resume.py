@@ -208,6 +208,53 @@ def test_mmu_resume_across_epoch_boundary(tiny_config):
         assert flat_equal(ref, res)
 
 
+def test_mmu_stream_survives_a_transient_network_error(monkeypatch, tiny_config):
+    """A ConnectError mid-stream (the router-DNS blip that killed the first
+    live runs) must not kill the loader: it rebuilds the stream from the last
+    per-record snapshot and the micro-batch sequence is bit-identical to the
+    unflaky reference."""
+    import httpx
+
+    from astropt3.data import streaming
+
+    class FlakyStream:
+        """Delegates state_dict/load_state_dict; iteration dies after k records."""
+
+        def __init__(self, inner, fail_after):
+            self._inner, self._fail_after = inner, fail_after
+
+        def state_dict(self):
+            return self._inner.state_dict()
+
+        def load_state_dict(self, state):
+            return self._inner.load_state_dict(state)
+
+        def __iter__(self):
+            for i, rec in enumerate(self._inner):
+                if i == self._fail_after:
+                    raise httpx.ConnectError("Name or service not known")
+                yield rec
+
+    opens = {"n": 0}
+
+    def flaky_open_stream(**kwargs):
+        opens["n"] += 1
+        stream = fake_open_stream(**kwargs)
+        return FlakyStream(stream, fail_after=7) if opens["n"] == 1 else stream
+
+    monkeypatch.setattr(streaming, "open_stream", flaky_open_stream)
+    monkeypatch.setattr("time.sleep", lambda s: None)  # keep the backoff out of the test
+
+    ds = make_stream(tiny_config, "mmu")
+    flaky = list(islice(iter(ds), N_BEFORE + N_AFTER))
+    assert opens["n"] >= 2, "the stream should have been rebuilt after the blip"
+
+    monkeypatch.setattr(streaming, "open_stream", fake_open_stream)
+    reference = list(islice(iter(make_stream(tiny_config, "mmu")), N_BEFORE + N_AFTER))
+    for i, (ref, got) in enumerate(zip(reference, flaky)):
+        assert flat_equal(ref, got), f"micro-batch {i} diverged after the rebuild"
+
+
 def test_mmu_stream_realizes_the_source_weights(tiny_config, tmp_path):
     """Images dominate spectra in the packed stream (no match index, so the
     two-source 0.8/0.2 mix; ids < 1000 are images, >= 1000 are spectra)."""

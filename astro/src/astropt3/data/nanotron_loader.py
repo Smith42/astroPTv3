@@ -21,10 +21,15 @@ test suite exercises it against the HF model, and only
 (``dataset_args`` is duck-typed, never isinstance-checked).
 
 Sharding: the object stream is split by DP rank (identical within a TP
-group — nanotron passes the dp process-group rank/size) and further across
-DataLoader workers (MMU partitions are split by modulo over
-``world_size x num_workers``; the synthetic stream strides over record
-indices).
+group — nanotron passes the dp process-group rank/size); the split across
+DataLoader workers is done by ``datasets`` itself — its ``_iter_pytorch``
+shards the stream per worker whenever it detects one. Splitting manually by
+``world_size x num_workers`` on top of that DOUBLE-shards: when the min
+source's shard count is not a multiple of the manual world size, datasets
+falls back to a 1-shard StepExamplesIterable and every worker but worker 0
+stops — the loader is clamped to one worker. (The synthetic stream, which
+has no datasets machinery underneath, still strides over record indices by
+``world_size x num_workers`` itself.)
 
 Checkpoint-resume (Phase 4): ``state_dict()`` returns the stream position at
 the START of the current partial packing row — everything already drawn into
@@ -46,8 +51,10 @@ trainer captures either kind of loader through :func:`loader_state_dict`.
 """
 
 import itertools
+import time
 from pathlib import Path
 
+import httpx
 import torch
 
 from ..configuration_astropt3 import AstroPT3Config
@@ -60,16 +67,28 @@ from .synthetic import make_record
 STATE_FILE_TEMPLATE = "dp_{rank}.pt"
 STATE_SUBDIR = "dataset_state"
 LOADER_STATE_FORMAT = "stateful_dataloader"
+# transient hub/network failures (an overloaded DNS resolver returns "Name or
+# service not known" for seconds at a time) must not kill a multi-day run:
+# rebuild the stream from the last per-record snapshot instead. The counter
+# resets on any successful draw, so the budget only burns during a SUSTAINED
+# outage: 60 x 120s cap ≈ 2h, after which the network is truly down and the
+# run should die loudly rather than hang looking like a stall
+_MAX_NET_RETRIES = 60
+_MAX_NET_RETRY_WAIT = 120
 
 
-def hf_config_from_modalities(modalities, tokeniser: str = "affine", **extra) -> AstroPT3Config:
+def hf_config_from_modalities(
+    modalities, tokeniser: str = "affine", **extra
+) -> AstroPT3Config:
     """Build the (tiny) HF-side config the sequencer/collator machinery wants.
 
     ``modalities`` may come from either implementation's config — both carry
     the same list of dicts. ``extra`` passes tokeniser-specific fields
     (e.g. the ``jetformer_*`` knobs) straight through to ``AstroPT3Config``.
     """
-    return AstroPT3Config(modalities=[dict(m) for m in modalities], tokeniser=tokeniser, **extra)
+    return AstroPT3Config(
+        modalities=[dict(m) for m in modalities], tokeniser=tokeniser, **extra
+    )
 
 
 def flatten_packed_batch(batch: dict, config: AstroPT3Config, seq_len: int) -> dict:
@@ -93,11 +112,15 @@ def flatten_packed_batch(batch: dict, config: AstroPT3Config, seq_len: int) -> d
             flat[f"{name}_positions"] = batch["modality_positions"][name]
         else:
             flat[f"{name}_mask"] = torch.zeros((b, seq_len), dtype=torch.bool)
-            flat[f"{name}_values"] = torch.empty((0, mod.input_size), dtype=torch.float32)
+            flat[f"{name}_values"] = torch.empty(
+                (0, mod.input_size), dtype=torch.float32
+            )
             if mod.pos_type == "index":
                 flat[f"{name}_positions"] = torch.empty((0,), dtype=torch.long)
             else:
-                flat[f"{name}_positions"] = torch.empty((0, mod.pos_input_size), dtype=torch.float32)
+                flat[f"{name}_positions"] = torch.empty(
+                    (0, mod.pos_input_size), dtype=torch.float32
+                )
     return flat
 
 
@@ -106,9 +129,15 @@ def regroup_micro_batch(flat: dict, names) -> dict:
     return {
         "input_ids": flat["input_ids"],
         "position_ids": flat["position_ids"],
-        "modality_values": {n: flat[f"{n}_values"] for n in names if flat[f"{n}_values"].shape[0]},
-        "modality_masks": {n: flat[f"{n}_mask"] for n in names if flat[f"{n}_mask"].any()},
-        "modality_positions": {n: flat[f"{n}_positions"] for n in names if flat[f"{n}_values"].shape[0]},
+        "modality_values": {
+            n: flat[f"{n}_values"] for n in names if flat[f"{n}_values"].shape[0]
+        },
+        "modality_masks": {
+            n: flat[f"{n}_mask"] for n in names if flat[f"{n}_mask"].any()
+        },
+        "modality_positions": {
+            n: flat[f"{n}_positions"] for n in names if flat[f"{n}_values"].shape[0]
+        },
     }
 
 
@@ -193,7 +222,12 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             return dict(self._resume_state)
         if not self._stateful:
             return None
-        return {"records": 0, "epoch": 0, "stream_state": None, "data_root": self.data_root}
+        return {
+            "records": 0,
+            "epoch": 0,
+            "stream_state": None,
+            "data_root": self.data_root,
+        }
 
     def load_state_dict(self, state: dict | None) -> None:
         if state is None:  # a worker snapshotted before its first yield
@@ -234,18 +268,23 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
 
         Each ``open_stream`` is one finite epoch (a reshuffled pass over the
         catalog files); the loop reopens at ``epoch + 1`` forever. Partitions
-        are split across ``world_size x num_workers`` shards by
-        ``split_dataset_by_node``, so every DP rank and DataLoader worker draws
-        a disjoint slice. Resume loads the datasets ``state_dict`` into the
+        are split across DP ranks by ``split_dataset_by_node``; the
+        DataLoader-worker split is left to ``datasets`` (its ``_iter_pytorch``
+        shards per worker and shifts the interleave RNG per worker), because a
+        manual worker split on top double-shards and collapses the loader to
+        one worker. Resume loads the datasets ``state_dict`` into the
         saved epoch's stream, then continues into later epochs normally.
         """
         import itertools
 
         from .streaming import open_stream, resolve_match_index
 
-        n_workers = worker.num_workers if worker else 1
         worker_id = worker.id if worker else 0
-        if resolve_match_index(self.match_index) is None and self.rank == 0 and worker_id == 0:
+        if (
+            resolve_match_index(self.match_index) is None
+            and self.rank == 0
+            and worker_id == 0
+        ):
             print(
                 "[data] no match_index: streaming images + spectra only, with "
                 "NO cross-modal pairs (scripts/build_match_index.py)",
@@ -257,8 +296,8 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 split=self.split,
                 seed=self.seed,
                 epoch=epoch,
-                shard=self.rank * n_workers + worker_id,
-                num_shards=self.world_size * n_workers,
+                shard=self.rank,
+                num_shards=self.world_size,
                 match_index=self.match_index,
             )
             if epoch == start_epoch and stream_state is not None:
@@ -283,10 +322,17 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self._epoch = start_epoch
         self._stream = None
 
-        if self.data_root == SYNTHETIC_ROOT:
-            records = self._synthetic_records(count, worker)
-        else:
-            records = self._mmu_records(start_epoch, stream_state, worker)
+        def open_records(state):
+            """(Re)open the record source at ``state`` (None = fresh start)."""
+            if self.data_root == SYNTHETIC_ROOT:
+                return self._synthetic_records(state["records"] if state else 0, worker)
+            return self._mmu_records(
+                state["epoch"] if state else 0,
+                state.get("stream_state") if state else None,
+                worker,
+            )
+
+        records = open_records(state)
 
         log = None
         if self.object_id_log is not None:
@@ -299,27 +345,62 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         # row_start = position at the first record of the current partial row.
         # On resume that position is the loaded state itself (the MMU dataset
         # object does not exist until the record generator first runs).
-        prev_state = dict(state) if state else (self._snapshot(count) if stateful else None)
+        prev_state = (
+            dict(state) if state else (self._snapshot(count) if stateful else None)
+        )
         row_start = prev_state
         rows: list[list] = []
         row: list = []
         used = 0
 
+        net_retries = 0
         try:
-            for record in records:
+            while True:
+                try:
+                    record = next(records)
+                except StopIteration:
+                    break
+                except (httpx.HTTPError, OSError) as err:
+                    # transient network failure: rebuild the stream from the
+                    # last per-record snapshot — exact, nothing replayed or
+                    # skipped (prev_state is the position BEFORE the record
+                    # that failed to draw). Only possible when stateful.
+                    if prev_state is None:
+                        raise
+                    net_retries += 1
+                    if net_retries > _MAX_NET_RETRIES:
+                        raise
+                    wait = min(5 * 2 ** (net_retries - 1), _MAX_NET_RETRY_WAIT)
+                    print(
+                        f"[data] {type(err).__name__}: rebuilding the stream from "
+                        f"the last record snapshot in {wait}s "
+                        f"(retry {net_retries}/{_MAX_NET_RETRIES})",
+                        flush=True,
+                    )
+                    time.sleep(wait)
+                    self._stream = None
+                    self._epoch = prev_state["epoch"]
+                    records = open_records(prev_state)
+                    continue
+                net_retries = 0  # a successful draw resets the blip budget
                 # live epoch feeds the modality-order parity (ADR 0005
                 # amendment); pure function of (object_id, epoch), so the
                 # resumed stream rebuilds identical sequences
                 obj = self.sequencer.build(record, epoch=self._epoch)
                 if len(obj) > self.seq_len:
-                    raise ValueError(f"object of length {len(obj)} exceeds seq_len {self.seq_len}")
+                    raise ValueError(
+                        f"object of length {len(obj)} exceeds seq_len {self.seq_len}"
+                    )
                 if used + len(obj) > self.seq_len:
                     rows.append(row)
                     row, used = [], 0
                     row_start = prev_state  # the new row starts at this record
                     if len(rows) == self.micro_batch_size:
                         batch = self.collator([o for r in rows for o in r])
-                        assert batch["input_ids"].shape == (self.micro_batch_size, self.seq_len), (
+                        assert batch["input_ids"].shape == (
+                            self.micro_batch_size,
+                            self.seq_len,
+                        ), (
                             f"greedy repack mismatch: {batch['input_ids'].shape} != "
                             f"({self.micro_batch_size}, {self.seq_len})"
                         )
@@ -404,8 +485,12 @@ def build_astropt3_dataloader(
         sequence_length,
         data_root=dataset_args.data_root,
         match_index=getattr(dataset_args, "match_index", None),
-        synthetic_image_only_fraction=getattr(dataset_args, "synthetic_image_only_fraction", 0.3),
-        synthetic_spectrum_only_fraction=getattr(dataset_args, "synthetic_spectrum_only_fraction", 0.0),
+        synthetic_image_only_fraction=getattr(
+            dataset_args, "synthetic_image_only_fraction", 0.3
+        ),
+        synthetic_spectrum_only_fraction=getattr(
+            dataset_args, "synthetic_spectrum_only_fraction", 0.0
+        ),
         rank=dp_rank,
         world_size=dp_size,
         seed=seed,

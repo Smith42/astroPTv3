@@ -16,7 +16,9 @@ The transport is **HF ``datasets`` streaming**, not a hand-rolled reader.
 ``hats`` enumerates each catalog's parquet partitions (deterministic HEALPix
 order, ``hf://`` resolution) and ``datasets`` does the rest: per-record
 weighted interleave (``interleave_datasets(probabilities=...)``),
-shard-and-worker splitting (``split_dataset_by_node``), exact resume
+rank splitting (``split_dataset_by_node`` — the DataLoader-worker split is
+datasets' own ``_iter_pytorch`` job; a manual worker split double-shards and
+clamps the loader to one worker), exact resume
 (``state_dict`` / ``load_state_dict``), and hub retry. An earlier hand-rolled
 reader owned all of that and died at step 149 of the first real run on a
 shared-httpx-client lifecycle bug — precisely the class of thing the library

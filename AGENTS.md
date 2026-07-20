@@ -56,7 +56,9 @@ stages is implicit and easy to break, so understand it before editing:
    **no lsdb at train time**; the crossmatch is precomputed offline by
    `scripts/build_match_index.py` into a match-index of ids, and the pairs
    source joins on it in memory. Partitions are addressed by index, split
-   across `world_size × num_workers` by modulo, and streamed **one row group
+   across DP ranks by modulo (`datasets`' `_iter_pytorch` does the
+   loader-worker split itself — a manual `world_size × num_workers` split
+   double-shards and clamps the loader to one worker), and streamed **one row group
    at a time** (~56 MB, not a 774 MB partition) — so resume is
    `(epoch, partition cursor, row group, row offset)` per source, all ints,
    and stays exactly no-replay. Without a match index there is no pairs

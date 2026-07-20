@@ -37,27 +37,27 @@ model:
   model_config:
     is_astropt3_config: true
     modalities:
-    - name: images
-      input_size: 192
-      patch_size: 8
-      pos_type: index
-      pos_input_size: 1
-      max_positions: 361
-      loss_weight: 1.0
-    - name: spectra
-      input_size: 256
-      patch_size: 256
-      pos_type: continuous
-      pos_input_size: 1
-      max_positions: 1024
-      loss_weight: 1.0
+      - name: images
+        input_size: 192
+        patch_size: 8
+        pos_type: index
+        pos_input_size: 1
+        max_positions: 361
+        loss_weight: 1.0
+      - name: spectra
+        input_size: 256
+        patch_size: 256
+        pos_type: continuous
+        pos_input_size: 1
+        max_positions: 1024
+        loss_weight: 1.0
     tokeniser: jetformer
     jetformer_flow_steps: 4
     jetformer_flow_hidden: 128
     jetformer_gmm_k: 4
     jetformer_noise_max: 0.1
     jetformer_noise_min: 0.0
-    spectra_norm_divisor: 10.0  # ADR 0007 arcsinh knee (nMgy)
+    spectra_norm_divisor: 10.0 # ADR 0007 arcsinh knee (nMgy)
     huber_delta: 1.0
     hidden_size: 512
     num_hidden_layers: 23
@@ -95,19 +95,19 @@ parallelism:
   tp_linear_async_communication: false
   recompute_layer: false
 data_stages:
-- name: mmu-stream-nopairs
-  start_training_step: 1
-  data:
-    dataset:
-      data_root: mmu
-      object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-nopairs/objects.log
-    seed: 42
-    # 8/rank (16 total) against a 96G reservation. Row-group streaming holds
-    # only ~56MB per source per worker, but the torch fork baseline dominates
-    # and is unmeasured here; the parquet-era note on this run's ancestor
-    # recorded ~3.8G RSS/worker and an OOM at step 2168, so start
-    # conservative and raise once `ps` shows the real figure.
-    num_loading_workers: 8
+  - name: mmu-stream-nopairs
+    start_training_step: 1
+    data:
+      dataset:
+        data_root: mmu
+        object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-nopairs/objects.log
+      seed: 42
+      # 8/rank (16 total) against a 96G reservation. Row-group streaming holds
+      # only ~56MB per source per worker, but the torch fork baseline dominates
+      # and is unmeasured here; the parquet-era note on this run's ancestor
+      # recorded ~3.8G RSS/worker and an OOM at step 2168, so start
+      # conservative and raise once `ps` shows the real figure.
+      num_loading_workers: 8
 optimizer:
   accumulate_grad_in_fp32: true
   clip_grad: 1.0
@@ -127,8 +127,8 @@ optimizer:
     torch_adam_is_fused: true
   weight_decay: 0.1
   weight_decay_exclude_named_params:
-  - .*layernorm.*
-  - .*layer_norm.*
+    - .*layernorm.*
+    - .*layer_norm.*
   zero_stage: 1
 tokens:
   sequence_length: 4096
@@ -140,9 +140,8 @@ tokens:
   limit_test_batches: 0
 checkpoints:
   checkpoints_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-nopairs
-  # resume from latest.txt when present (nanotron never auto-derives this);
-  # workers>0 -> no dataset_state, so a resume re-draws the stream fresh
-  resume_checkpoint_path: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-pilotv2-specnorm
+  # resume from latest.txt when present (nanotron never auto-derives this)
+  resume_checkpoint_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-nopairs
   checkpoint_interval: 1000
   save_initial_state: false
   save_final_state: true
