@@ -111,3 +111,14 @@ Key facts:
   expected).
 - Env: `/beegfs/general/mjsmith/gpuenv` (torch 2.8.0+cu128, flash-attn 2.8.3,
   editable nanotron + astropt3, huggingface_hub 1.24.0, datasets 5.0.0).
+
+## Update (same night, commit 1a09996)
+
+Failure mode #3 is now handled: the retry catch matches the closed-client
+`RuntimeError` by message and rebuilds from the last snapshot (test covers
+both blip variants; 16/16 loader tests pass). Workers halved to 4/rank to cut
+router-DNS pressure. Attempt 2 (368 steps) archived at
+`…nopairs.attempt2-368`; attempt 3 relaunched fresh ~00:25, healthy at
+~240K tok/s (0.55s/step — 8 workers still saturate; not data-bound as
+feared), ETA ~3h. Check `train.log` for "[data] … rebuilding the stream"
+lines to see how often the retry path fires.
