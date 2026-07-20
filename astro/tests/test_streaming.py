@@ -223,7 +223,6 @@ def test_match_index_round_trips(tmp_path):
                 "spectrum_order": pa.array([8, 8, 8], pa.int8()),
                 "spectrum_pixel": pa.array([2, 3, 2], pa.int64()),
                 "spectrum_id": ["s1", "s2", "s9"],
-                "dist_arcsec": pa.array([0.1, 0.2, 0.3], pa.float32()),
             }
         ),
         path,

@@ -5,17 +5,20 @@ the ONLY place lsdb is used: the train-time stream reads the index and joins
 by id, so no worker ever runs a spatial join.
 
 The artifact is pointers, not pixels — ``(image_partition, image_id,
-spectrum_partition, spectrum_id, dist_arcsec)``, ~0.7M rows and tens of MB.
-Joined records would be ~280 GB of imagery already hosted in the
-LegacySurvey catalog, plus a second bespoke schema; this keeps ADR 0006's
-"one native schema" win and stays bounded by the spectroscopic side, so an
-arbitrarily larger imaging corpus never inflates it.
+spectrum_partition, spectrum_id)``, ~0.7M rows and tens of MB. Joined
+records would be ~280 GB of imagery already hosted in the LegacySurvey
+catalog, plus a second bespoke schema; this keeps ADR 0006's "one native
+schema" win and stays bounded by the spectroscopic side, so an arbitrarily
+larger imaging corpus never inflates it.
 
     uv run --extra data python scripts/build_match_index.py --out match_index.parquet
     uv run --extra data python scripts/build_match_index.py --limit-partitions 8 \\
         --out /tmp/match_index_smoke.parquet      # smoke index for tests
-    uv run --extra data python scripts/build_match_index.py \\
-        --out match_index.parquet --upload-to UniverseTBD/astropt3-match-index
+
+Publishing is the huggingface_hub CLI, not this script:
+
+    hf upload UniverseTBD/astropt3-match-index match_index.parquet \\
+        --repo-type=dataset
 
 The published artifact is consumed straight from the hub — pyarrow resolves
 ``hf://`` through huggingface_hub, so ``match_index:
@@ -60,7 +63,6 @@ SCHEMA = pa.schema(
         ("spectrum_order", pa.int8()),
         ("spectrum_pixel", pa.int64()),
         ("spectrum_id", pa.string()),
-        ("dist_arcsec", pa.float32()),
     ]
 )
 
@@ -91,20 +93,6 @@ def containing_partition(order: int, pixel: int, cells: set) -> tuple:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--images", default=IMAGES_CATALOG)
-    parser.add_argument("--spectra", default=SPECTRA_CATALOG)
-    parser.add_argument("--radius-arcsec", type=float, default=CROSSMATCH_RADIUS_ARCSEC)
-    parser.add_argument(
-        "--upload-to",
-        default=None,
-        metavar="REPO_ID",
-        help="also upload to this HF dataset repo (needs `hf auth login` or $HF_TOKEN)",
-    )
-    parser.add_argument(
-        "--upload-path",
-        default="match_index.parquet",
-        help="path within the HF repo (default: match_index.parquet)",
-    )
     parser.add_argument(
         "--limit-partitions",
         type=int,
@@ -115,15 +103,15 @@ def main() -> int:
 
     import lsdb
 
-    images = lsdb.open_catalog(args.images)
-    spectra = lsdb.open_catalog(args.spectra)
+    images = lsdb.open_catalog(IMAGES_CATALOG)
+    spectra = lsdb.open_catalog(SPECTRA_CATALOG)
     image_cells = partition_cells(images)
     spectrum_cells_available = partition_cells(spectra)
 
     pairs = images.crossmatch(
         spectra,
         n_neighbors=1,
-        radius_arcsec=args.radius_arcsec,
+        radius_arcsec=CROSSMATCH_RADIUS_ARCSEC,
         suffixes=("", "_desi"),
         # pinned: lsdb's default flips to "overlapping_columns" in a future
         # release, and the _desi suffix is what identifies the right side
@@ -159,7 +147,6 @@ def main() -> int:
             rows["spectrum_order"].append(spec_order)
             rows["spectrum_pixel"].append(spec_pixel)
             rows["spectrum_id"].append(str(row["object_id_desi"]))
-            rows["dist_arcsec"].append(float(row.get("_dist_arcsec", 0.0)))
         print(
             f"[{n + 1}/{len(pixels)}] Norder={pixel.order} Npix={pixel.pixel}: "
             f"{len(frame)} matches | total {len(rows['image_id'])} "
@@ -170,25 +157,7 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.table(rows, schema=SCHEMA), args.out)
     print(f"wrote {len(rows['image_id'])} matches -> {args.out}")
-
-    if args.upload_to:
-        from huggingface_hub import HfApi
-
-        api = HfApi()
-        api.create_repo(args.upload_to, repo_type="dataset", exist_ok=True)
-        api.upload_file(
-            path_or_fileobj=str(args.out),
-            path_in_repo=args.upload_path,
-            repo_id=args.upload_to,
-            repo_type="dataset",
-            commit_message=(
-                f"match index: {len(rows['image_id'])} pairs, "
-                f"{args.radius_arcsec}\" radius"
-            ),
-        )
-        url = f"hf://datasets/{args.upload_to}/{args.upload_path}"
-        print(f"uploaded -> {url}")
-        print(f"use it with: match_index: {url}")
+    print(f"publish with: hf upload <repo> {args.out} --repo-type=dataset")
     return 0
 
 

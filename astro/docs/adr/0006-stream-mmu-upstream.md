@@ -175,8 +175,8 @@ never inflates it):
 
 - **Precompute the crossmatch into a published match-index, not joined
   records.** `lsdb.crossmatch` runs offline, once; the artifact published to HF
-  is only `(image_healpix, image_id, spectrum_healpix, spectrum_id,
-  dist_arcsec)` — ~0.7M rows, tens of MB, **no pixels duplicated** (joined
+  is only `(image_healpix, image_id, spectrum_healpix, spectrum_id)` —
+  ~0.7M rows, tens of MB, **no pixels duplicated** (joined
   records would be ~280 GB of images already hosted in the LegacySurvey
   catalog, and a second bespoke schema). The index is bounded by matched pairs,
   so it survives arbitrarily large imaging corpora unchanged. This keeps the
@@ -311,9 +311,9 @@ schema and three-place dataset-onboarding this ADR removes.
   extrapolated from one worker on a network-bound stage. Measure before
   trusting any figure above ~40 workers.
 - ~~**Match-index build**~~ — **built** (`scripts/build_match_index.py`), schema
-  `(image_partition, image_id, spectrum_partition, spectrum_id, dist_arcsec)`
-  where the partition columns are indices into the catalog's HEALPix-ordered
-  partition list. Partition-locality **confirmed**: every image partition in
+  `(image_partition, image_id, spectrum_partition, spectrum_id)` where the
+  partition columns are HEALPix `(order, pixel)` cells, so the artifact
+  survives MMU adding or dropping partitions. Partition-locality **confirmed**: every image partition in
   the smoke index maps to exactly ONE spectrum partition, so the in-memory
   join is partition-local. The full build is ~200 partitions (the *inner*
   crossmatch, not the 5,596 of the LEFT join) at ~17 s/partition ≈ **1 hour**.
