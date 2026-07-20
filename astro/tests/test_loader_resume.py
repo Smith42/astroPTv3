@@ -163,7 +163,9 @@ def test_stateful_loader_resume(source, num_workers, tiny_config, tmp_path):
     reference = list(islice(it_a, N_AFTER))  # uninterrupted continuation
 
     state_dir = save_state(state, tmp_path)
-    loader_b = build_loader(tiny_config, source, num_workers, resume_state_dir=state_dir)
+    loader_b = build_loader(
+        tiny_config, source, num_workers, resume_state_dir=state_dir
+    )
     resumed = list(islice(iter(loader_b), N_AFTER))
     for i, (ref, res) in enumerate(zip(reference, resumed)):
         assert flat_equal(ref, res), f"micro-batch {i} diverged after resume"
@@ -208,13 +210,21 @@ def test_mmu_resume_across_epoch_boundary(tiny_config):
         assert flat_equal(ref, res)
 
 
-def test_mmu_stream_survives_a_transient_network_error(monkeypatch, tiny_config):
-    """A ConnectError mid-stream (the router-DNS blip that killed the first
-    live runs) must not kill the loader: it rebuilds the stream from the last
-    per-record snapshot and the micro-batch sequence is bit-identical to the
-    unflaky reference."""
-    import httpx
-
+@pytest.mark.parametrize(
+    "blip",
+    [
+        # the router-DNS failure that killed the first live runs
+        lambda: __import__("httpx").ConnectError("Name or service not known"),
+        # hub's http_backoff close_session() racing datasets' prefetch threads
+        # (killed the step-368 run) surfaces as a plain RuntimeError
+        lambda: RuntimeError("Cannot send a request, as the client has been closed."),
+    ],
+    ids=["connect-error", "closed-client"],
+)
+def test_mmu_stream_survives_a_transient_network_error(monkeypatch, tiny_config, blip):
+    """A transient network failure mid-stream must not kill the loader: it
+    rebuilds the stream from the last per-record snapshot and the micro-batch
+    sequence is bit-identical to the unflaky reference."""
     from astropt3.data import streaming
 
     class FlakyStream:
@@ -232,7 +242,7 @@ def test_mmu_stream_survives_a_transient_network_error(monkeypatch, tiny_config)
         def __iter__(self):
             for i, rec in enumerate(self._inner):
                 if i == self._fail_after:
-                    raise httpx.ConnectError("Name or service not known")
+                    raise blip()
                 yield rec
 
     opens = {"n": 0}
@@ -243,7 +253,9 @@ def test_mmu_stream_survives_a_transient_network_error(monkeypatch, tiny_config)
         return FlakyStream(stream, fail_after=7) if opens["n"] == 1 else stream
 
     monkeypatch.setattr(streaming, "open_stream", flaky_open_stream)
-    monkeypatch.setattr("time.sleep", lambda s: None)  # keep the backoff out of the test
+    monkeypatch.setattr(
+        "time.sleep", lambda s: None
+    )  # keep the backoff out of the test
 
     ds = make_stream(tiny_config, "mmu")
     flaky = list(islice(iter(ds), N_BEFORE + N_AFTER))

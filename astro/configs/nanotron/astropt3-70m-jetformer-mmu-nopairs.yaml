@@ -102,12 +102,12 @@ data_stages:
         data_root: mmu
         object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-nopairs/objects.log
       seed: 42
-      # 8/rank (16 total) against a 96G reservation. Row-group streaming holds
-      # only ~56MB per source per worker, but the torch fork baseline dominates
-      # and is unmeasured here; the parquet-era note on this run's ancestor
-      # recorded ~3.8G RSS/worker and an OOM at step 2168, so start
-      # conservative and raise once `ps` shows the real figure.
-      num_loading_workers: 8
+      # 4/rank (8 total): gpu5's router DNS (192.168.2.254, no root to change
+      # it) returns ENOTFOUND under many parallel queries, and each blip risks
+      # hub's close_session race — halve the query pressure. Observed datasets
+      # backend throughput ~86 obj/s/worker, so this is data-bound (~0.5x of
+      # consumption, ~1s/step); raise only if the DNS proves quiet.
+      num_loading_workers: 4
 optimizer:
   accumulate_grad_in_fp32: true
   clip_grad: 1.0

@@ -360,7 +360,14 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                     record = next(records)
                 except StopIteration:
                     break
-                except (httpx.HTTPError, OSError) as err:
+                except (httpx.HTTPError, OSError, RuntimeError) as err:
+                    # hub's http_backoff close_session() on a ConnectError
+                    # races datasets' prefetch threads sharing the global
+                    # httpx client -> plain RuntimeError; a rebuild gets a
+                    # fresh client from get_session(). Match the message:
+                    # a blanket RuntimeError catch would mask real bugs.
+                    if isinstance(err, RuntimeError) and "client has been closed" not in str(err):
+                        raise
                     # transient network failure: rebuild the stream from the
                     # last per-record snapshot — exact, nothing replayed or
                     # skipped (prev_state is the position BEFORE the record
