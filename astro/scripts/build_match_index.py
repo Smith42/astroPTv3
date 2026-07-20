@@ -147,10 +147,12 @@ def main() -> int:
             rows["spectrum_order"].append(spec_order)
             rows["spectrum_pixel"].append(spec_pixel)
             rows["spectrum_id"].append(str(row["object_id_desi"]))
+        elapsed = time.time() - started
+        eta = elapsed / (n + 1) * (len(pixels) - n - 1)
         print(
             f"[{n + 1}/{len(pixels)}] Norder={pixel.order} Npix={pixel.pixel}: "
             f"{len(frame)} matches | total {len(rows['image_id'])} "
-            f"({time.time() - started:.0f}s)",
+            f"({elapsed:.0f}s elapsed, ~{eta / 60:.0f}m left)",
             flush=True,
         )
 
