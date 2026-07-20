@@ -91,8 +91,7 @@ data_stages:
   start_training_step: 1
   data:
     dataset:
-      data_root: /work/nvme/bfvh/msmith10/astroPTv3_data/shakeout_mix2/train
-      shuffle_buffer_size: 2000
+      data_root: mmu
       object_id_log: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-physnorm/objects.log
     seed: 42
     num_loading_workers: 8

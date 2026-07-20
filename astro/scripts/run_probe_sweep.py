@@ -263,7 +263,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoints-dir", required=True, help="nanotron run checkpoint dir")
     parser.add_argument("--out-dir", required=True)
-    parser.add_argument("--data-root", required=True, help="val shard dir or 'synthetic'")
+    parser.add_argument("--data-root", required=True, help="'mmu' (streams the reserved val partitions) or 'synthetic'")
     parser.add_argument("--converter", default=str(DEFAULT_CONVERTER))
     parser.add_argument("--val-batches", type=int, default=512)
     parser.add_argument("--probe-objects", type=int, default=2048)

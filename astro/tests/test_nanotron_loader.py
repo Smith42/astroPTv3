@@ -11,14 +11,13 @@ from itertools import islice
 import pytest
 import torch
 
-from astropt3.data import mmu
 from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
     flatten_packed_batch,
     regroup_micro_batch as regroup,
 )
-from astropt3.data.synthetic import record_stream
 from astropt3.tokenization import BOS_ID, modality_token_ids
+from fake_mmu import fake_open_stream
 
 MBS = 2
 SEQ_LEN = 896
@@ -99,16 +98,12 @@ def test_deterministic_across_instances(tiny_config):
         assert torch.equal(first[key], second[key]), key
 
 
-def test_mmu_stream_loops_epochs(tiny_config, tmp_path):
-    # 8 objects/shard x 2 shards: pulling many batches must cross an epoch
-    # boundary without exhausting the stream
-    records = list(record_stream(16))
-    mmu.write_shard(records[:8], tmp_path / "shard-00000.parquet")
-    mmu.write_shard(records[8:], tmp_path / "shard-00001.parquet")
-    stream = PackedMicroBatches(
-        tiny_config, MBS, SEQ_LEN, data_root=str(tmp_path), shuffle_buffer_size=4
-    )
-    batches = list(islice(iter(stream), 8))  # 8 batches x >=2 objects/row > 16 records
+def test_mmu_stream_loops_epochs(tiny_config, monkeypatch):
+    # the fake sources hold 24 records each: pulling many batches must cross
+    # an epoch boundary without exhausting the endless stream
+    monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
+    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, data_root="mmu")
+    batches = list(islice(iter(stream), 8))
     assert len(batches) == 8
     for flat in batches:
         assert flat["input_ids"].shape == (MBS, SEQ_LEN)

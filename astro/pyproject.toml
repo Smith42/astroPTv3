@@ -17,14 +17,16 @@ dependencies = [
     "einops>=0.8",
     "numpy>=1.26",
     "pyyaml>=6.0",
-]
-
-[project.optional-dependencies]
-# Offline data preparation (login node only; lsdb/hats never needed on compute nodes)
-data = [
+    # ADR 0006: the corpus is streamed from the HF hub at train time, so lsdb
+    # is the data path itself, not a login-node prep step
     "lsdb",
     "hats",
     "nested-pandas",
+]
+
+[project.optional-dependencies]
+# Local reshard, superseded by ADR 0006 streaming; deleted with prepare_pilot_data.py
+data = [
     "scipy",  # pass-2 matched-position KD-tree (ADR 0005)
 ]
 # Training machine only: the nanotron fork (../nanotron git submodule,
@@ -55,5 +57,6 @@ packages = ["src/astropt3"]
 testpaths = ["tests"]
 markers = [
     "gpu: tests that need a GPU + nanotron env (run on the training machine)",
+    "network: tests that stream live MMU catalogs from the HF hub",
 ]
 addopts = "-m 'not gpu'"

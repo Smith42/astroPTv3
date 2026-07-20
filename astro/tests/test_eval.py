@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import torch
 
+from fake_mmu import fake_open_stream
 from astropt3.data.nanotron_loader import PackedMicroBatches
 from astropt3.eval import linear_probe, val_loss
 
@@ -46,45 +47,39 @@ def test_probe_objects_carry_target(tiny_config):
     assert all("spectra" in o.masks for o in objects)
 
 
-def test_probe_skips_records_without_pool_modality(tiny_config, tmp_path):
-    # spectrum-only rows (ADR 0005) carry Z but have no image tokens to pool
-    from astropt3.data import mmu
-    from astropt3.data.synthetic import make_record
-
-    records = []
-    for i in range(6):
-        records.append(make_record(i, image_only_fraction=0.0, spectrum_only_fraction=1.0))
-        records.append(make_record(i + 100, image_only_fraction=0.0))
-    mmu.write_shard(records, tmp_path / "shard-00000.parquet")
+def test_probe_skips_records_without_pool_modality(tiny_config, monkeypatch):
+    # spectrum-only rows carry Z but have no image tokens to pool
+    monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
 
     objects, targets = linear_probe.collect_probe_objects(
-        tiny_config, str(tmp_path), "Z", 6, pool_modality="images"
+        tiny_config, "mmu", "Z", 6, pool_modality="images"
     )
+    # only the paired source has both Z and image tokens
     assert all("images" in o.masks for o in objects)
-    # with a spectra pool the spectrum-only rows qualify: all 12 carry Z
+    assert all("spectra" in o.masks for o in objects)
+    # with a spectra pool the spectrum-only rows qualify too
     objects, _ = linear_probe.collect_probe_objects(
-        tiny_config, str(tmp_path), "Z", 12, pool_modality="spectra"
+        tiny_config, "mmu", "Z", 12, pool_modality="spectra"
     )
     assert len(objects) == 12
+    assert any("images" not in o.masks for o in objects)
 
 
-def test_probe_uses_all_objects_when_stream_exhausted(tiny_config, tmp_path):
-    # a val split smaller than n_objects degrades to all qualifying records
-    from astropt3.data import mmu
-    from astropt3.data.synthetic import make_record
+def test_probe_degrades_when_scan_budget_runs_out(tiny_config, monkeypatch):
+    # the streams are endless (ADR 0006), so the scan is bounded rather than
+    # exhausted: too few qualifying records inside the budget degrades to all
+    # of them, deterministically, instead of streaming the hub forever
+    monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
 
-    records = [make_record(i, image_only_fraction=0.0) for i in range(6)]
-    mmu.write_shard(records, tmp_path / "shard-00000.parquet")
-
-    with pytest.warns(UserWarning, match=r"6/2048"):
+    with pytest.warns(UserWarning, match=r"/2048"):
         objects, targets = linear_probe.collect_probe_objects(
-            tiny_config, str(tmp_path), "Z", 2048
+            tiny_config, "mmu", "Z", 2048, max_scan=20
         )
-    assert len(objects) == 6 and targets.shape == (6,)
+    assert 0 < len(objects) < 2048 and targets.shape == (len(objects),)
 
     # but zero qualifying records is still an error
     with pytest.raises(ValueError, match="no records carry target"):
-        linear_probe.collect_probe_objects(tiny_config, str(tmp_path), "NOT_A_TARGET", 8)
+        linear_probe.collect_probe_objects(tiny_config, "mmu", "NOT_A_TARGET", 8, max_scan=20)
 
 
 def test_evaluate_accepts_prebuilt_batches(tiny_model, tiny_config):

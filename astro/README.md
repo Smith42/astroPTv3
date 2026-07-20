@@ -42,28 +42,29 @@ and why (data→tokens→model, size family, parallelism semantics);
 [`docs/training.md`](docs/training.md) — how to run it (environments, data
 prep, launching, checkpoint/resume, eval, troubleshooting).
 
-## Pilot data (login node, network)
+## Pilot data (streamed, ADR 0006)
 
-Both MMU sources are HATS collections with margin caches, so the crossmatch
-is a single lsdb call. Prepare once, then everything downstream is offline:
+The corpus is **streamed live from the HF hub at train time** — there is no
+prep step and no local copy. Three lsdb/HATS sources are interleaved per
+record: images-only (~14M LegacySurvey), spectra-only (~1.1M DESI EDR SV3),
+and their 1" inner crossmatch, at provisional weights 0.60/0.15/0.25.
 
 ```bash
-uv run --extra data python scripts/prepare_pilot_data.py
-    # LEFT-crossmatch (1", nearest) → ~256MB parquet shards under
-    # {root}/{train,val}/ + provenance.json; resumable per partition;
-    # logs matched/image-only counts. Smoke: --cone RA DEC RADIUS_ARCSEC
-uv run python scripts/check_pilot_data.py --target-tokens-per-sec N
-    # decoded-object sanity (~N(0,1) patches, λ range) + dataloader
-    # throughput bench (want ≥2× training consumption)
+uv run pytest tests/test_streaming.py    # cursor logic offline + one live check
 ```
+
+`data_root` is `synthetic` (tests, smoke) or `mmu` (real training); a path
+to the retired local corpus raises. Partitions are addressed by index, so
+resume skips without downloading and replays nothing; the whole stream
+state is a handful of ints. Val reserves whole HEALPix partitions, so
+train/val stay spatially disjoint.
 
 Image normalization is physical (band-registry-keyed rescale → bright-pixel
 clamp → arcsinh; `data/band_registry.py`), so there is no per-corpus
 calibration step.
 
-Training streams the shards with `astropt3.data.mmu.MMUIterableDataset`
-(`HF_DATASETS_OFFLINE=1`; DP-rank and DataLoader-worker sharded; keep
-`num_workers ≤ n_shards / world_size`).
+Network is a hard training dependency: hub downtime stalls training with no
+local fallback. That is the deliberate trade for dropping the reshard.
 
 ## Training (nanotron fork) + async eval
 

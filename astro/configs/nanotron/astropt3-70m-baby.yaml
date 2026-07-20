@@ -93,8 +93,7 @@ data_stages:
       # train split written by astro/scripts/prepare_pilot_data.py; path is
       # relative to the launch cwd (repo root) — point at scratch on the
       # training cluster if the corpus lives elsewhere
-      data_root: ../astroPTv3_data/pilot_v1/train
-      shuffle_buffer_size: 2000
+      data_root: mmu
     seed: 42
     num_loading_workers: 2
 optimizer:

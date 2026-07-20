@@ -1,12 +1,13 @@
 # ADR 0006: Stream MMU upstream instead of pre-resharding local parquet
 
-- **Status:** Accepted
+- **Status:** Implemented (accepted 2026-07-17)
 - **Date:** 2026-07-17
 - **References:**
   - `astro/PLAN.md` "Data pipeline" — the local-shard + `HF_DATASETS_OFFLINE=1`
     design this ADR **supersedes**
+  - `astro/src/astropt3/data/streaming.py` — the implementation
   - `astro/scripts/prepare_pilot_data.py` — the lsdb crossmatch → parquet
-    reshard being deleted (its `row_to_record` is the one thing kept)
+    reshard, deleted (its `row_to_record` moved into `streaming.py`)
   - `astro/src/astropt3/data/mmu.py` — `PILOT_FEATURES`, `MMUIterableDataset`,
     `assign_split` being deleted
   - `astro/src/astropt3/data/nanotron_loader.py` — `PackedMicroBatches`, rewired
@@ -300,3 +301,52 @@ schema and three-place dataset-onboarding this ADR removes.
   workflow.
 - [ADR 0003](0003-checkpoint-samples-in-eval-sidecar.md) — house format
   precedent.
+
+## Implementation notes (2026-07-20)
+
+Implemented in `astro/src/astropt3/data/streaming.py`. Three decisions above
+changed once the code met the real API; the rest landed as written.
+
+1. **Weights apply per record, not per partition draw** (§2). Partitions hold
+   wildly unequal row counts — measured on the real catalogs: ~5100 rows in a
+   DESI partition, ~2447 in a LegacySurvey one, ~290 in a crossmatch one — so
+   drawing whole partitions by weight would realize a corpus mix nothing like
+   0.60/0.15/0.25. Each source buffers its current partition and only fetches
+   the next when that buffer drains.
+
+2. **Resume is exact; the ≤1-partition replay budget was not needed** (§4).
+   Because a source buffers its partition whole, the row offset into it is
+   checkpointable, so resume re-fetches the in-flight partition but re-trains
+   none of it. The Phase 4 no-replay gate and the `object_id_log` audit stand
+   unchanged. The saved state is `(draw, per-source (epoch, cursor,
+   row_off))` — all ints. There is **no sampler RNG state in the checkpoint**:
+   the source draw order is a fixed repeating length-20 pattern derived from
+   the weights, not a random draw.
+
+3. **No cassette fixture** (§9). The CPU suite may now use the network, so a
+   `network`-marked test decodes real hub rows end-to-end instead. A cassette
+   would have been a second artifact to capture, refresh, and let drift. The
+   cursor logic is covered offline by injecting fake fetchers behind the
+   `Source` API (`tests/fake_mmu.py`), which is faster and deterministic.
+
+Resolved open issues:
+
+- **`CatalogStream` resume API** — it exposes no cursor and no
+  skip-to-partition, but `_delayed_partitions` is a plain list indexed by
+  partition index and `submit_next_partitions` takes explicit indices, so the
+  partition order is ours to own. `CatalogStream` is constructed only for its
+  culled per-partition dask graphs; its own iterator is never used.
+- **Val coverage** — the pairs source is an inner join, so every reserved val
+  partition of it carries matched pairs with `Z`. K is
+  `streaming.VAL_PARTITIONS`.
+
+Still open:
+
+- **Prefetch** requires a dask client (`open_sources(client=...)`); without
+  one, partition fetches are synchronous and block the training loop.
+- **Sharding ceiling**: the pairs source has ~200 partitions, so
+  `world_size × num_workers > 200` raises rather than starving a rank.
+- **Revision logging** — unchanged from above, still worth doing. Note that a
+  suspected mid-project drift was investigated and was a measurement error
+  (`images.npartitions` = 5488 vs the LEFT-crossmatch's 5596 partitions);
+  upstream had not moved.

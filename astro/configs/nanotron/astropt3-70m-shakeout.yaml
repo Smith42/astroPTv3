@@ -80,8 +80,7 @@ data_stages:
   start_training_step: 1
   data:
     dataset:
-      data_root: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_data/shakeout_mix/train
-      shuffle_buffer_size: 2000
+      data_root: mmu
     seed: 42
     num_loading_workers: 8
 optimizer:

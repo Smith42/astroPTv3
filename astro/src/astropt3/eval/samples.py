@@ -72,10 +72,9 @@ def load_template_record(
     none, and an image-only template still renders every mode except
     ``image-to-spectra``, which ``sample_checkpoint`` skips.
 
-    ``spectrum_only=True`` selects the ADR-0005 spectrum-only rows (no
-    image) so a sweep can track pure-spectrum generation panels; unlike
-    ``prefer_spectrum`` this is a hard requirement — there is no image to
-    fall back to.
+    ``spectrum_only=True`` selects spectrum-only rows (no image) so a sweep
+    can track pure-spectrum generation panels; unlike ``prefer_spectrum``
+    this is a hard requirement — there is no image to fall back to.
     """
     if data_root == "synthetic":
         from ..data.synthetic import make_record
@@ -83,49 +82,30 @@ def load_template_record(
         if spectrum_only:
             return make_record(record_index, image_only_fraction=0.0, spectrum_only_fraction=1.0)
         return make_record(record_index, image_only_fraction=0.0 if prefer_spectrum else 0.3)
-    from ..data.mmu import MMUIterableDataset
+    # ADR 0006: the reserved val partitions, streamed live. The stream is
+    # endless and deterministic, so the n-th record matching a predicate is
+    # stable across checkpoints; the three sources interleave, so a
+    # spectrum-only or paired record always arrives within a few draws.
+    from ..data.streaming import open_stream
 
-    # spectrum-only rows (ADR 0005) live in their own spectra/ shards, sorted
-    # AFTER every crossmatched shard in the stream — read the subdir directly
-    # rather than scanning the whole split to reach them; the record order
-    # within it is unchanged, so indices stay stable
-    spectra_dir = Path(data_root) / MMUIterableDataset.SPECTRA_SUBDIR
-    root = spectra_dir if spectrum_only and spectra_dir.is_dir() else data_root
-    dataset = MMUIterableDataset(root, rank=0, world_size=1, shuffle_buffer_size=0)
     if spectrum_only:
-        wanted = (
-            r
-            for r in dataset
-            if r.get("spectrum") is not None and r.get("image") is None
-        )
-        record = next(itertools.islice(wanted, record_index, None), None)
-        if record is None:
-            raise ValueError(
-                f"fewer than {record_index + 1} spectrum-only records in {data_root}"
-            )
-        return record
-    if not prefer_spectrum:
-        record = next(itertools.islice(dataset, record_index, None), None)
-        if record is None:
-            raise ValueError(f"fewer than {record_index + 1} records in {data_root}")
-        return record
+        want = lambda r: "spectrum" in r and "image" not in r  # noqa: E731
+        missing = "spectrum-only records"
+    elif prefer_spectrum:
+        want = lambda r: "spectrum" in r  # noqa: E731
+        missing = "spectrum-bearing records"
+    else:
+        want = lambda r: "image" in r  # noqa: E731
+        missing = "records"
 
-    with_spectrum, image_only = [], []
-    for record in dataset:
-        if record.get("spectrum") is not None:
-            with_spectrum.append(record)
-            if len(with_spectrum) > record_index:
-                return with_spectrum[record_index]
-        elif len(image_only) <= record_index:
-            image_only.append(record)
-    if len(image_only) <= record_index:
-        raise ValueError(f"fewer than {record_index + 1} records in {data_root}")
-    print(
-        f"[samples] no spectrum-bearing records in {data_root}; "
-        f"falling back to image-only template {record_index}",
-        flush=True,
-    )
-    return image_only[record_index]
+    # bounded: a fixed budget of draws, so a corpus that genuinely lacks the
+    # shape raises instead of streaming the hub forever
+    budget = 200 * (record_index + 1)
+    wanted = (r for r, _ in zip(open_stream(split="val"), range(budget)) if want(r))
+    record = next(itertools.islice(wanted, record_index, None), None)
+    if record is None:
+        raise ValueError(f"fewer than {record_index + 1} {missing} in {budget} val draws")
+    return record
 
 
 def save_image_png(

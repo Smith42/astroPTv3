@@ -1,8 +1,8 @@
 """Adapter: astro data pipeline -> nanotron ``astropt3_streaming`` micro-batches.
 
-Turns the record sources (:class:`~astropt3.data.mmu.MMUIterableDataset` or
-the synthetic stream) into an endless stream of fixed-shape micro-batch dicts
-for the nanotron fork's ``AstroPT3ForTraining``:
+Turns the record sources (:class:`~astropt3.data.streaming.MMUStream` over the
+live MMU catalogs, or the synthetic stream) into an endless stream of
+fixed-shape micro-batch dicts for the nanotron fork's ``AstroPT3ForTraining``:
 
 - ``input_ids``      long  [micro_batch_size, sequence_length]
 - ``position_ids``   long  [micro_batch_size, sequence_length]  (restart at 0
@@ -22,18 +22,19 @@ test suite exercises it against the HF model, and only
 
 Sharding: the object stream is split by DP rank (identical within a TP
 group — nanotron passes the dp process-group rank/size) and further across
-DataLoader workers (HF datasets shard-splits MMU parquet; the synthetic
-stream strides over record indices).
+DataLoader workers (MMU partitions are split by modulo over
+``world_size x num_workers``; the synthetic stream strides over record
+indices).
 
 Checkpoint-resume (Phase 4): ``state_dict()`` returns the stream position at
 the START of the current partial packing row — everything already drawn into
 that row has not been trained on, so resume re-draws it and continues with
 exactly the micro-batch sequence an uninterrupted run would have produced.
-The synthetic state is a record counter (exact resume); the MMU state is the
-HF-datasets stream state snapshotted at row starts, which is exact for
-``shuffle_buffer_size == 0`` and skips at most the in-flight shuffle buffer
-otherwise (never replays a trained record — matching HF's own
-shuffle-resume semantics).
+The synthetic state is a record counter; the MMU state is
+:meth:`MMUStream.state_dict` — per-source ``(epoch, partition cursor, row
+offset)``, all ints. Both are exact: ADR 0006 §4 budgeted for replaying the
+in-flight partition, but buffering it whole makes the row offset exact, so
+the no-replay guarantee survives streaming.
 
 With ``num_workers == 0`` the dataset object itself carries the state. With
 ``num_workers > 0`` each DataLoader worker's dataset copy keeps its own
@@ -52,11 +53,10 @@ import torch
 from ..configuration_astropt3 import AstroPT3Config
 from .band_registry import _DIV_FACTOR
 from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
-from .mmu import MMUIterableDataset
 from .packing import ObjectSequencer, PackedCollator
+from .streaming import MMU_ROOT, SYNTHETIC_ROOT
 from .synthetic import make_record
 
-SYNTHETIC_ROOT = "synthetic"
 STATE_FILE_TEMPLATE = "dp_{rank}.pt"
 STATE_SUBDIR = "dataset_state"
 LOADER_STATE_FORMAT = "stateful_dataloader"
@@ -135,13 +135,12 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         seq_len: int,
         *,
         data_root: str = SYNTHETIC_ROOT,
-        shuffle_buffer_size: int = 0,
         synthetic_image_only_fraction: float = 0.3,
         synthetic_spectrum_only_fraction: float = 0.0,
-        spectra_oversample: int = 1,
         rank: int = 0,
         world_size: int = 1,
         seed: int = 0,
+        split: str = "train",
         object_id_log: str | Path | None = None,
         stateful: bool = True,
     ):
@@ -150,20 +149,25 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self.micro_batch_size = micro_batch_size
         self.seq_len = seq_len
         self.data_root = str(data_root)
-        self.shuffle_buffer_size = shuffle_buffer_size
+        if self.data_root not in (SYNTHETIC_ROOT, MMU_ROOT):
+            # a stale path to the deleted local reshard must fail loudly, not
+            # silently stream something else (ADR 0006 §7)
+            raise ValueError(
+                f"data_root must be {SYNTHETIC_ROOT!r} or {MMU_ROOT!r}, got "
+                f"{self.data_root!r}; the local parquet corpus was removed by "
+                "ADR 0006 — the MMU catalogs are streamed live"
+            )
         self.synthetic_image_only_fraction = synthetic_image_only_fraction
         self.synthetic_spectrum_only_fraction = synthetic_spectrum_only_fraction
-        # ADR 0005: how many times each spectrum-only shard (the spectra/
-        # subdir of data_root) is listed per epoch — the draw-frequency knob
-        self.spectra_oversample = spectra_oversample
         self.rank = rank
         self.world_size = world_size
         self.seed = seed
+        self.split = split
         self.object_id_log = None if object_id_log is None else str(object_id_log)
         self._stateful = stateful
         self._resume_state: dict | None = None  # applied on next __iter__
         self._ckpt_state: dict | None = None  # updated at every yield
-        self._mmu_dataset: MMUIterableDataset | None = None
+        self._stream = None  # the live MMUStream, once iteration starts
         self._epoch = 0
 
         self.sequencer = ObjectSequencer(config)
@@ -185,7 +189,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             return dict(self._resume_state)
         if not self._stateful:
             return None
-        return {"records": 0, "epoch": 0, "hf_state": None, "data_root": self.data_root}
+        return {"records": 0, "epoch": 0, "stream_state": None, "data_root": self.data_root}
 
     def load_state_dict(self, state: dict | None) -> None:
         if state is None:  # a worker snapshotted before its first yield
@@ -195,27 +199,15 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 f"dataset state was saved for data_root={state['data_root']!r}, "
                 f"this stream reads {self.data_root!r}"
             )
-        if state.get("spectra_oversample") not in (None, self.spectra_oversample):
-            # the epoch's shard list is a function of the oversample factor,
-            # so the saved HF stream position only maps onto the same value
-            raise ValueError(
-                f"dataset state was saved with spectra_oversample="
-                f"{state['spectra_oversample']}, this stream uses "
-                f"{self.spectra_oversample}"
-            )
         self._resume_state = dict(state)
 
     def _snapshot(self, records: int) -> dict:
         """State AFTER ``records`` records have been consumed by the packer."""
-        hf_state = None
-        if self._mmu_dataset is not None:
-            hf_state = self._mmu_dataset.state_dict()
         return {
             "records": records,
             "epoch": self._epoch,
-            "hf_state": hf_state,
+            "stream_state": None if self._stream is None else self._stream.state_dict(),
             "data_root": self.data_root,
-            "spectra_oversample": self.spectra_oversample,
         }
 
     # -- record sources -----------------------------------------------------
@@ -233,28 +225,30 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 spectrum_only_fraction=self.synthetic_spectrum_only_fraction,
             )
 
-    def _mmu_records(self, start_epoch: int, hf_state):
-        """Endless stream over the shards, reshuffled per epoch.
+    def _mmu_records(self, stream_state, worker):
+        """Endless weighted interleave of the three live MMU sources.
 
-        On resume the first epoch is fast-forwarded to the saved HF stream
-        state; if that state was end-of-stream the epoch yields nothing and
-        the loop rolls into the next one.
+        Partitions are split across ``world_size x num_workers`` shards, so
+        every DP rank and DataLoader worker draws a disjoint slice.
         """
-        dataset = MMUIterableDataset(
-            self.data_root,
-            rank=self.rank,
-            world_size=self.world_size,
-            shuffle_buffer_size=self.shuffle_buffer_size,
+        from .streaming import open_stream
+
+        n_workers = worker.num_workers if worker else 1
+        worker_id = worker.id if worker else 0
+        stream = open_stream(
+            split=self.split,
             seed=self.seed,
-            spectra_repeat=self.spectra_oversample,
+            shard=self.rank * n_workers + worker_id,
+            num_shards=self.world_size * n_workers,
         )
-        self._mmu_dataset = dataset
-        for epoch in itertools.count(start_epoch):
-            dataset.set_epoch(epoch)
-            if epoch == start_epoch and hf_state is not None:
-                dataset.load_state_dict(hf_state)
-            self._epoch = epoch
-            yield from dataset
+        if stream_state is not None:
+            stream.load_state_dict(stream_state)
+        self._stream = stream
+        for record in stream:
+            # each source keeps its own epoch; the producing one seeds the
+            # ADR 0008 span shuffle
+            self._epoch = stream.last_epoch
+            yield record
 
     # -- iteration ------------------------------------------------------------
 
@@ -269,14 +263,14 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
 
         count = state["records"] if state else 0
         start_epoch = state["epoch"] if state else 0
-        hf_state = state["hf_state"] if state else None
+        stream_state = state.get("stream_state") if state else None
         self._epoch = start_epoch
-        self._mmu_dataset = None
+        self._stream = None
 
         if self.data_root == SYNTHETIC_ROOT:
             records = self._synthetic_records(count, worker)
         else:
-            records = self._mmu_records(start_epoch, hf_state)
+            records = self._mmu_records(stream_state, worker)
 
         log = None
         if self.object_id_log is not None:
@@ -393,10 +387,8 @@ def build_astropt3_dataloader(
         micro_batch_size,
         sequence_length,
         data_root=dataset_args.data_root,
-        shuffle_buffer_size=getattr(dataset_args, "shuffle_buffer_size", 0),
         synthetic_image_only_fraction=getattr(dataset_args, "synthetic_image_only_fraction", 0.3),
         synthetic_spectrum_only_fraction=getattr(dataset_args, "synthetic_spectrum_only_fraction", 0.0),
-        spectra_oversample=getattr(dataset_args, "spectra_oversample", 1),
         rank=dp_rank,
         world_size=dp_size,
         seed=seed,

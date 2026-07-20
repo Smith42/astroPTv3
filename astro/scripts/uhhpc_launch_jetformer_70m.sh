@@ -51,7 +51,9 @@ export WANDB_MODE=${WANDB_MODE:-online}
 SIDECAR_PID=
 if [[ -n "${EVAL_GPU:-}" ]]; then
     CKPTS=$(awk '$1 == "checkpoints_path:" {print $2; exit}' "$LOCAL_CONFIG")
-    VAL_ROOT=$(awk '$1 == "data_root:" {print $2; exit}' "$LOCAL_CONFIG" | sed 's|/train$|/val|')
+    # ADR 0006: data_root is "mmu" or "synthetic"; the val split is selected
+    # inside the loader (reserved partitions), not by a sibling directory
+    VAL_ROOT=$(awk '$1 == "data_root:" {print $2; exit}' "$LOCAL_CONFIG")
     TRAIN_STEPS=$(awk '$1 == "train_steps:" {print $2; exit}' "$LOCAL_CONFIG")
     EVAL_OUT=${EVAL_OUT:-$(dirname "$CKPTS")/eval/$(basename "$CKPTS")}
     SAMPLES_EVERY=${SAMPLES_EVERY:-1000}
