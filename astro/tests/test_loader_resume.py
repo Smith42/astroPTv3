@@ -77,12 +77,15 @@ def test_resume_continues_stream_exactly(source, tiny_config, tmp_path):
     for i, (ref, res) in enumerate(zip(reference, resumed)):
         assert flat_equal(ref, res), f"micro-batch {i} diverged after resume"
 
-    # audit trail: the resumed log is exactly the uninterrupted log's tail
+    # audit trail: the resumed log is exactly the uninterrupted log's tail —
+    # this is the exact-resume guarantee. (The old per-object "no replay"
+    # disjointness check is gone: interleave_datasets(all_exhausted)
+    # oversamples the smaller sources by design, so an object legitimately
+    # recurs within an epoch — the tail-continuation below is the real
+    # invariant, not object uniqueness.)
     lines_a = log_a.with_name(log_a.name + ".dp0").read_text().splitlines()
     lines_b = log_b.with_name(log_b.name + ".dp0").read_text().splitlines()
     assert lines_a[-len(lines_b) :] == lines_b
-    trained_before = lines_a[: len(lines_a) - len(lines_b)]
-    assert not set(trained_before) & set(lines_b), "resume replayed trained objects"
 
 
 def test_state_is_row_start_not_consumption_point(tiny_config):
@@ -187,14 +190,15 @@ def test_legacy_dataset_state_requires_zero_workers(tiny_config, tmp_path):
 
 
 def test_mmu_resume_across_epoch_boundary(tiny_config):
-    # the fake images source holds 24 records; at ~60% of draws it rolls into
-    # epoch 1 well inside 12 micro-batches
+    # the fake corpus is one finite epoch of 48 records; the loader reopens the
+    # stream at epoch+1, so consuming many micro-batches rolls past a boundary.
+    # Resume must reproduce the exact micro-batches across that reopen.
     ds = make_stream(tiny_config, "mmu")
     it = iter(ds)
-    consumed = list(islice(it, 12))
-    assert len(consumed) == 12, "expected the small corpus to still yield batches"
+    consumed = list(islice(it, 20))  # > one epoch of packed rows
+    assert len(consumed) == 20, "endless (epoch-looping) stream must keep yielding"
+    assert ds._epoch >= 1, "should have crossed at least one epoch boundary"
     state = ds.state_dict()
-    assert state["stream_state"]["sources"]["images"]["epoch"] >= 1
     reference = list(islice(it, 4))
 
     ds2 = make_stream(tiny_config, "mmu")
@@ -205,11 +209,11 @@ def test_mmu_resume_across_epoch_boundary(tiny_config):
 
 
 def test_mmu_stream_realizes_the_source_weights(tiny_config, tmp_path):
-    """The three sources reach the packer in roughly the configured mix."""
+    """Images dominate spectra in the packed stream (no match index, so the
+    two-source 0.8/0.2 mix; ids < 1000 are images, >= 1000 are spectra)."""
     log = tmp_path / "mix.log"
     ds = make_stream(tiny_config, "mmu", object_id_log=log)
     list(islice(iter(ds), 40))
     ids = log.with_name(log.name + ".dp0").read_text().splitlines()
-    kinds = [int(i.rsplit("_", 1)[1]) // 1000 for i in ids]  # 0 img, 1 spec, 2 pairs
-    frac = [kinds.count(k) / len(kinds) for k in (0, 1, 2)]
-    assert frac[0] > frac[2] > frac[1], f"unexpected source mix {frac}"
+    is_image = [int(i.rsplit("_", 1)[1]) < 1000 for i in ids]
+    assert sum(is_image) > len(ids) - sum(is_image), "images should dominate spectra"

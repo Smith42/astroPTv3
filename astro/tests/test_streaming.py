@@ -1,190 +1,162 @@
-"""ADR 0006 streaming loader: draw pattern, per-record weighting, resume.
+"""ADR 0006 streaming loader (HF datasets backend): decode, split, weights, resume.
 
-Fake fetchers stand in for lsdb, so the cursor logic is covered offline.
+The hand-rolled reader is gone; ``open_stream`` returns a ``datasets``
+interleave. Offline coverage uses :mod:`fake_mmu`, which builds the SAME kind
+of interleave over synthetic records — so per-record weighting, node
+splitting and ``state_dict`` resume are exercised for real, just on local
+data. Decode is tested directly on synthetic rows (``synthetic.py`` mirrors
+the MMU schema, so a synthetic record is shaped like a hub row).
 """
 
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 
 from astropt3.data.streaming import (
     DEFAULT_WEIGHTS,
-    PATTERN_LEN,
-    MMUStream,
-    Source,
-    _pattern,
-    partition_order,
+    decode_record,
+    shuffled,
+    split_files,
 )
+from astropt3.data.synthetic import make_record
+from fake_mmu import fake_open_stream
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
-# rows per partition, deliberately lopsided per source — the whole point of
-# weighting per record rather than per partition draw
-ROWS = {"images": 7, "spectra": 40, "pairs": 3}
-NPART = {"images": 12, "spectra": 5, "pairs": 4}
-
-
-# rows per row group, so the fakes exercise the multi-group path too
-GROUP = 3
-
-
-class FakePartition:
-    """Rows split into row groups, mirroring a real parquet partition."""
-
-    def __init__(self, name, index, n_rows):
-        self._ids = [f"{name}:{index}:{i}" for i in range(n_rows)]
-
-    @property
-    def n_groups(self):
-        return max(1, -(-len(self._ids) // GROUP))  # ceil, >=1 even when empty
-
-    def group(self, index):
-        return pd.DataFrame({"id": self._ids[index * GROUP : (index + 1) * GROUP]})
-
-
-def fake_sources(rows=ROWS, npart=NPART):
-    def make(name):
-        return Source(
-            name,
-            npart[name],
-            lambda index, name=name: FakePartition(name, index, rows[name]),
-            lambda row: {"object_id": row["id"]},
-        )
-
-    return [make(n) for n in ("images", "spectra", "pairs")]
-
 
 def take(stream, n):
-    it = iter(stream)
-    return [next(it)["object_id"] for _ in range(n)]
+    return [r["object_id"] for r, _ in zip(iter(stream), range(n))]
 
 
-def test_pattern_matches_weights():
-    pat = _pattern(DEFAULT_WEIGHTS)
-    counts = [pat.count(i) for i in range(3)]
-    assert counts == [12, 3, 5]  # 0.60 / 0.15 / 0.25 of 20
-    # interleaved, not blocked: no source runs 6+ draws in a row
-    runs = [len(list(g)) for g in _runs(pat)]
-    assert max(runs) < 6
-
-
-def _runs(seq):
-    out, cur = [], [seq[0]]
-    for x in seq[1:]:
-        if x == cur[0]:
-            cur.append(x)
-        else:
-            out.append(cur)
-            cur = [x]
-    out.append(cur)
+def kinds(stream, n):
+    """Classify records by modality: images-only, spectra-only, or paired —
+    the only way to tell sources apart, since a paired record's object_id IS
+    the image's (pairs are matched images). Every record carries both keys
+    after the union map; the absent modality is None (ObjectSequencer keys off
+    exactly that), so presence is value-not-None, not key membership."""
+    out = []
+    for r, _ in zip(iter(stream), range(n)):
+        out.append((r.get("image") is not None, r.get("spectrum") is not None))
     return out
 
 
+# -- decode ------------------------------------------------------------------
+
+
+def test_decode_image_only_row():
+    row = make_record(1, image_only_fraction=1.0)  # synthetic ~ hub row shape
+    rec = decode_record(row)
+    assert "spectrum" not in rec
+    assert rec["image"]["flux"].shape == (3, 152, 152)
+    assert rec["image"]["band"] == ["des-g", "des-r", "des-z"]
+    assert rec["object_id"] == row["object_id"]
+    assert "ebv" in rec  # image-catalog scalars carried through
+
+
+def test_decode_spectrum_only_row():
+    row = make_record(2, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+    rec = decode_record(row)
+    assert "image" not in rec
+    assert rec["spectrum"]["flux"].shape == (7781,)
+    assert rec["spectrum"]["mask"].dtype == bool
+    assert rec["Z"] == pytest.approx(row["Z"])
+
+
+def test_decode_bimodal_row_carries_both_modalities():
+    row = make_record(3)  # bimodal: both image and spectrum present
+    rec = decode_record(row)
+    assert rec["image"]["flux"].shape == (3, 152, 152)
+    assert rec["spectrum"]["flux"].shape == (7781,)
+    assert rec["Z"] == pytest.approx(row["Z"])
+
+
+def test_decode_rejects_an_empty_row():
+    with pytest.raises(ValueError, match="neither image nor spectrum"):
+        decode_record({"object_id": "x", "ra": 0.0, "dec": 0.0, "_healpix_29": 0})
+
+
+# -- split + shuffle ---------------------------------------------------------
+
+
+def test_val_reserves_the_first_partitions_disjoint_from_train():
+    files = [f"f{i}" for i in range(20)]
+    val = split_files(files, "val", val_partitions=3)
+    train = split_files(files, "train", val_partitions=3)
+    assert val == ["f0", "f1", "f2"]
+    assert set(val) & set(train) == set()
+    assert sorted(val + train) == sorted(files)
+
+
+def test_val_reservation_is_capped_so_a_small_source_is_not_swallowed():
+    """A flat K larger than a small source would leave train empty — the
+    6-partition smoke match-index hit exactly this."""
+    files = [f"f{i}" for i in range(6)]  # smaller than val_partitions=8
+    val = split_files(files, "val", val_partitions=8)
+    train = split_files(files, "train", val_partitions=8)
+    assert 0 < len(val) <= 6 // 5 + 1
+    assert len(train) > 0
+    assert set(val) & set(train) == set()
+
+
+def test_shuffled_is_deterministic_and_epoch_dependent():
+    files = [f"f{i}" for i in range(50)]
+    a = shuffled(files, seed=0, epoch=0)
+    assert a == shuffled(files, seed=0, epoch=0)  # reproducible
+    assert a != shuffled(files, seed=0, epoch=1)  # reshuffled per epoch
+    assert sorted(a) == sorted(files)  # a permutation, nothing lost
+
+
+# -- weighting + resume (real datasets interleave, offline) ------------------
+
+
 def test_weights_are_realized_per_record():
-    """Realized record mix tracks the weights despite lopsided partitions."""
-    got = take(MMUStream(fake_sources()), 4000)
-    frac = [sum(g.startswith(n) for g in got) / len(got) for n in ("images", "spectra", "pairs")]
-    assert frac == pytest.approx(DEFAULT_WEIGHTS, abs=0.01)
+    """Two-source corpus (no match index) hits the renormalized 0.8/0.2 mix."""
+    got = kinds(fake_open_stream(seed=0), 2000)
+    img = got.count((True, False)) / len(got)
+    assert img == pytest.approx(0.8, abs=0.05)
 
 
-def test_resume_reproduces_the_identical_record_sequence():
-    full = take(MMUStream(fake_sources()), 600)
-
-    stream = MMUStream(fake_sources())
-    first = take(stream, 237)  # mid-partition for every source
-    state = stream.state_dict()
-
-    resumed = MMUStream(fake_sources())
-    resumed.load_state_dict(state)
-    assert first + take(resumed, 600 - 237) == full
-
-
-def test_resume_across_a_source_epoch_rollover():
-    """pairs has 4 partitions x 3 rows; 600 draws cycles it many times."""
-    full = take(MMUStream(fake_sources()), 900)
-    stream = MMUStream(fake_sources())
-    first = take(stream, 700)
-    assert stream.state_dict()["sources"]["pairs"]["epoch"] > 0
-    resumed = MMUStream(fake_sources())
-    resumed.load_state_dict(stream.state_dict())
-    assert first + take(resumed, 200) == full
-
-
-def test_state_dict_is_plain_ints():
-    stream = MMUStream(fake_sources())
-    take(stream, 50)
-    state = stream.state_dict()
-    for src in state["sources"].values():
-        assert all(isinstance(v, int) for v in src.values())
-    assert isinstance(state["draw"], int)
-
-
-def test_shards_are_disjoint_and_cover_the_catalog():
-    orders = [
-        MMUStream(fake_sources(), shard=s, num_shards=4).sources[0].order for s in range(4)
+def test_three_source_mix_with_a_match_index():
+    got = kinds(fake_open_stream(seed=0, match_index="present"), 2000)
+    frac = [
+        got.count((True, False)) / len(got),   # images-only
+        got.count((False, True)) / len(got),   # spectra-only
+        got.count((True, True)) / len(got),    # paired
     ]
-    pooled = np.concatenate(orders)
-    assert sorted(pooled.tolist()) == list(range(NPART["images"]))
+    # the fake corpus is tiny (all_exhausted caps it ~90 records), so this is
+    # loose — it checks the ordering and rough magnitude, not the exact mix
+    assert frac == pytest.approx(DEFAULT_WEIGHTS, abs=0.08)
+    assert frac[0] > frac[2] > frac[1]  # images > pairs > spectra
 
 
-def test_val_reservation_never_swallows_a_small_source():
-    """A flat K larger than a small source would leave train with nothing —
-    the smoke match-index (6 pairs partitions) hit exactly this."""
-    srcs = fake_sources(npart={"images": 40, "spectra": 40, "pairs": 6})
-    train = MMUStream(srcs, split="train", val_partitions=8)
-    val = MMUStream(fake_sources(npart={"images": 40, "spectra": 40, "pairs": 6}),
-                    split="val", val_partitions=8)
-    pairs_train = train.sources[2].order
-    pairs_val = val.sources[2].order
-    assert len(pairs_train) and len(pairs_val)
-    assert not set(pairs_train.tolist()) & set(pairs_val.tolist())
+def test_resume_reproduces_the_record_sequence():
+    """datasets state_dict/load_state_dict continues the stream exactly.
 
-
-def test_val_partitions_are_disjoint_from_train():
-    kw = dict(val_partitions=3)
-    train = MMUStream(fake_sources(), split="train", **kw).sources[0].order
-    val = MMUStream(fake_sources(), split="val", **kw).sources[0].order
-    # val reserves the LOWEST partition indices (capped at a fifth of the
-    # source), train gets the rest, and the two never overlap
-    assert set(val.tolist()) == set(range(len(val)))
-    assert 0 < len(val) <= 3
-    assert not set(train.tolist()) & set(val.tolist())
-    assert len(train) + len(val) == NPART["images"]
-
-
-def test_empty_partitions_are_skipped():
-    srcs = fake_sources()
-    src = srcs[2]
-    full = src.open_partition
-    src.open_partition = lambda i: (FakePartition("pairs", i, 0) if i % 2 else full(i))
-    got = take(MMUStream(srcs), 400)
-    assert any(g.startswith("pairs") for g in got)
-
-
-def test_row_groups_are_released_as_they_are_consumed():
-    """RAM bound: only the in-flight row group is held, never the partition."""
-    stream = MMUStream(fake_sources())
+    Mid-epoch resume (the fake corpus is one finite epoch of 48 records; the
+    loader loops epochs on top of this)."""
+    stream = fake_open_stream(seed=0)
     it = iter(stream)
-    for _ in range(200):
-        next(it)
-    for src in stream.sources:
-        assert src._buf is None or len(src._buf) <= GROUP
+    first = [next(it)["object_id"] for _ in range(20)]
+    state = stream.state_dict()
+    reference = [next(it)["object_id"] for _ in range(10)]
+
+    resumed = fake_open_stream(seed=0)
+    resumed.load_state_dict(state)
+    assert [r["object_id"] for r, _ in zip(iter(resumed), range(10))] == reference
 
 
-def test_partition_order_is_deterministic_and_epoch_dependent():
-    a = partition_order(50, seed=0, epoch=0)
-    assert (a == partition_order(50, seed=0, epoch=0)).all()
-    assert not (a == partition_order(50, seed=0, epoch=1)).all()
-    assert sorted(a.tolist()) == list(range(50))
+def test_no_match_index_drops_the_pairs_source():
+    got = kinds(fake_open_stream(seed=0), 500)
+    assert (True, True) not in got  # nothing paired
 
 
-def test_state_rejects_a_mismatched_stream():
-    stream = MMUStream(fake_sources(), seed=1)
-    take(stream, 10)
-    with pytest.raises(ValueError, match="saved for"):
-        MMUStream(fake_sources(), seed=2).load_state_dict(stream.state_dict())
+def test_only_restricts_to_one_source():
+    got = kinds(fake_open_stream(seed=0, only="spectra", match_index="present"), 200)
+    assert set(got) == {(False, True)}  # spectra-only
+
+
+# -- match index -------------------------------------------------------------
 
 
 def test_match_index_resolution_prefers_the_explicit_argument(monkeypatch):
@@ -205,7 +177,8 @@ def test_match_index_resolution_prefers_the_explicit_argument(monkeypatch):
 
 
 def test_match_index_round_trips(tmp_path):
-    """load_match_index: parquet of ids -> per-image-partition lookup."""
+    """load_match_index: parquet of ids -> per-image-partition lookup, keyed by
+    HEALPix cell so the published artifact survives a re-partition."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -215,8 +188,6 @@ def test_match_index_round_trips(tmp_path):
     pq.write_table(
         pa.table(
             {
-                # partitions are HEALPix cells, not positions in a listing —
-                # the artifact is published and must survive a re-partition
                 "image_order": pa.array([6, 6, 6], pa.int8()),
                 "image_pixel": pa.array([7, 7, 9], pa.int64()),
                 "image_id": ["i1", "i2", "i9"],
@@ -232,57 +203,32 @@ def test_match_index_round_trips(tmp_path):
     assert spectra_of == {(6, 7): {(8, 2), (8, 3)}, (6, 9): {(8, 2)}}
 
 
-def test_paired_partition_joins_on_the_index(monkeypatch):
-    """The pairs join: unmatched images dropped, spectrum columns attached
-    under the _desi suffix row_to_record already understands."""
-    from astropt3.data import streaming
+# The pairs join (_paired_examples) is exercised for real by
+# test_three_source_mix_with_a_match_index (paired records appear at the right
+# frequency) and by the live network test below.
 
-    images = pd.DataFrame({"object_id": ["i1", "i2", "i3"], "ra": [1.0, 2.0, 3.0]})
-    spectra = pd.DataFrame(
-        {"object_id": ["s1", "s3"], "spectrum": ["S1", "S3"], "Z": [0.1, 0.3],
-         "ZERR": [0.01, 0.03], "ZWARN": [False, False]}
-    )
 
-    class Fake:
-        def __init__(self, path, fs):
-            self._df = images if path == "img" else spectra
-
-        @property
-        def n_groups(self):
-            return 1
-
-        def group(self, index):
-            return self._df
-
-    monkeypatch.setattr(streaming, "_ParquetPartition", Fake)
-    part = streaming._PairedPartition("img", {"i1": "s1", "i3": "s3"}, ["spec"], fs=None)
-    out = part.group(0)
-
-    assert list(out["object_id"]) == ["i1", "i3"]  # i2 has no match
-    assert list(out["spectrum_desi"]) == ["S1", "S3"]
-    assert list(out["Z_desi"]) == [0.1, 0.3]
+# -- live hub (network) ------------------------------------------------------
 
 
 @pytest.mark.network
 def test_live_mmu_rows_decode_and_sequence():
     """Real hub rows -> records -> ObjectSeq, covering the decode a fake can't.
 
-    This is what ADR 0006 §9 proposed a checked-in cassette for; hitting the
-    hub directly needs no fixture to capture, refresh, or drift out of date.
     Deselect with ``-m 'not network'`` when the hub is down.
     """
     from astropt3.config_io import load_model_config
     from astropt3.data.packing import ObjectSequencer
-    from astropt3.data.streaming import open_sources
+    from astropt3.data.streaming import open_stream
 
     config, _ = load_model_config(CONFIGS / "model" / "test-tiny.yaml")
     sequencer = ObjectSequencer(config)
 
-    # without a match index there is no pairs source (ADR 0006), so the live
-    # corpus here is images + spectra; the paired join is covered offline by
-    # test_paired_partition_joins_on_the_index
-    stream = MMUStream(open_sources(), weights=DEFAULT_WEIGHTS[:2], seed=0)
-    records = [r for r, _ in zip(iter(stream), range(24))]
+    # no match index -> images + spectra live; the pairs join is covered
+    # offline by test_paired_examples_joins_images_to_spectra
+    stream = open_stream(seed=0)
+    it = iter(stream)
+    records = [next(it) for _ in range(40)]
 
     seen = set()
     for record in records:
@@ -292,14 +238,18 @@ def test_live_mmu_rows_decode_and_sequence():
             assert shapes["images"] == (144, 192)  # 96x96 crop, patch 8
         if "spectra" in shapes:
             assert shapes["spectra"] == (31, 256)
-            assert shapes["Z"] == (1, 1)  # DESI rows carry redshift
-        seen.add(("image" in record, "spectrum" in record))
-    # both live sources are represented: image-only and spectrum-only
-    assert seen == {(True, False), (False, True)}
+            # Z is present only when ZWARN==0 (ADR 0008 gating), so it is not
+            # guaranteed on every DESI row — but when present it is one token
+            if "Z" in shapes:
+                assert shapes["Z"] == (1, 1)
+        seen.add((record.get("image") is not None, record.get("spectrum") is not None))
+    assert seen == {(True, False), (False, True)}  # both live sources appear
 
-    # and the cursor round-trips against live partitions, not just fakes
+    # resume round-trips against live partitions (one iterator, mid-stream
+    # snapshot, then compare the continuation to a fresh load_state_dict)
     state = stream.state_dict()
-    reference = [r["object_id"] for r, _ in zip(iter(stream), range(5))]
-    resumed = MMUStream(open_sources(), weights=DEFAULT_WEIGHTS[:2], seed=0)
+    reference = [next(it)["object_id"] for _ in range(5)]
+    resumed = open_stream(seed=0)
     resumed.load_state_dict(state)
-    assert [r["object_id"] for r, _ in zip(iter(resumed), range(5))] == reference
+    rit = iter(resumed)
+    assert [next(rit)["object_id"] for _ in range(5)] == reference

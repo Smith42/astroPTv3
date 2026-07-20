@@ -229,39 +229,42 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 spectrum_only_fraction=self.synthetic_spectrum_only_fraction,
             )
 
-    def _mmu_records(self, stream_state, worker):
+    def _mmu_records(self, start_epoch, stream_state, worker):
         """Endless weighted interleave of the three live MMU sources.
 
-        Partitions are split across ``world_size x num_workers`` shards, so
-        every DP rank and DataLoader worker draws a disjoint slice.
+        Each ``open_stream`` is one finite epoch (a reshuffled pass over the
+        catalog files); the loop reopens at ``epoch + 1`` forever. Partitions
+        are split across ``world_size x num_workers`` shards by
+        ``split_dataset_by_node``, so every DP rank and DataLoader worker draws
+        a disjoint slice. Resume loads the datasets ``state_dict`` into the
+        saved epoch's stream, then continues into later epochs normally.
         """
-        from .streaming import open_stream
+        import itertools
+
+        from .streaming import open_stream, resolve_match_index
 
         n_workers = worker.num_workers if worker else 1
         worker_id = worker.id if worker else 0
-        from .streaming import resolve_match_index
-
         if resolve_match_index(self.match_index) is None and self.rank == 0 and worker_id == 0:
             print(
                 "[data] no match_index: streaming images + spectra only, with "
                 "NO cross-modal pairs (scripts/build_match_index.py)",
                 flush=True,
             )
-        stream = open_stream(
-            split=self.split,
-            seed=self.seed,
-            shard=self.rank * n_workers + worker_id,
-            num_shards=self.world_size * n_workers,
-            match_index=self.match_index,
-        )
-        if stream_state is not None:
-            stream.load_state_dict(stream_state)
-        self._stream = stream
-        for record in stream:
-            # each source keeps its own epoch; the producing one seeds the
-            # ADR 0008 span shuffle
-            self._epoch = stream.last_epoch
-            yield record
+        for epoch in itertools.count(start_epoch):
+            self._epoch = epoch  # seeds the ADR 0008 span shuffle
+            stream = open_stream(
+                split=self.split,
+                seed=self.seed,
+                epoch=epoch,
+                shard=self.rank * n_workers + worker_id,
+                num_shards=self.world_size * n_workers,
+                match_index=self.match_index,
+            )
+            if epoch == start_epoch and stream_state is not None:
+                stream.load_state_dict(stream_state)
+            self._stream = stream
+            yield from stream
 
     # -- iteration ------------------------------------------------------------
 
@@ -283,7 +286,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         if self.data_root == SYNTHETIC_ROOT:
             records = self._synthetic_records(count, worker)
         else:
-            records = self._mmu_records(stream_state, worker)
+            records = self._mmu_records(start_epoch, stream_state, worker)
 
         log = None
         if self.object_id_log is not None:
