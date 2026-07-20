@@ -47,15 +47,20 @@ stages is implicit and easy to break, so understand it before editing:
    of 14M; spectrum-only rows are the non-crossmatched ZWARN==0 DESI
    spectra, ADR 0005). Real records are **streamed live from the HF hub**
    by `data/streaming.py` (ADR 0006, which deleted the local reshard and
-   its `PILOT_FEATURES` schema): three lsdb/HATS sources — images-only,
+   its `PILOT_FEATURES` schema): three HATS sources — images-only,
    spectra-only, and the `how="inner"` crossmatch — interleaved **per
    record** by fixed weights (0.60/0.15/0.25, provisional) using a repeating
    draw pattern, never a sampler, so no RNG state is ever checkpointed.
-   `row_to_record` is the sole decode adapter over MMU-native rows.
-   Partitions are addressed by index (`CatalogStream._delayed_partitions`),
-   split across `world_size × num_workers` by modulo, and buffered whole —
-   so resume is `(epoch, partition cursor, row offset)` per source, all
-   ints, and stays exactly no-replay. `data_root` is `synthetic` or `mmu`;
+   `row_to_record` is the sole decode adapter over MMU-native rows. Reads are
+   `hats` (partition enumeration + `hf://` paths) + `pyarrow` (row groups) —
+   **no lsdb at train time**; the crossmatch is precomputed offline by
+   `scripts/build_match_index.py` into a match-index of ids, and the pairs
+   source joins on it in memory. Partitions are addressed by index, split
+   across `world_size × num_workers` by modulo, and streamed **one row group
+   at a time** (~56 MB, not a 774 MB partition) — so resume is
+   `(epoch, partition cursor, row group, row offset)` per source, all ints,
+   and stays exactly no-replay. Without a match index there is no pairs
+   source and the corpus degrades to images + spectra. `data_root` is `synthetic` or `mmu`;
    a stale path to the old corpus raises. Val reserves the first
    `VAL_PARTITIONS` partitions of every source (whole partitions ⇒
    spatially disjoint).

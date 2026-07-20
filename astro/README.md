@@ -20,7 +20,7 @@ with AstroPT-style continuous-token regression (NAIRR260009).
 ```bash
 cd astro
 uv sync --extra dev          # CPU-safe: model, packing, tests
-uv sync --extra data         # + lsdb/hats (login-node data prep only)
+uv sync --extra data         # + lsdb (match-index build only; not needed to train)
 uv sync --extra train        # + nanotron/flash-attn (training machine only)
 ```
 
@@ -45,13 +45,21 @@ prep, launching, checkpoint/resume, eval, troubleshooting).
 ## Pilot data (streamed, ADR 0006)
 
 The corpus is **streamed live from the HF hub at train time** — there is no
-prep step and no local copy. Three lsdb/HATS sources are interleaved per
+prep step and no local copy. Three HATS sources are interleaved per
 record: images-only (~14M LegacySurvey), spectra-only (~1.1M DESI EDR SV3),
 and their 1" inner crossmatch, at provisional weights 0.60/0.15/0.25.
 
+Reads are `hats` (partition enumeration) + `pyarrow` (row groups); lsdb runs
+only offline, to build the match-index that the pairs source joins on:
+
 ```bash
+uv run --extra data python scripts/build_match_index.py --out match_index.parquet
+    # ~200 crossmatch partitions, ~1h; ids only (tens of MB, no pixels copied)
 uv run pytest tests/test_streaming.py    # cursor logic offline + one live check
 ```
+
+Without a match index there is no pairs source and the corpus degrades to
+images + spectra — visible in the logs rather than silent.
 
 `data_root` is `synthetic` (tests, smoke) or `mmu` (real training); a path
 to the retired local corpus raises. Partitions are addressed by index, so

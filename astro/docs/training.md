@@ -23,7 +23,7 @@ Three distinct environments; do not mix them.
 | env | where | contents | used for |
 |-----|-------|----------|----------|
 | `uv sync --extra dev` | anywhere | torch (CPU ok), torchdata, transformers, datasets | unit tests, CPU smoke, eval code |
-| `uv sync --extra data` | machine with network | + lsdb, hats, nested-pandas | data prep (crossmatch) only |
+| `uv sync --extra data` | machine with network | + lsdb | match-index build only (ADR 0006) |
 | GPU venv | training machine | torch + **flash-attn** + nanotron (editable `nanotron/`) + astro (editable `astro/`) + psutil + torchdata | training, GPU tests, conversion |
 
 flash-attn wheels are the constraint for the GPU venv: pick a torch version
@@ -47,8 +47,9 @@ pytest -m gpu astro/tests/test_nanotron_gpu.py astro/tests/test_phase4_gpu.py
 
 ### 2.1 The corpus is streamed (ADR 0006)
 
-There is no prep step and no local copy: `data/streaming.py` opens the MMU
-HATS catalogs on the HF hub at train time and interleaves three sources per
+There is one small prep step (the match-index, below) and no local copy of
+the corpus: `data/streaming.py` opens the MMU HATS catalogs on the HF hub at
+train time via `hats` + `pyarrow` and interleaves three sources per
 record — images-only, spectra-only, and their 1" inner crossmatch — at
 provisional weights 0.60/0.15/0.25. Set `data_root: mmu` in the nanotron
 config (`synthetic` for smoke runs); a path to the retired local corpus
@@ -75,6 +76,16 @@ Facts to know:
   synchronous and block the training loop; image partitions are ~170 MB.
 - Revisions float to latest upstream, so a long run can see the corpus
   change if MMU pushes.
+- **The pairs source needs a match-index.** Build it once (~1 hour, login
+  node, `[data]` env) and pass the path; without it the corpus is images +
+  spectra only:
+
+  ```bash
+  uv run --extra data python scripts/build_match_index.py --out match_index.parquet
+  ```
+
+  Partitions are streamed a row group at a time (~56 MB), so a worker holds
+  ~56 MB per source rather than a whole 774 MB partition.
 
 ### 2.2 Image normalization (no calibration step)
 

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Protocol
 
 import numpy as np
 import pandas as pd
@@ -48,6 +48,8 @@ MMU_ROOT = "mmu"
 # HEALPix order; whole partitions, so train/val are spatially disjoint. The
 # pairs source is an inner join, so every val pair carries Z for the probe.
 VAL_PARTITIONS = 8
+# loop guard only: no MMU partition comes close (largest seen ~13 row groups)
+MAX_ROW_GROUPS = 4096
 
 SOURCE_NAMES = ("images", "spectra", "pairs")
 # ADR 0006 §2, provisional: images dominate (bulk, cleanest signal), pairs are
@@ -196,8 +198,14 @@ def _pattern(weights, length: int = PATTERN_LEN) -> tuple[int, ...]:
     """Weights -> a repeating, evenly-spread sequence of source indices.
 
     Greedy largest-remainder: exact counts when ``w * length`` is integral,
-    and the sources stay interleaved rather than arriving in blocks.
+    and the sources stay interleaved rather than arriving in blocks. Weights
+    are normalized, so a corpus missing a source (no match index -> no pairs)
+    keeps the remaining ratio.
     """
+    total = float(sum(weights))
+    if total <= 0:
+        raise ValueError(f"weights must sum to > 0, got {weights!r}")
+    weights = [w / total for w in weights]
     acc = [0.0] * len(weights)
     out = []
     for _ in range(length):
@@ -213,17 +221,35 @@ def _pattern(weights, length: int = PATTERN_LEN) -> tuple[int, ...]:
 
 @dataclass
 class Source:
-    """One streamed catalog: how many partitions, and how to fetch/decode one."""
+    """One streamed catalog: its partitions, and how to open/decode one.
+
+    ``open_partition(index)`` returns a :class:`Partition` — a handle whose
+    row groups are read one at a time. Nothing reads a whole partition: an
+    images partition is up to 774 MB in Arrow, so buffering one per source
+    put ~74 GB resident at only 32 workers (spike, ADR 0006). A row group is
+    ~200 rows / ~56 MB.
+    """
 
     name: str
     npartitions: int
-    fetch: Callable[[int], pd.DataFrame]
+    open_partition: Callable[[int], "Partition"]
     decode: Callable[[object], dict]
     order: np.ndarray | None = None
     epoch: int = 0
     cursor: int = 0  # index into `order`
-    row_off: int = 0  # index into the buffered partition
+    group: int = 0  # index of the row group within the partition
+    row_off: int = 0  # index into the buffered row group
+    _part: "Partition | None" = field(default=None, repr=False)
     _buf: pd.DataFrame | None = field(default=None, repr=False)
+
+
+class Partition(Protocol):
+    """One partition's row groups, read on demand."""
+
+    @property
+    def n_groups(self) -> int: ...
+
+    def group(self, index: int) -> pd.DataFrame: ...
 
 
 def partition_order(npartitions: int, seed: int, epoch: int) -> np.ndarray:
@@ -234,11 +260,12 @@ def partition_order(npartitions: int, seed: int, epoch: int) -> np.ndarray:
 class MMUStream:
     """Endless, weighted, per-record interleave of the three MMU sources.
 
-    Resume is partition-granularity by construction: the cursor is
-    ``(draw, per-source (epoch, cursor, row_off))``, all ints. Restoring it
-    re-derives the partition order from ``(seed, epoch)`` and re-fetches only
-    the in-flight partition — skipping costs nothing and downloads nothing,
-    because a source's partitions are addressed by index.
+    Resume is exact and cheap: the cursor is
+    ``(draw, per-source (epoch, cursor, group, row_off))``, all ints.
+    Restoring it re-derives the partition order from ``(seed, epoch)`` and
+    re-reads only the in-flight ROW GROUP — skipping costs nothing and
+    downloads nothing, because partitions are addressed by index and row
+    groups are addressed from the parquet footer.
     """
 
     def __init__(
@@ -292,33 +319,53 @@ class MMUStream:
                 f"/{self.num_shards} (split={self.split})"
             )
         src.cursor = 0
+        self._rewind_partition(src)
+
+    def _rewind_partition(self, src: Source) -> None:
+        src.group = 0
         src.row_off = 0
+        src._part = None
         src._buf = None
 
     def _advance_partition(self, src: Source) -> None:
         src.cursor += 1
-        src.row_off = 0
-        src._buf = None
+        self._rewind_partition(src)
         if src.cursor >= len(src.order):
             src.epoch += 1
             self._reset_order(src)
 
     def _next_record(self, src: Source) -> dict | None:
-        """Next decoded row from this source, fetching partitions as needed."""
-        # bounded: every iteration either returns or consumes a partition, and
-        # a fresh epoch cannot be empty (_reset_order rejects an empty order)
-        for _ in range(len(src.order) + 1):
+        """Next decoded row, opening partitions and row groups as needed.
+
+        Bounded: every iteration either returns a record or consumes a row
+        group or a partition, and a fresh epoch cannot be empty
+        (``_reset_order`` rejects an empty order).
+        """
+        for _ in range(len(src.order) + MAX_ROW_GROUPS + 1):
+            if src._part is None:
+                src._part = src.open_partition(int(src.order[src.cursor]))
+            if src.group >= src._part.n_groups:  # partition consumed (or empty)
+                self._advance_partition(src)
+                continue
             if src._buf is None:
-                src._buf = src.fetch(int(src.order[src.cursor]))
+                src._buf = src._part.group(src.group)
             if src.row_off < len(src._buf):
                 row = src._buf.iloc[src.row_off]
                 src.row_off += 1
                 self.last_epoch = src.epoch  # before any rollover below
                 if src.row_off >= len(src._buf):
-                    self._advance_partition(src)
+                    self._advance_group(src)
                 return src.decode(row)
-            self._advance_partition(src)  # empty partition
+            self._advance_group(src)  # empty row group
         return None
+
+    def _advance_group(self, src: Source) -> None:
+        """Release the buffered row group — this is what bounds RAM."""
+        src.group += 1
+        src.row_off = 0
+        src._buf = None
+        if src.group >= src._part.n_groups:
+            self._advance_partition(src)
 
     # -- iteration ----------------------------------------------------------
 
@@ -339,7 +386,12 @@ class MMUStream:
             "seed": self.seed,
             "split": self.split,
             "sources": {
-                s.name: {"epoch": s.epoch, "cursor": s.cursor, "row_off": s.row_off}
+                s.name: {
+                    "epoch": s.epoch,
+                    "cursor": s.cursor,
+                    "group": s.group,
+                    "row_off": s.row_off,
+                }
                 for s in self.sources
             },
         }
@@ -356,51 +408,162 @@ class MMUStream:
             src.epoch = saved["epoch"]
             self._reset_order(src)  # re-derives order for the saved epoch
             src.cursor = saved["cursor"]
+            src.group = saved["group"]
             src.row_off = saved["row_off"]
 
 
-# -- lsdb wiring ------------------------------------------------------------
+# -- pyarrow + hats wiring --------------------------------------------------
+# lsdb is deliberately absent from this path (ADR 0006): once the crossmatch is
+# a precomputed id lookup, nothing at train time needs its dask/KD-tree engine.
+# `hats` enumerates partitions and resolves hf:// paths; `pyarrow` reads them.
+
+
+def _hf_filesystem():
+    from huggingface_hub import HfFileSystem
+
+    return HfFileSystem()
+
+
+def _partition_files(url: str) -> list[str]:
+    """Deterministic HEALPix-ordered parquet paths for a HATS catalog."""
+    import hats
+    from hats.io import paths
+
+    collection = hats.read_hats(url)
+    catalog = getattr(collection, "main_catalog", collection)
+    return [
+        str(paths.pixel_catalog_file(catalog.catalog_base_dir, pixel)).replace(
+            "hf://datasets/", "datasets/"
+        )
+        for pixel in catalog.get_healpix_pixels()
+    ]
+
+
+class _ParquetPartition:
+    """One parquet file, read a row group at a time.
+
+    Opening reads only the footer, so ``n_groups`` costs no data transfer and
+    resume can seek straight to the saved row group.
+    """
+
+    def __init__(self, path: str, fs):
+        import pyarrow.parquet as pq
+
+        self._file = pq.ParquetFile(fs.open(path))
+
+    @property
+    def n_groups(self) -> int:
+        return self._file.num_row_groups
+
+    def group(self, index: int) -> pd.DataFrame:
+        return self._file.read_row_group(index).to_pandas()
+
+
+class _PairedPartition:
+    """An image partition joined to its matched spectra through the index.
+
+    The matched spectrum rows for one image partition are small (bounded by
+    the spectroscopic side, not the imaging side), so they are read once and
+    held as an id -> row map while the image partition streams by row group.
+    """
+
+    def __init__(self, image_path: str, matches, spectra_files: list[str], fs):
+        self._images = _ParquetPartition(image_path, fs)
+        self._matches = matches  # image_id -> spectrum_id
+        self._spectra = {}
+        for path in spectra_files:
+            table = _ParquetPartition(path, fs)
+            for g in range(table.n_groups):
+                frame = table.group(g)
+                for _, row in frame.iterrows():
+                    self._spectra[row["object_id"]] = row
+
+    @property
+    def n_groups(self) -> int:
+        return self._images.n_groups
+
+    def group(self, index: int) -> pd.DataFrame:
+        frame = self._images.group(index)
+        keep = frame["object_id"].map(lambda i: i in self._matches)
+        frame = frame[keep].copy()
+        if frame.empty:
+            return frame
+        # attach the matched spectrum's columns under the _desi suffix that
+        # row_to_record already understands
+        matched = [self._spectra[self._matches[i]] for i in frame["object_id"]]
+        for column in ("spectrum", "Z", "ZERR", "ZWARN"):
+            frame[column + "_desi"] = [row.get(column) for row in matched]
+        return frame
+
+
+def load_match_index(path: str):
+    """The precomputed crossmatch: image partition -> {image_id: spectrum_id}.
+
+    Built offline by ``scripts/build_match_index.py``; ~0.7M rows of ids, tens
+    of MB, no pixels duplicated. Returns
+    ``(by_image_partition, spectrum_partitions_for_image_partition)``.
+    """
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(path).to_pydict()
+    matches: dict[int, dict] = {}
+    spectra_of: dict[int, set] = {}
+    for img_part, img_id, spec_part, spec_id in zip(
+        table["image_partition"],
+        table["image_id"],
+        table["spectrum_partition"],
+        table["spectrum_id"],
+    ):
+        matches.setdefault(img_part, {})[img_id] = spec_id
+        spectra_of.setdefault(img_part, set()).add(spec_part)
+    return matches, spectra_of
 
 
 def open_sources(
     images_catalog: str = IMAGES_CATALOG,
     spectra_catalog: str = SPECTRA_CATALOG,
-    radius_arcsec: float = CROSSMATCH_RADIUS_ARCSEC,
-    client=None,
+    match_index: str | None = None,
 ) -> list[Source]:
-    """Open the three live MMU sources. The only place lsdb is imported.
+    """Open the three live MMU sources over pyarrow + hats.
 
-    ``client`` is a dask client; with one, partition fetches prefetch in the
-    background, without one they are synchronous.
+    ``match_index`` is the precomputed crossmatch parquet; without one the
+    pairs source is unavailable and the corpus is images + spectra only.
     """
-    import lsdb
-    from lsdb.streams import CatalogStream
+    fs = _hf_filesystem()
+    image_files = _partition_files(images_catalog)
+    spectra_files = _partition_files(spectra_catalog)
 
-    images = lsdb.open_catalog(images_catalog)
-    spectra = lsdb.open_catalog(spectra_catalog)
-    pairs = images.crossmatch(
-        spectra,
-        n_neighbors=1,
-        radius_arcsec=radius_arcsec,
-        suffixes=("", "_desi"),
-        # pinned: lsdb's default flips to "overlapping_columns" in a future
-        # release, and row_to_record's _desi handling assumes all_columns
-        suffix_method="all_columns",
-        how="inner",
-    )
-
-    def fetcher(catalog):
-        # CatalogStream is built once for its culled per-partition dask graphs
-        # (it avoids O(N^2) graph transmission); we drive the partition order
-        # ourselves, so shuffle is off and its own iterator is never used.
-        stream = CatalogStream(catalog, client=client, shuffle=False, seed=0)
-        return lambda index: stream.submit_next_partitions(np.array([index])).result()
-
-    return [
-        Source("images", images.npartitions, fetcher(images), row_to_record),
-        Source("spectra", spectra.npartitions, fetcher(spectra), spectra_row_to_record),
-        Source("pairs", pairs.npartitions, fetcher(pairs), row_to_record),
+    sources = [
+        Source(
+            "images",
+            len(image_files),
+            lambda i: _ParquetPartition(image_files[i], fs),
+            row_to_record,
+        ),
+        Source(
+            "spectra",
+            len(spectra_files),
+            lambda i: _ParquetPartition(spectra_files[i], fs),
+            spectra_row_to_record,
+        ),
     ]
+    if match_index is None:
+        return sources
+
+    matches, spectra_of = load_match_index(match_index)
+    paired = sorted(matches)  # image partitions carrying at least one match
+
+    def open_paired(i: int) -> _PairedPartition:
+        part = paired[i]
+        return _PairedPartition(
+            image_files[part],
+            matches[part],
+            [spectra_files[s] for s in sorted(spectra_of[part])],
+            fs,
+        )
+
+    sources.append(Source("pairs", len(paired), open_paired, row_to_record))
+    return sources
 
 
 def open_stream(
@@ -409,15 +572,19 @@ def open_stream(
     seed: int = 0,
     shard: int = 0,
     num_shards: int = 1,
-    client=None,
+    match_index: str | None = None,
 ) -> MMUStream:
     """The live corpus stream. Deterministic given ``(seed, split, shard)``.
 
     Evaluation relies on that determinism: a fresh ``split="val"`` stream
     replays the identical records on every checkpoint.
     """
+    sources = open_sources(match_index=match_index)
     return MMUStream(
-        open_sources(client=client),
+        sources,
+        # without a match index there is no pairs source; the remaining two
+        # keep their relative weighting (_pattern renormalizes)
+        weights=DEFAULT_WEIGHTS[: len(sources)],
         seed=seed,
         shard=shard,
         num_shards=num_shards,

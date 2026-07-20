@@ -1,0 +1,158 @@
+"""Precompute the image x spectrum crossmatch into a match-index (ADR 0006).
+
+Runs offline on a login node in the ``[data]`` env (lsdb + network). This is
+the ONLY place lsdb is used: the train-time stream reads the index and joins
+by id, so no worker ever runs a spatial join.
+
+The artifact is pointers, not pixels — ``(image_partition, image_id,
+spectrum_partition, spectrum_id, dist_arcsec)``, ~0.7M rows and tens of MB.
+Joined records would be ~280 GB of imagery already hosted in the
+LegacySurvey catalog, plus a second bespoke schema; this keeps ADR 0006's
+"one native schema" win and stays bounded by the spectroscopic side, so an
+arbitrarily larger imaging corpus never inflates it.
+
+    uv run --extra data python scripts/build_match_index.py --out match_index.parquet
+    uv run --extra data python scripts/build_match_index.py --limit-partitions 8 \\
+        --out /tmp/match_index_smoke.parquet      # smoke index for tests
+
+Partition columns are indices into the catalog's HEALPix-ordered partition
+list — the same order `streaming._partition_files` produces, so the loader
+indexes straight into it.
+"""
+
+import argparse
+import sys
+import time
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+from hats.pixel_math.healpix_shim import radec2pix
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from astropt3.data.streaming import (  # noqa: E402
+    CROSSMATCH_RADIUS_ARCSEC,
+    IMAGES_CATALOG,
+    SPECTRA_CATALOG,
+)
+
+# resolve spectra to their partitions at a fine order, then walk up the
+# quadtree to whichever order that catalog actually partitions at
+HEALPIX_ORDER = 12
+
+SCHEMA = pa.schema(
+    [
+        ("image_partition", pa.int32()),
+        ("image_id", pa.string()),
+        ("spectrum_partition", pa.int32()),
+        ("spectrum_id", pa.string()),
+        ("dist_arcsec", pa.float32()),
+    ]
+)
+
+
+def partition_lookup(catalog) -> dict:
+    """(order, pixel) -> index into the HEALPix-ordered partition list."""
+    return {
+        (int(p.order), int(p.pixel)): i
+        for i, p in enumerate(catalog.get_ordered_healpix_pixels())
+    }
+
+
+def containing_partition(order: int, pixel: int, lookup: dict) -> int:
+    """Index of the catalog partition covering this HEALPix cell.
+
+    A crossmatch partition is refined to the FINER of the two sides, so its
+    pixel is often a sub-pixel of the image partition that holds the row
+    (and an order-29 `_healpix_29` is always below any partition). Walking up
+    the quadtree — each coarser order drops two bits — finds the covering
+    partition in at most 30 steps.
+    """
+    order, pixel = int(order), int(pixel)
+    while order >= 0:
+        found = lookup.get((order, pixel))
+        if found is not None:
+            return found
+        order -= 1
+        pixel >>= 2
+    raise KeyError(f"no partition covers HEALPix cell (order={order}, pixel={pixel})")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--images", default=IMAGES_CATALOG)
+    parser.add_argument("--spectra", default=SPECTRA_CATALOG)
+    parser.add_argument("--radius-arcsec", type=float, default=CROSSMATCH_RADIUS_ARCSEC)
+    parser.add_argument(
+        "--limit-partitions",
+        type=int,
+        default=None,
+        help="smoke mode: only the first N crossmatch partitions",
+    )
+    args = parser.parse_args()
+
+    import lsdb
+
+    images = lsdb.open_catalog(args.images)
+    spectra = lsdb.open_catalog(args.spectra)
+    image_index = partition_lookup(images)
+    spectrum_index = partition_lookup(spectra)
+
+    pairs = images.crossmatch(
+        spectra,
+        n_neighbors=1,
+        radius_arcsec=args.radius_arcsec,
+        suffixes=("", "_desi"),
+        # pinned: lsdb's default flips to "overlapping_columns" in a future
+        # release, and the _desi suffix is what identifies the right side
+        suffix_method="all_columns",
+        how="inner",
+    )
+    pixels = pairs.get_ordered_healpix_pixels()
+    if args.limit_partitions is not None:
+        pixels = pixels[: args.limit_partitions]
+
+    rows = {name: [] for name in SCHEMA.names}
+    started = time.time()
+    for n, pixel in enumerate(pixels):
+        frame = pairs.get_partition(pixel.order, pixel.pixel).compute()
+        if len(frame) == 0:
+            continue
+        img_part = containing_partition(pixel.order, pixel.pixel, image_index)
+        # only the LEFT catalog's _healpix_29 survives the join (as the frame
+        # index); the right side contributes ra_desi/dec_desi, so the matched
+        # spectrum's cell is recomputed from its coordinates
+        spectrum_cells = radec2pix(
+            HEALPIX_ORDER,
+            frame["ra_desi"].to_numpy(dtype="float64"),
+            frame["dec_desi"].to_numpy(dtype="float64"),
+        )
+        for i, (_, row) in enumerate(frame.iterrows()):
+            rows["image_partition"].append(img_part)
+            rows["image_id"].append(str(row["object_id"]))
+            rows["spectrum_partition"].append(
+                containing_partition(
+                    HEALPIX_ORDER,
+                    spectrum_cells[i],
+                    spectrum_index,
+                )
+            )
+            rows["spectrum_id"].append(str(row["object_id_desi"]))
+            rows["dist_arcsec"].append(float(row.get("_dist_arcsec", 0.0)))
+        print(
+            f"[{n + 1}/{len(pixels)}] Norder={pixel.order} Npix={pixel.pixel}: "
+            f"{len(frame)} matches | total {len(rows['image_id'])} "
+            f"({time.time() - started:.0f}s)",
+            flush=True,
+        )
+
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table(rows, schema=SCHEMA), args.out)
+    print(f"wrote {len(rows['image_id'])} matches -> {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

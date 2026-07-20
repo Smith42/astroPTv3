@@ -17,17 +17,21 @@ dependencies = [
     "einops>=0.8",
     "numpy>=1.26",
     "pyyaml>=6.0",
-    # ADR 0006: the corpus is streamed from the HF hub at train time, so lsdb
-    # is the data path itself, not a login-node prep step
-    "lsdb",
+    # ADR 0006: the corpus is streamed from the HF hub at train time via
+    # hats (partition enumeration) + pyarrow (row-group reads). lsdb is
+    # deliberately NOT here — the crossmatch is precomputed offline into a
+    # match-index, so no train-time path needs its dask/KD-tree engine.
     "hats",
+    "pyarrow",
+    "huggingface-hub",
     "nested-pandas",
 ]
 
 [project.optional-dependencies]
-# Local reshard, superseded by ADR 0006 streaming; deleted with prepare_pilot_data.py
+# Offline prep (login node): building the ADR 0006 match-index is the only
+# thing that still needs lsdb.
 data = [
-    "scipy",  # pass-2 matched-position KD-tree (ADR 0005)
+    "lsdb",
 ]
 # Training machine only: the nanotron fork (../nanotron git submodule,
 # editable) plus flash-attn (needs a CUDA toolchain or a matching prebuilt

@@ -22,16 +22,31 @@ _SPEC = {
 }
 
 
-def _source(name: str) -> Source:
-    base, kwargs = _SPEC[name]
+ROWS_PER_GROUP = 2  # so the fakes exercise the multi-row-group path
 
-    def fetch(index: int) -> pd.DataFrame:
+
+class _FakePartition:
+    def __init__(self, name: str, index: int):
+        base, kwargs = _SPEC[name]
         start = base + index * ROWS_PER_PARTITION
-        return pd.DataFrame(
-            {"rec": [make_record(start + j, **kwargs) for j in range(ROWS_PER_PARTITION)]}
-        )
+        self._recs = [make_record(start + j, **kwargs) for j in range(ROWS_PER_PARTITION)]
 
-    return Source(name, N_PARTITIONS, fetch, lambda row: row["rec"])
+    @property
+    def n_groups(self) -> int:
+        return max(1, -(-len(self._recs) // ROWS_PER_GROUP))
+
+    def group(self, index: int) -> pd.DataFrame:
+        chunk = self._recs[index * ROWS_PER_GROUP : (index + 1) * ROWS_PER_GROUP]
+        return pd.DataFrame({"rec": chunk})
+
+
+def _source(name: str) -> Source:
+    return Source(
+        name,
+        N_PARTITIONS,
+        lambda index, name=name: _FakePartition(name, index),
+        lambda row: row["rec"],
+    )
 
 
 def fake_open_stream(
