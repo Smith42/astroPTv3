@@ -29,7 +29,8 @@ if [[ "$NPROC" -lt 2 ]]; then
 fi
 
 export CUDA_DEVICE_MAX_CONNECTIONS=1   # required by nanotron's comm overlap
-export HF_DATASETS_OFFLINE=1           # data is local parquet
+# ADR 0006: the corpus streams from the HF hub at train time, so the
+# offline flags that suited the local parquet corpus must NOT be set
 export WANDB_MODE=${WANDB_MODE:-online}
 
 # eval sidecar: polls the run's checkpoint dir on a spare GPU, fully
