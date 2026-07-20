@@ -1,7 +1,7 @@
 # 70M REAL-DATA shakeout on the dev node (2xA100, DP=2, ZeRO-1).
-# Data: day-one subset of the pilot corpus (pilot_v1 partial + SV3 cone,
-# symlink mix; ~23% of cone objects carry DESI spectra). First execution
-# of the 70M size on real MMU data; GBS = 2 x 16 x 4096 = 131k tok/step.
+# Data: MMU streamed live (ADR 0006) — images + spectra + the crossmatch
+# pairs source, joined through the published match index (137,906 pairs).
+# GBS = 2 x 16 x 4096 = 131k tok/step.
 general:
   project: astropt3
   run: astropt3-70m-real-shakeout
@@ -81,6 +81,7 @@ data_stages:
   data:
     dataset:
       data_root: mmu
+      match_index: hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
     seed: 42
     num_loading_workers: 8
 optimizer:

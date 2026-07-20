@@ -12,7 +12,7 @@ with AstroPT-style continuous-token regression (NAIRR260009).
   Phase 3+); the transformers implementation here is the release/probing
   artifact and the CPU test target.
 - **Pilot data**: `UniverseTBD/mmu_ssl_legacysurvey_north` (3×152×152 flux
-  cubes → 361 patch-8 tokens) × `UniverseTBD/mmu_desi_edr_sv3` (7781-bin
+  cubes, center-cropped to 96×96 → 144 patch-8 tokens) × `UniverseTBD/mmu_desi_edr_sv3` (7781-bin
   spectra → 31 patch-256 tokens), lsdb-crossmatched offline.
 
 ## Setup
@@ -97,7 +97,7 @@ cd .. && CUDA_DEVICE_MAX_CONNECTIONS=1 \
 ```bash
 python astro/scripts/run_probe_sweep.py \
   --checkpoints-dir <run_ckpt_dir> --out-dir <eval_dir> \
-  --data-root <val_shards|synthetic> --watch --until-step <train_steps>
+  --data-root <mmu|synthetic> --watch --until-step <train_steps>
     # per checkpoint: convert to HF -> fixed-batch val loss
     # (astropt3.eval.val_loss) -> ridge redshift probe
     # (astropt3.eval.linear_probe) -> one line in probe_results.jsonl
