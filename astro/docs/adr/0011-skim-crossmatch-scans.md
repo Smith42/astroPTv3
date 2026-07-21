@@ -1,7 +1,9 @@
 # ADR 0011: Skim single-modality records from the crossmatch scans
 
 - **Status:** In progress (2026-07-21) — design accepted for validation,
-  **not yet adopted**; the offline prototype gate below decides.
+  **not yet adopted**; the offline prototype gate below decides. Amended
+  2026-07-21 to **relax the skimmed train stream to coarse determinism**
+  (partition-level, not micro-batch) — see §Determinism model.
 - **Date:** 2026-07-21
 - **References:**
   - [ADR 0006](0006-stream-mmu-upstream.md) — the streamed three-source
@@ -83,39 +85,83 @@ match index settles it; it is part of the validation gate.
 ## Decision (in progress)
 
 Pursue the **demultiplexed scan**: one generator per worker walks the
-matched partitions once and emits records in a **fixed, deterministic
-internal draw pattern — nominal 12 images : 5 pairs : 3 spectra** —
-where "images" (resp. "spectra") are the *unmatched* rows skimmed from the
-scan, and pairs are the matched rows merged in memory (existing
-`_paired_examples` logic).
+matched partitions once and emits records at the **nominal internal ratio
+12 images : 5 pairs : 3 spectra** — where "images" (resp. "spectra") are the
+*unmatched* rows skimmed from the scan, and pairs are the matched rows merged
+in memory (existing `_paired_examples` logic). The draw is a **weighted
+sampler**, not a fixed repeating pattern: the skimmed train stream is only
+**coarsely deterministic** (§Determinism model), which is what lets a sampler
+replace the pattern.
 
-1. **Single generator, no cross-process sharing.** Folding the draw
-   pattern into one generator sidesteps the rejected alternative — two
-   logical `IterableDataset`s sharing one physical scan across
-   independently-`__iter__`'d DataLoader workers — which is the exact
-   class that failed three times in the shakeout. The pattern is a
-   repeating fixed sequence (codebase rule: never a sampler), so there is
-   no RNG state; resume adds only `pattern_phase` and the skim cursors to
-   the existing `(epoch, partition, row group, row offset)` cursor.
+1. **Single generator, no cross-process sharing.** Folding the draw into one
+   generator sidesteps the rejected alternative — two logical
+   `IterableDataset`s sharing one physical scan across
+   independently-`__iter__`'d DataLoader workers — which is the exact class
+   that failed three times in the shakeout. Under coarse determinism the draw
+   is a per-emission weighted sampler seeded on `(seed, epoch, cell)`; resume
+   does **not** checkpoint sampler RNG or a skim buffer — it re-opens at the
+   **partition boundary** and reseeds, so the resume cursor stays the existing
+   `(epoch, partition)` ints (§Determinism model).
 2. **Both modality skims.** Unmatched spectra in the matched spectrum
    partitions (already downloaded for the join) feed spectrum-only draws.
-3. **Spectra shortfall rule: skip-if-empty.** Skimmed-spectra supply is
-   per-cell and non-stationary; when the spectrum slot arrives with an
-   empty skim buffer, the slot is *skipped* — deterministic, since buffer
-   state is a pure function of scan position. Effective spectra share then
-   floats below 0.15 unless a reduced-weight standalone spectra source
-   tops it up; the choice rides on the supply measurement.
+3. **Spectra shortfall rule: redraw-if-empty.** Skimmed-spectra supply is
+   per-cell and non-stationary; when the sampler picks the spectrum slot and
+   the skim buffer is empty, it simply **redraws** — a one-liner under coarse
+   determinism, where the old exact-replay design instead needed the skip to
+   be a pure function of scan position. Effective spectra share still floats
+   below 0.15 unless a reduced-weight standalone spectra source tops it up;
+   the choice rides on the supply measurement.
 4. **Drop-in for `interleaved()`**, validated **offline over local parquet
    fixtures** through the same datasets machinery — the path
    `interleaved()` was factored for. No training-machine contact before
    the gate passes.
 5. **Adoption gate (the prototype):** assert the realized mix vs
-   0.60/0.15/0.25 under skip-if-empty, deterministic replay
-   (same `(seed, epoch)` ⇒ identical stream), byte accounting (counting
-   file wrapper), and a per-cell spectra supply-vs-demand report. Measure
-   d and matched-cell counts from the match index at the same time.
-   Building this gate was explicitly descoped on 2026-07-21; it remains
-   the precondition for adoption.
+   0.60/0.15/0.25 under redraw-if-empty (a **statistical** check over N
+   draws, since the train stream is no longer bit-exact), **coarse-resume
+   invariants** (re-open at a partition boundary replays no completed
+   partition and skips none), **exact val replay** (val stays fully
+   deterministic — same `(seed, epoch)` ⇒ identical stream), byte accounting
+   (counting file wrapper), and a per-cell spectra supply-vs-demand report.
+   Measure d and matched-cell counts from the match index at the same time.
+   Building this gate was explicitly descoped on 2026-07-21; it remains the
+   precondition for adoption.
+
+## Determinism model (relaxed 2026-07-21)
+
+ADR 0006 keeps the corpus **exactly** replayable: a repeating draw pattern
+(never a sampler) so no RNG state is checkpointed, and a micro-batch-exact
+resume cursor. Skimming **already forfeits that** for the streams it feeds —
+image-only draws come from discards that repeat ~7–8× per epoch and skew to
+the DESI footprint (see Negatives). Paying the full exact-determinism price —
+a fixed 12:5:3 pattern, skip-if-empty as a pure function of scan position,
+`pattern_phase` + skim-buffer state in every checkpoint — to protect a
+no-replay guarantee the feature has *already* broken is incoherent. So the
+skimmed **train** stream is relaxed to **coarse determinism**.
+
+Only three guarantees are kept, because only these are load-bearing:
+
+- **Val stays bit-exact.** Eval compares checkpoints; identical val batches
+  per checkpoint are non-negotiable. Val is a separate `split`, tiny, and not
+  skimmed — it keeps ADR 0006's exact path untouched.
+- **Cross-rank shuffle agreement stays.** `shuffled(files, seed, epoch)` is
+  identical on every rank so the modulo split is disjoint. This is sharding
+  *correctness*, not draw-order RNG, and the relaxation does not touch it.
+- **Coarse (partition-level) resume stays.** A kill/resume re-opens at a
+  partition boundary: no partition is skipped or re-trained (coverage
+  integrity), only the in-progress partition is partially re-drawn.
+
+Given up deliberately: **bit-exact train reproducibility** and
+**micro-batch-exact resume** of the skimmed stream. At 14M records × epochs
+the ≤1 partition of re-drawn records per kill is statistically nil, and
+dropout/init RNG already makes a run non-bit-exact unless painstakingly
+seeded — so little real reproducibility is lost, while the sampler,
+redraw-if-empty, and the vanishing skim/phase checkpoint state delete most of
+the mechanism and most of the coupled-source risk (the shakeout failures were
+in stateful exact resume + cross-process sharing, not in the draw itself).
+
+Scope: this relaxation applies only to the skim source in this ADR; ADR
+0006's live three-source interleave is unchanged until this design is
+adopted.
 
 ## Options considered
 
@@ -180,14 +226,16 @@ hosted catalogs, not a loader change; cross-referenced so it isn't lost.
   partitions (the DESI footprint). Tunable via a skim ratio < 1 (skim
   some discards, keep a reduced standalone images source) at the cost of
   giving back bytes.
-- **Spectra share floats** under skip-if-empty unless a top-up source is
+- **Spectra share floats** under redraw-if-empty unless a top-up source is
   kept, complicating the outer interleave weights.
 - **Coupled source = shakeout failure class.** Mitigated (single
   generator, no cross-process state, offline test path) but not erased:
   the DP/worker sharding interactions (`aligned`, `_iter_pytorch`,
   `n_shards` collapse) must be re-verified for the new source.
-- Resume cursor grows (`pattern_phase`, skim buffer state); checkpoints
-  across this change are data-order-incompatible.
+- Resume cursor stays the existing `(epoch, partition)` ints — no
+  `pattern_phase`, no skim-buffer state — because the skimmed train stream is
+  only coarsely deterministic (§Determinism model). Checkpoints across this
+  change are still data-order-incompatible.
 
 ## Open issues
 
@@ -200,8 +248,9 @@ hosted catalogs, not a loader change; cross-referenced so it isn't lost.
   discards.
 - Spectra top-up vs floating share.
 - Option D (readahead/prefetch) sizing and stacking.
-- Re-verify DP=2/worker-split behavior and kill/resume at a pattern-phase
-  boundary (offline) before any live run.
+- Re-verify DP=2/worker-split behavior and kill/resume at a **partition
+  boundary** (offline) before any live run — coarse resume must replay no
+  completed partition and skip none (§Determinism model).
 
 ## References
 
