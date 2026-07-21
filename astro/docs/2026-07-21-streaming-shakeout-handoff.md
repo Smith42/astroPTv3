@@ -122,3 +122,10 @@ router-DNS pressure. Attempt 2 (368 steps) archived at
 ~240K tok/s (0.55s/step — 8 workers still saturate; not data-bound as
 feared), ETA ~3h. Check `train.log` for "[data] … rebuilding the stream"
 lines to see how often the retry path fires.
+
+## Update (2026-07-21 afternoon): the "healthy" numbers above were prefetch
+
+Attempt 3 died at step 3989 on walltime. The ~240K tok/s readings at launch
+were never sustained — mean was ~4.6s/step from step 0. gpu5's 1 Gbit NIC is
+the hard ceiling. Full diagnosis, fix (workers back to 8), and relaunch
+guidance: [streaming throughput audit](2026-07-21-streaming-throughput-audit.md).

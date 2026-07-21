@@ -366,7 +366,9 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                     # httpx client -> plain RuntimeError; a rebuild gets a
                     # fresh client from get_session(). Match the message:
                     # a blanket RuntimeError catch would mask real bugs.
-                    if isinstance(err, RuntimeError) and "client has been closed" not in str(err):
+                    if isinstance(
+                        err, RuntimeError
+                    ) and "client has been closed" not in str(err):
                         raise
                     # transient network failure: rebuild the stream from the
                     # last per-record snapshot — exact, nothing replayed or
