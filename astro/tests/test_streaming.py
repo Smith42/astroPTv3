@@ -17,8 +17,10 @@ from astropt3.data.streaming import (
     aligned,
     DEFAULT_WEIGHTS,
     decode_record,
+    pairs_dataset,
     shuffled,
     split_files,
+    union_features,
 )
 from astropt3.data.synthetic import make_record
 from fake_mmu import fake_open_stream
@@ -115,6 +117,31 @@ def test_aligned_truncates_to_a_shard_multiple():
     assert len(aligned(files, 2)) == 164
     assert aligned(files, 1) == files  # single shard: keep everything
     assert aligned(files, 2) == files[:164]  # a prefix, order untouched
+
+
+def test_pairs_generator_reads_survive_dataloader_workers():
+    """A nested datasets stream iterated inside a DataLoader worker gets
+    worker-split AGAIN: its single shard lands on worker 0 and every other
+    worker silently reads an empty stream — no pairs, an instantly-exhausted
+    source. The pairs generator's inner reads use pyarrow to stay immune."""
+    import json
+
+    import torch
+
+    from fake_mmu import _fixtures
+
+    fx = _fixtures()
+    features = union_features(fx["images"][0], fx["spectra"][0])
+    ds = pairs_dataset(
+        image_paths=[fx["images"][0], fx["images"][1]],
+        match_json=[json.dumps(fx["match"])] * 2,
+        spectra_paths=[fx["spectra"], fx["spectra"]],
+        features=features,
+    )
+    solo = sum(1 for _ in ds)
+    assert solo > 0
+    loader = torch.utils.data.DataLoader(ds, batch_size=None, num_workers=2)
+    assert sum(1 for _ in loader) == solo
 
 
 # -- weighting + resume (real datasets interleave, offline) ------------------

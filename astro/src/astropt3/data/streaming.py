@@ -262,6 +262,24 @@ def _parquet_stream(files: list):
     return load_dataset("parquet", data_files=list(files), split="train", streaming=True)
 
 
+def _pq_rows(path: str):
+    """Plain pyarrow row-group reads, one row dict at a time.
+
+    The pairs generator runs INSIDE a DataLoader worker, and a nested
+    datasets ``IterableDataset`` iterated there gets worker-split again by
+    ``_iter_pytorch`` — its single shard lands on worker 0 and every other
+    worker silently reads an empty stream (no pairs, instantly-exhausted
+    source). pyarrow has no worker magic, so the inner reads use it.
+    """
+    import fsspec
+    import pyarrow.parquet as pq
+
+    with fsspec.open(path, "rb") as f:
+        pf = pq.ParquetFile(f)
+        for i in range(pf.num_row_groups):
+            yield from pf.read_row_group(i).to_pylist()
+
+
 def _paired_examples(image_paths, match_json, spectra_paths):
     """Generator for the pairs source: one image partition at a time.
 
@@ -278,11 +296,11 @@ def _paired_examples(image_paths, match_json, spectra_paths):
         needed = set(wanted.values())
         spectra = {}
         for path in spectrum_paths:
-            for row in _parquet_stream([path]):
+            for row in _pq_rows(path):
                 key = str(row["object_id"])
                 if key in needed:
                     spectra[key] = row
-        for row in _parquet_stream([image_path]):
+        for row in _pq_rows(image_path):
             spectrum_id = wanted.get(str(row["object_id"]))
             if spectrum_id is None:
                 continue
@@ -421,4 +439,12 @@ def open_stream(
         weights = list(DEFAULT_WEIGHTS)
 
     stream = interleaved(parts, weights, seed, shard, num_shards)
+    # one line per (re)build: the silent failure mode here is a source whose
+    # shard count breaks the rank/worker split and clamps the loader to one
+    # worker, so make the counts visible where it happens
+    print(
+        f"[data] open_stream split={split} epoch={epoch} shard={shard}/{num_shards} "
+        f"source n_shards={[p.n_shards for p in parts]} -> stream n_shards={stream.n_shards}",
+        flush=True,
+    )
     return stream.map(decode_record)
