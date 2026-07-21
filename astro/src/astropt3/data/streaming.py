@@ -285,8 +285,8 @@ def _pq_rows(path: str):
                 yield table.slice(j, 1).to_pylist()[0]
 
 
-def _paired_examples(image_paths, match_json, spectra_paths):
-    """Generator for the pairs source: one image partition at a time.
+def _paired_examples(image_paths, match_json, spectra_paths, images_per_pair=0.0):
+    """Generator for the demux scan: one image partition at a time.
 
     Yields RAW merged rows (the image row plus the matched spectrum's struct
     columns), NOT decoded records — decode runs after interleave, so the flux
@@ -298,6 +298,17 @@ def _paired_examples(image_paths, match_json, spectra_paths):
     FILTERED ARROW TABLE, not Python dicts: ~750 spectrum rows as Python
     objects is ~0.75 GB resident PER WORKER, which the 96 GiB slurm cgroup
     cannot afford 16 times over. Rows are converted one at a time on match.
+
+    ADR 0011 image-only skim: with ``images_per_pair > 0`` the *unmatched*
+    image rows — already downloaded by this scan, otherwise discarded — are
+    also emitted as image-only records (null spectrum), which is what lets the
+    standalone images-catalog download be dropped. A deterministic per-partition
+    budget governor meters them to ``images_per_pair`` skims per matched pair:
+    each pair funds ``images_per_pair`` of budget, each skim spends one. It
+    self-adjusts to the unknown per-cell match density d — below the break-even
+    it caps the skim at the ratio and drops the surplus discards; above it,
+    supply runs short and every discard is emitted (no RNG, coarse determinism;
+    ADR 0011 §Determinism model).
     """
     import fsspec
     import pyarrow as pa
@@ -324,9 +335,17 @@ def _paired_examples(image_paths, match_json, spectra_paths):
                 matched["object_id"][j].as_py(): j for j in range(matched.num_rows)
             }
         )
+        image_budget = 0.0  # leaky bucket: each pair funds images_per_pair skims
         for row in _pq_rows(image_path):
             spectrum_id = wanted.get(str(row["object_id"]))
-            if spectrum_id is None:
+            if spectrum_id is None:  # unmatched: skim as image-only if the ratio allows
+                if image_budget >= 1.0:
+                    image_budget -= 1.0
+                    skimmed = dict(row)
+                    skimmed["spectrum"] = None
+                    for key in ("Z", "ZERR", "ZWARN"):
+                        skimmed[key] = None
+                    yield skimmed
                 continue
             j = spectra.get(str(spectrum_id))
             if j is None:  # index newer than the catalog revision
@@ -336,6 +355,7 @@ def _paired_examples(image_paths, match_json, spectra_paths):
             merged["spectrum"] = spectrum_row["spectrum"]
             for key in ("Z", "ZERR", "ZWARN"):
                 merged[key] = spectrum_row.get(key)
+            image_budget += images_per_pair
             yield merged
 
 
@@ -361,7 +381,7 @@ def _to_union(source, features, absent: str):
     return source.map(lambda row: {**row, absent: None}, features=features)
 
 
-def pairs_dataset(image_paths, match_json, spectra_paths, features):
+def pairs_dataset(image_paths, match_json, spectra_paths, features, images_per_pair=0.0):
     from datasets import IterableDataset
 
     return IterableDataset.from_generator(
@@ -370,12 +390,20 @@ def pairs_dataset(image_paths, match_json, spectra_paths, features):
             "image_paths": image_paths,
             "match_json": match_json,  # plain strings so datasets can shard them
             "spectra_paths": spectra_paths,
+            "images_per_pair": images_per_pair,  # scalar: passed to every shard
         },
         features=features,
     )
 
 
-def _pairs_dataset(match_index: str, split: str, seed: int, epoch: int, num_shards: int):
+def _pairs_dataset(
+    match_index: str,
+    split: str,
+    seed: int,
+    epoch: int,
+    num_shards: int,
+    images_per_pair: float = 0.0,
+):
     image_files, image_by_cell = catalog_files(IMAGES_CATALOG)
     spectra_files, spectra_by_cell = catalog_files(SPECTRA_CATALOG)
     matches, spectra_of = load_match_index(match_index)
@@ -395,6 +423,7 @@ def _pairs_dataset(match_index: str, split: str, seed: int, epoch: int, num_shar
         match_json=[json.dumps(matches[c]) for c in cells],
         spectra_paths=[[spectra_by_cell[s] for s in sorted(spectra_of[c])] for c in cells],
         features=union_features(image_files[0], spectra_files[0]),
+        images_per_pair=images_per_pair,
     )
 
 
@@ -429,6 +458,7 @@ def open_stream(
     shard: int = 0,
     num_shards: int = 1,
     match_index: str | None = None,
+    skim_images: bool = False,
 ):
     """The live corpus as one interleaved ``datasets.IterableDataset``.
 
@@ -454,14 +484,29 @@ def open_stream(
 
     # every source is cast to one union schema (Arrow-native, image ∪ spectrum)
     # so interleave aligns cleanly; decode to numpy runs LAST, only on iteration
-    parts = [
-        _to_union(_parquet_stream(image_files), features, absent="spectrum"),
-        _to_union(_parquet_stream(spectra_files), features, absent="image"),
-    ]
-    weights = list(DEFAULT_WEIGHTS[:2])
-    if match_index is not None:
-        parts.append(_pairs_dataset(match_index, split, seed, epoch, num_shards))
-        weights = list(DEFAULT_WEIGHTS)
+    spectra_part = _to_union(_parquet_stream(spectra_files), features, absent="image")
+    if match_index is not None and skim_images:
+        # ADR 0011: one scan of the matched partitions yields BOTH pairs and
+        # image-only records (from otherwise-discarded unmatched rows), so the
+        # standalone images-catalog download is dropped entirely. images:pairs
+        # is governed to the 0.60:0.25 ratio inside the scan, so the scan
+        # carries their combined weight; spectra stay single-sourced (no
+        # spectra skim — see §Determinism model / Consequences).
+        images_per_pair = DEFAULT_WEIGHTS[0] / DEFAULT_WEIGHTS[2]
+        parts = [
+            _pairs_dataset(match_index, split, seed, epoch, num_shards, images_per_pair),
+            spectra_part,
+        ]
+        weights = [DEFAULT_WEIGHTS[0] + DEFAULT_WEIGHTS[2], DEFAULT_WEIGHTS[1]]
+    else:
+        parts = [
+            _to_union(_parquet_stream(image_files), features, absent="spectrum"),
+            spectra_part,
+        ]
+        weights = list(DEFAULT_WEIGHTS[:2])
+        if match_index is not None:
+            parts.append(_pairs_dataset(match_index, split, seed, epoch, num_shards))
+            weights = list(DEFAULT_WEIGHTS)
 
     stream = interleaved(parts, weights, seed, shard, num_shards)
     # one line per (re)build: the silent failure mode here is a source whose

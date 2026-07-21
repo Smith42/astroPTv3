@@ -144,6 +144,85 @@ def test_pairs_generator_reads_survive_dataloader_workers():
     assert sum(1 for _ in loader) == solo
 
 
+# -- image-only skim (ADR 0011) ----------------------------------------------
+
+
+def _skim_records(image_paths, match, images_per_pair):
+    """Decode a demux scan over ``image_paths`` -> (object_id, has_image,
+    has_spectrum) per record, so both the mix and the exact stream are checkable."""
+    import json
+
+    from fake_mmu import _fixtures
+
+    fx = _fixtures()
+    features = union_features(fx["images"][0], fx["spectra"][0])
+    ds = pairs_dataset(
+        image_paths=image_paths,
+        match_json=[json.dumps(match)] * len(image_paths),
+        spectra_paths=[fx["spectra"]] * len(image_paths),
+        features=features,
+        images_per_pair=images_per_pair,
+    )
+    return [
+        (r["object_id"], r.get("image") is not None, r.get("spectrum") is not None)
+        for r in ds.map(decode_record)
+    ]
+
+
+def test_pairs_source_without_skim_yields_only_pairs():
+    """Default images_per_pair=0: the scan drops every unmatched row, as before."""
+    from fake_mmu import _fixtures
+
+    recs = _skim_records(_fixtures()["images"], _fixtures()["match"], images_per_pair=0.0)
+    assert recs  # non-empty
+    assert {(im, sp) for _, im, sp in recs} == {(True, True)}  # pairs only, no skim
+
+
+def test_image_skim_yields_image_only_from_discards():
+    """With skim on, unmatched rows come back as image-only records; pairs stay."""
+    from fake_mmu import _fixtures
+
+    kinds_ = {(im, sp) for _, im, sp in _skim_records(
+        _fixtures()["images"], _fixtures()["match"], images_per_pair=2.4)}
+    assert (True, False) in kinds_   # image-only, skimmed from the discards
+    assert (True, True) in kinds_    # pairs still emitted
+    assert (False, True) not in kinds_  # the scan never emits spectrum-only
+
+
+def test_image_skim_governor_caps_surplus_discards():
+    """At low match density the governor caps the skim near the ratio and drops
+    the rest — it does NOT dump every downloaded discard into the stream."""
+    from fake_mmu import _fixtures
+
+    fx = _fixtures()
+    sparse = dict(list(fx["match"].items())[:3])  # 3 pairs, ~21 discards available
+    recs = _skim_records(fx["images"], sparse, images_per_pair=2.4)
+    pairs = sum(1 for _, im, sp in recs if im and sp)
+    images = sum(1 for _, im, sp in recs if im and not sp)
+    assert pairs == 3
+    assert images < 21          # surplus discards dropped, not all emitted
+    assert 3 <= images <= 3 * 3  # governed to ~2.4:1 (per-partition flooring)
+
+
+def test_image_skim_is_deterministic():
+    """The budget governor is a pure counter — same scan, identical stream."""
+    from fake_mmu import _fixtures
+
+    fx = _fixtures()
+    a = _skim_records(fx["images"], fx["match"], images_per_pair=2.4)
+    b = _skim_records(fx["images"], fx["match"], images_per_pair=2.4)
+    assert a == b
+
+
+def test_skim_open_stream_drops_standalone_images_and_keeps_all_kinds():
+    """Assembled skim corpus: image-only draws now come from the scan (there is
+    no standalone images source), spectra stay single-sourced, pairs present."""
+    got = kinds(fake_open_stream(seed=0, match_index="present", skim_images=True), 300)
+    assert (True, False) in got   # image-only, from the scan's discards
+    assert (False, True) in got   # spectra
+    assert (True, True) in got    # pairs
+
+
 # -- weighting + resume (real datasets interleave, offline) ------------------
 
 

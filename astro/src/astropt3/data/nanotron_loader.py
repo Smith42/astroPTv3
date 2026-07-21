@@ -165,6 +165,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         *,
         data_root: str = SYNTHETIC_ROOT,
         match_index: str | None = None,
+        skim_images: bool = False,
         synthetic_image_only_fraction: float = 0.3,
         synthetic_spectrum_only_fraction: float = 0.0,
         rank: int = 0,
@@ -190,6 +191,9 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         # ADR 0006: the precomputed crossmatch; without it there is no pairs
         # source and the corpus is images + spectra only
         self.match_index = match_index
+        # ADR 0011: skim image-only records from the crossmatch scan's discards
+        # and drop the standalone images download (needs a match_index)
+        self.skim_images = skim_images
         self.synthetic_image_only_fraction = synthetic_image_only_fraction
         self.synthetic_spectrum_only_fraction = synthetic_spectrum_only_fraction
         self.rank = rank
@@ -299,6 +303,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 shard=self.rank,
                 num_shards=self.world_size,
                 match_index=self.match_index,
+                skim_images=self.skim_images,
             )
             if epoch == start_epoch and stream_state is not None:
                 stream.load_state_dict(stream_state)
@@ -494,6 +499,7 @@ def build_astropt3_dataloader(
         sequence_length,
         data_root=dataset_args.data_root,
         match_index=getattr(dataset_args, "match_index", None),
+        skim_images=getattr(dataset_args, "skim_images", False),
         synthetic_image_only_fraction=getattr(
             dataset_args, "synthetic_image_only_fraction", 0.3
         ),

@@ -144,21 +144,47 @@ def fixed_records(*, split="train", seed=0, epoch=0, shard=0, num_shards=1, matc
 
 
 def fake_open_stream(
-    *, split="train", seed=0, epoch=0, shard=0, num_shards=1, match_index=None, only=None
+    *,
+    split="train",
+    seed=0,
+    epoch=0,
+    shard=0,
+    num_shards=1,
+    match_index=None,
+    only=None,
+    skim_images=False,
 ):
     """``only`` restricts the corpus to a single source; ``match_index`` mirrors
-    the real signature — None drops the pairs source, as it does live."""
+    the real signature — None drops the pairs source, as it does live.
+    ``skim_images`` mirrors ADR 0011: the scan feeds image-only draws and the
+    standalone images source is dropped."""
     import json
 
     fx = _fixtures()
+
+    image_files = shuffled(split_files(fx["images"], split), seed, epoch)
+    spectra_files = shuffled(split_files(fx["spectra"], split), seed, epoch)
+    features = union_features(image_files[0], spectra_files[0])
+
+    if match_index is not None and skim_images:  # ADR 0011 image-only skim
+        ipp = DEFAULT_WEIGHTS[0] / DEFAULT_WEIGHTS[2]
+        scan = pairs_dataset(
+            image_paths=image_files,
+            match_json=[json.dumps(fx["match"])] * len(image_files),
+            spectra_paths=[spectra_files] * len(image_files),
+            features=features,
+            images_per_pair=ipp,
+        )
+        spectra = _to_union(_parquet_stream(spectra_files), features, absent="image")
+        weights = [DEFAULT_WEIGHTS[0] + DEFAULT_WEIGHTS[2], DEFAULT_WEIGHTS[1]]
+        stream = interleaved([scan, spectra], weights, seed, shard, num_shards)
+        return stream.map(decode_record)
+
     names = list(SOURCE_NAMES) if match_index is not None else list(SOURCE_NAMES[:2])
     weights = list(DEFAULT_WEIGHTS[: len(names)])
     if only is not None:
         weights = [1.0 if n == only else 0.0 for n in names]
 
-    image_files = shuffled(split_files(fx["images"], split), seed, epoch)
-    spectra_files = shuffled(split_files(fx["spectra"], split), seed, epoch)
-    features = union_features(image_files[0], spectra_files[0])
     parts = [
         _to_union(_parquet_stream(image_files), features, absent="spectrum"),
         _to_union(_parquet_stream(spectra_files), features, absent="image"),
