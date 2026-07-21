@@ -1,16 +1,20 @@
 """Stream MMU catalogs natively at train time (ADR 0006).
 
-Replaces the local reshard: three sources are streamed live from the HF hub
-and interleaved per record, with no ``PILOT_FEATURES`` in the middle — hub
-rows decode straight into the record dicts ``ObjectSequencer`` eats.
+Replaces the local reshard: the MMU catalogs are streamed live from the HF
+hub and interleaved per record, with no ``PILOT_FEATURES`` in the middle —
+hub rows decode straight into the record dicts ``ObjectSequencer`` eats.
 
-- **images-only** — the LegacySurvey catalog as single-modality image rows,
-- **spectra-only** — the DESI catalog as single-modality spectrum rows,
-- **pairs** — image x spectrum matches, joined through a precomputed
-  match-index of ids (``scripts/build_match_index.py``).
+With a match index (``scripts/build_match_index.py``) the corpus is two
+sources (ADR 0011, adopted after the 2026-07-21 A/B):
 
-A matched object's image appears both standalone and paired; per ADR 0006 §1
-that redundancy is accepted.
+- **the crossmatch scan** — one pass over the matched LegacySurvey
+  partitions demuxed into image x spectrum **pairs** plus **image-only**
+  records skimmed from the otherwise-discarded unmatched rows, governed to
+  the 0.60:0.25 images:pairs ratio (so there is no standalone images
+  download),
+- **spectra-only** — the DESI catalog as single-modality spectrum rows.
+
+Without a match index the corpus degrades to images + spectra.
 
 The transport is **HF ``datasets`` streaming**, not a hand-rolled reader.
 ``hats`` enumerates each catalog's parquet partitions (deterministic HEALPix
@@ -458,7 +462,6 @@ def open_stream(
     shard: int = 0,
     num_shards: int = 1,
     match_index: str | None = None,
-    skim_images: bool = False,
 ):
     """The live corpus as one interleaved ``datasets.IterableDataset``.
 
@@ -485,13 +488,14 @@ def open_stream(
     # every source is cast to one union schema (Arrow-native, image ∪ spectrum)
     # so interleave aligns cleanly; decode to numpy runs LAST, only on iteration
     spectra_part = _to_union(_parquet_stream(spectra_files), features, absent="image")
-    if match_index is not None and skim_images:
-        # ADR 0011: one scan of the matched partitions yields BOTH pairs and
-        # image-only records (from otherwise-discarded unmatched rows), so the
-        # standalone images-catalog download is dropped entirely. images:pairs
-        # is governed to the 0.60:0.25 ratio inside the scan, so the scan
-        # carries their combined weight; spectra stay single-sourced (no
-        # spectra skim — see §Determinism model / Consequences).
+    if match_index is not None:
+        # ADR 0011 (adopted after the 2026-07-21 A/B): one scan of the matched
+        # partitions yields BOTH pairs and image-only records (from
+        # otherwise-discarded unmatched rows), so the standalone images-catalog
+        # download is dropped entirely. images:pairs is governed to the
+        # 0.60:0.25 ratio inside the scan, so the scan carries their combined
+        # weight; spectra stay single-sourced (no spectra skim — see
+        # §Determinism model / Consequences).
         images_per_pair = DEFAULT_WEIGHTS[0] / DEFAULT_WEIGHTS[2]
         parts = [
             _pairs_dataset(match_index, split, seed, epoch, num_shards, images_per_pair),
@@ -504,9 +508,6 @@ def open_stream(
             spectra_part,
         ]
         weights = list(DEFAULT_WEIGHTS[:2])
-        if match_index is not None:
-            parts.append(_pairs_dataset(match_index, split, seed, epoch, num_shards))
-            weights = list(DEFAULT_WEIGHTS)
 
     stream = interleaved(parts, weights, seed, shard, num_shards)
     # one line per (re)build: the silent failure mode here is a source whose

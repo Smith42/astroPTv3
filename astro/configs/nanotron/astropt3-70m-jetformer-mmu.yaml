@@ -4,6 +4,11 @@
 # fresh run dir because the scalar heads change the model shape (nopairs
 # checkpoints cannot resume here).
 #
+# SUPERSEDED as the run of record by astropt3-70m-jetformer-mmu-skim after the
+# 2026-07-21 ADR 0011 A/B. Relaunching this run will load its weights but
+# CANNOT resume its saved stream position: the skim is now the only assembly
+# with a match_index, and the loader rejects the pre-skim stream state.
+#
 # The redshift linear probe works on this run (paired records carry image
 # tokens + Z).
 #

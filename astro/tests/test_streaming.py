@@ -15,7 +15,6 @@ import pytest
 
 from astropt3.data.streaming import (
     aligned,
-    DEFAULT_WEIGHTS,
     decode_record,
     pairs_dataset,
     shuffled,
@@ -217,7 +216,7 @@ def test_image_skim_is_deterministic():
 def test_skim_open_stream_drops_standalone_images_and_keeps_all_kinds():
     """Assembled skim corpus: image-only draws now come from the scan (there is
     no standalone images source), spectra stay single-sourced, pairs present."""
-    got = kinds(fake_open_stream(seed=0, match_index="present", skim_images=True), 300)
+    got = kinds(fake_open_stream(seed=0, match_index="present"), 300)
     assert (True, False) in got   # image-only, from the scan's discards
     assert (False, True) in got   # spectra
     assert (True, True) in got    # pairs
@@ -231,19 +230,6 @@ def test_weights_are_realized_per_record():
     got = kinds(fake_open_stream(seed=0), 2000)
     img = got.count((True, False)) / len(got)
     assert img == pytest.approx(0.8, abs=0.05)
-
-
-def test_three_source_mix_with_a_match_index():
-    got = kinds(fake_open_stream(seed=0, match_index="present"), 2000)
-    frac = [
-        got.count((True, False)) / len(got),   # images-only
-        got.count((False, True)) / len(got),   # spectra-only
-        got.count((True, True)) / len(got),    # paired
-    ]
-    # the fake corpus is tiny (all_exhausted caps it ~90 records), so this is
-    # loose — it checks the ordering and rough magnitude, not the exact mix
-    assert frac == pytest.approx(DEFAULT_WEIGHTS, abs=0.08)
-    assert frac[0] > frac[2] > frac[1]  # images > pairs > spectra
 
 
 def test_resume_reproduces_the_record_sequence():
@@ -320,8 +306,9 @@ def test_match_index_round_trips(tmp_path):
 
 
 # The pairs join (_paired_examples) is exercised for real by
-# test_three_source_mix_with_a_match_index (paired records appear at the right
-# frequency) and by the live network test below.
+# test_skim_open_stream_drops_standalone_images_and_keeps_all_kinds (all
+# record kinds flow through the assembled corpus) and by the live network
+# test below.
 
 
 # -- live hub (network) ------------------------------------------------------

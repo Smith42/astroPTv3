@@ -1,9 +1,16 @@
 # ADR 0011: Skim single-modality records from the crossmatch scans
 
-- **Status:** In progress (2026-07-21) — design accepted for validation,
-  **not yet adopted**; the offline prototype gate below decides. Amended
-  2026-07-21 to **relax the skimmed train stream to coarse determinism**
-  (partition-level, not micro-batch) — see §Determinism model.
+- **Status:** **Adopted** (2026-07-21) — the A/B on DeltaAI passed (matched
+  445-iteration fresh-start window vs `astropt3-70m-jetformer-mmu`: stalls
+  ≥5 s 11.0% vs 12.1%, mean step 2897 vs 3178 ms, plus the structural halving
+  of hub bytes), and the skim is now the ONLY assembly whenever a
+  `match_index` is present: the `skim_images` flag and the 3-source
+  interleave were removed. Pre-skim stream states (e.g. the
+  `astropt3-70m-jetformer-mmu` baseline's checkpoints) can no longer resume
+  their stream position — the loader rejects them with a clear error; weights
+  remain loadable. Amended 2026-07-21 to **relax the skimmed train stream to
+  coarse determinism** (partition-level, not micro-batch) — see §Determinism
+  model.
 - **Date:** 2026-07-21
 - **References:**
   - [ADR 0006](0006-stream-mmu-upstream.md) — the streamed three-source

@@ -1,9 +1,9 @@
-# ADR 0011 A/B arm of astropt3-70m-jetformer-mmu: identical run except
-# skim_images: true — the crossmatch scan also emits its unmatched image rows
-# as image-only records, dropping the standalone images-catalog download.
-# Fresh start (own empty run dir), same seed/schedule as the baseline.
-# Compare the fraction of iterations with time_per_iteration_ms >= 5000
-# (baseline: 12.2% at step 2641) and RX bandwidth — not tokens/sec.
+# ADR 0011 A/B arm of astropt3-70m-jetformer-mmu — PASSED 2026-07-21 (matched
+# 445-iter window: stalls >=5s 11.0% vs 12.1%, mean step 2897 vs 3178 ms) and
+# the skim became the only assembly whenever match_index is set, so this
+# config no longer needs a flag: the crossmatch scan emits its unmatched
+# image rows as image-only records and there is no standalone images-catalog
+# download. This run continues as the streaming run of record.
 general:
   project: astropt3
   run: astropt3-70m-jetformer-mmu-skim
@@ -116,7 +116,6 @@ data_stages:
       dataset:
         data_root: mmu
         match_index: hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
-        skim_images: true  # ADR 0011: image-only skim, drops the standalone images download
         object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-skim/objects.log
       seed: 42
       # 6/rank (12 total): 8/rank saturated gpu5's 1 Gbit NIC hard enough that

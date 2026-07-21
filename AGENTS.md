@@ -47,10 +47,16 @@ stages is implicit and easy to break, so understand it before editing:
    of 14M; spectrum-only rows are the non-crossmatched ZWARN==0 DESI
    spectra, ADR 0005). Real records are **streamed live from the HF hub**
    by `data/streaming.py` (ADR 0006, which deleted the local reshard and
-   its `PILOT_FEATURES` schema): three HATS sources — images-only,
-   spectra-only, and the `how="inner"` crossmatch — interleaved **per
-   record** by fixed weights (0.60/0.15/0.25, provisional) using a repeating
-   draw pattern, never a sampler, so no RNG state is ever checkpointed.
+   its `PILOT_FEATURES` schema): with a match index, two HATS sources —
+   the **crossmatch scan** (ADR 0011, adopted 2026-07-21: one pass over the
+   matched image partitions demuxed into pairs plus image-only records
+   skimmed from the unmatched discards, governed to the 0.60:0.25
+   images:pairs ratio — no standalone images download) and **spectra-only**
+   — interleaved **per record** by fixed weights (0.85/0.15, from the
+   provisional 0.60/0.15/0.25 source mix) using a repeating draw pattern,
+   never a sampler, so no RNG state is ever checkpointed. Pre-skim
+   (3-source) stream states cannot resume — the loader rejects them;
+   weights still load.
    `row_to_record` is the sole decode adapter over MMU-native rows. Reads are
    `hats` (partition enumeration + `hf://` paths) + `pyarrow` (row groups) —
    **no lsdb at train time**; the crossmatch is precomputed offline by

@@ -165,7 +165,6 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         *,
         data_root: str = SYNTHETIC_ROOT,
         match_index: str | None = None,
-        skim_images: bool = False,
         synthetic_image_only_fraction: float = 0.3,
         synthetic_spectrum_only_fraction: float = 0.0,
         rank: int = 0,
@@ -191,9 +190,6 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         # ADR 0006: the precomputed crossmatch; without it there is no pairs
         # source and the corpus is images + spectra only
         self.match_index = match_index
-        # ADR 0011: skim image-only records from the crossmatch scan's discards
-        # and drop the standalone images download (needs a match_index)
-        self.skim_images = skim_images
         self.synthetic_image_only_fraction = synthetic_image_only_fraction
         self.synthetic_spectrum_only_fraction = synthetic_spectrum_only_fraction
         self.rank = rank
@@ -211,6 +207,19 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self.collator = PackedCollator(config, seq_len=seq_len)
 
     # -- checkpoint state ---------------------------------------------------
+
+    @property
+    def _skim(self) -> bool:
+        """Whether the stream uses the ADR 0011 skim assembly (the only MMU
+        assembly with a match index, since the 2026-07-21 A/B). Kept in the
+        stream state under the historical ``skim_images`` key so states saved
+        by the flag-era code load unchanged."""
+        from .streaming import resolve_match_index
+
+        return (
+            self.data_root == MMU_ROOT
+            and resolve_match_index(self.match_index) is not None
+        )
 
     def state_dict(self) -> dict | None:
         """Stream position at the start of the current partial row.
@@ -231,7 +240,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             "epoch": 0,
             "stream_state": None,
             "data_root": self.data_root,
-            "skim_images": self.skim_images,
+            "skim_images": self._skim,
         }
 
     def load_state_dict(self, state: dict | None) -> None:
@@ -245,14 +254,15 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         # skim on/off changes the source assembly (3 sources map-first vs 2
         # generator-first), so a cross-assembly stream position cannot map —
         # loading it dies deep in datasets with KeyError: 'examples_iterable'.
-        # States saved before this key existed were all non-skim.
-        if bool(state.get("skim_images", False)) != self.skim_images:
+        # States saved before this key existed were all non-skim (pre-ADR 0011
+        # runs, e.g. the astropt3-70m-jetformer-mmu baseline).
+        if bool(state.get("skim_images", False)) != self._skim:
             raise ValueError(
                 f"dataset state was saved with skim_images="
-                f"{bool(state.get('skim_images', False))}, this stream uses "
-                f"skim_images={self.skim_images}; the source assemblies differ "
-                "so the stream position cannot be restored (is "
-                "resume_checkpoint_path pointing at the other run?)"
+                f"{bool(state.get('skim_images', False))}, this stream's "
+                f"assembly is skim_images={self._skim}; the source assemblies "
+                "differ so the stream position cannot be restored (a pre-skim "
+                "run's stream state cannot resume under the ADR 0011 corpus)"
             )
         self._resume_state = dict(state)
 
@@ -263,7 +273,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             "epoch": self._epoch,
             "stream_state": None if self._stream is None else self._stream.state_dict(),
             "data_root": self.data_root,
-            "skim_images": self.skim_images,
+            "skim_images": self._skim,
         }
 
     # -- record sources -----------------------------------------------------
@@ -317,7 +327,6 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 shard=self.rank,
                 num_shards=self.world_size,
                 match_index=self.match_index,
-                skim_images=self.skim_images,
             )
             if epoch == start_epoch and stream_state is not None:
                 stream.load_state_dict(stream_state)
@@ -513,7 +522,6 @@ def build_astropt3_dataloader(
         sequence_length,
         data_root=dataset_args.data_root,
         match_index=getattr(dataset_args, "match_index", None),
-        skim_images=getattr(dataset_args, "skim_images", False),
         synthetic_image_only_fraction=getattr(
             dataset_args, "synthetic_image_only_fraction", 0.3
         ),

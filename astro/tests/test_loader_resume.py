@@ -123,8 +123,9 @@ def test_load_rejects_cross_skim_state(tiny_config):
     # one cannot restore into the other — this is the 2026-07-21 crash, where
     # resume_checkpoint_path pointed at the non-skim baseline and the load
     # died as KeyError: 'examples_iterable' inside a loader worker. States
-    # saved before the key existed (the baseline's) count as skim_images=False.
-    skim = make_stream(tiny_config, "mmu", match_index="present", skim_images=True)
+    # saved before the key existed (pre-skim runs) count as skim_images=False;
+    # with a match_index the assembly is always skim now (ADR 0011 adopted).
+    skim = make_stream(tiny_config, "mmu", match_index="present")
     legacy_nonskim_state = {
         "records": 0,
         "epoch": 0,

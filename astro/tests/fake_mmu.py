@@ -152,12 +152,11 @@ def fake_open_stream(
     num_shards=1,
     match_index=None,
     only=None,
-    skim_images=False,
 ):
-    """``only`` restricts the corpus to a single source; ``match_index`` mirrors
-    the real signature — None drops the pairs source, as it does live.
-    ``skim_images`` mirrors ADR 0011: the scan feeds image-only draws and the
-    standalone images source is dropped."""
+    """``only`` restricts the corpus to a single standalone source (a test
+    fixture, not a prod assembly); ``match_index`` mirrors the real signature —
+    with it the corpus is the ADR 0011 skim assembly (scan + spectra), without
+    it images + spectra, as live."""
     import json
 
     fx = _fixtures()
@@ -166,7 +165,7 @@ def fake_open_stream(
     spectra_files = shuffled(split_files(fx["spectra"], split), seed, epoch)
     features = union_features(image_files[0], spectra_files[0])
 
-    if match_index is not None and skim_images:  # ADR 0011 image-only skim
+    if match_index is not None and only is None:  # ADR 0011 skim assembly
         ipp = DEFAULT_WEIGHTS[0] / DEFAULT_WEIGHTS[2]
         scan = pairs_dataset(
             image_paths=image_files,
