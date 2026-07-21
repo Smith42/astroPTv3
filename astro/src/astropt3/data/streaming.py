@@ -202,6 +202,19 @@ def shuffled(files: list, seed: int, epoch: int) -> list:
     return [files[i] for i in order]
 
 
+def aligned(files: list, num_shards: int) -> list:
+    """Truncate to a multiple of ``num_shards``.
+
+    ``split_dataset_by_node`` only shard-splits when every source's shard
+    count divides evenly; otherwise datasets falls back to example-stepping,
+    which collapses ``n_shards`` to 1 and clamps the DataLoader to a single
+    worker (the pairs source hit this: 165 train cells % dp 2 != 0). Call
+    AFTER :func:`shuffled` so the <= num_shards-1 dropped partitions rotate
+    with the epoch.
+    """
+    return files[: len(files) - len(files) % num_shards] if num_shards > 1 else files
+
+
 # -- match index -------------------------------------------------------------
 
 
@@ -319,7 +332,7 @@ def pairs_dataset(image_paths, match_json, spectra_paths, features):
     )
 
 
-def _pairs_dataset(match_index: str, split: str, seed: int, epoch: int):
+def _pairs_dataset(match_index: str, split: str, seed: int, epoch: int, num_shards: int):
     image_files, image_by_cell = catalog_files(IMAGES_CATALOG)
     spectra_files, spectra_by_cell = catalog_files(SPECTRA_CATALOG)
     matches, spectra_of = load_match_index(match_index)
@@ -332,7 +345,7 @@ def _pairs_dataset(match_index: str, split: str, seed: int, epoch: int):
             f"{IMAGES_CATALOG} (first: {missing[0]}); the index was built against "
             "a different catalog revision — rebuild it"
         )
-    cells = shuffled(split_files(cells, split), seed, epoch)
+    cells = aligned(shuffled(split_files(cells, split), seed, epoch), num_shards)
 
     return pairs_dataset(
         image_paths=[image_by_cell[c] for c in cells],
@@ -386,8 +399,14 @@ def open_stream(
     """
     match_index = resolve_match_index(match_index)
 
-    image_files = shuffled(split_files(catalog_files(IMAGES_CATALOG)[0], split), seed, epoch)
-    spectra_files = shuffled(split_files(catalog_files(SPECTRA_CATALOG)[0], split), seed, epoch)
+    image_files = aligned(
+        shuffled(split_files(catalog_files(IMAGES_CATALOG)[0], split), seed, epoch),
+        num_shards,
+    )
+    spectra_files = aligned(
+        shuffled(split_files(catalog_files(SPECTRA_CATALOG)[0], split), seed, epoch),
+        num_shards,
+    )
     features = union_features(image_files[0], spectra_files[0])
 
     # every source is cast to one union schema (Arrow-native, image ∪ spectrum)
@@ -398,7 +417,7 @@ def open_stream(
     ]
     weights = list(DEFAULT_WEIGHTS[:2])
     if match_index is not None:
-        parts.append(_pairs_dataset(match_index, split, seed, epoch))
+        parts.append(_pairs_dataset(match_index, split, seed, epoch, num_shards))
         weights = list(DEFAULT_WEIGHTS)
 
     stream = interleaved(parts, weights, seed, shard, num_shards)

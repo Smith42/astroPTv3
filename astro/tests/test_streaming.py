@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from astropt3.data.streaming import (
+    aligned,
     DEFAULT_WEIGHTS,
     decode_record,
     shuffled,
@@ -105,6 +106,15 @@ def test_shuffled_is_deterministic_and_epoch_dependent():
     assert a == shuffled(files, seed=0, epoch=0)  # reproducible
     assert a != shuffled(files, seed=0, epoch=1)  # reshuffled per epoch
     assert sorted(a) == sorted(files)  # a permutation, nothing lost
+
+
+def test_aligned_truncates_to_a_shard_multiple():
+    """An odd shard count (pairs: 165 % dp 2) silently collapses datasets'
+    rank/worker split to one shard — aligned() must prevent it."""
+    files = [f"f{i}" for i in range(165)]
+    assert len(aligned(files, 2)) == 164
+    assert aligned(files, 1) == files  # single shard: keep everything
+    assert aligned(files, 2) == files[:164]  # a prefix, order untouched
 
 
 # -- weighting + resume (real datasets interleave, offline) ------------------
