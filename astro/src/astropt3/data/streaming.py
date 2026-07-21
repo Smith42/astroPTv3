@@ -277,7 +277,12 @@ def _pq_rows(path: str):
     with fsspec.open(path, "rb") as f:
         pf = pq.ParquetFile(f)
         for i in range(pf.num_row_groups):
-            yield from pf.read_row_group(i).to_pylist()
+            table = pf.read_row_group(i)
+            # convert one row at a time: a bulk to_pylist of a 56 MB image row
+            # group is ~0.5 GB of Python objects, and the job runs under a
+            # 96 GiB slurm cgroup shared by 16 workers
+            for j in range(table.num_rows):
+                yield table.slice(j, 1).to_pylist()[0]
 
 
 def _paired_examples(image_paths, match_json, spectra_paths):
@@ -289,24 +294,44 @@ def _paired_examples(image_paths, match_json, spectra_paths):
     datasets shards on, so the three are parallel — one entry per matched image
     partition. Matched spectrum rows for one image partition are bounded by the
     spectroscopic side (in practice one spectrum partition per image
-    partition), so they are read once into an id -> row map.
+    partition), so they are read once into an id -> row map — held as a
+    FILTERED ARROW TABLE, not Python dicts: ~750 spectrum rows as Python
+    objects is ~0.75 GB resident PER WORKER, which the 96 GiB slurm cgroup
+    cannot afford 16 times over. Rows are converted one at a time on match.
     """
+    import fsspec
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
     for image_path, raw, spectrum_paths in zip(image_paths, match_json, spectra_paths):
         wanted = json.loads(raw)  # image_id -> spectrum_id
-        needed = set(wanted.values())
-        spectra = {}
+        needed = pa.array({str(v) for v in wanted.values()}, type=pa.string())
+        tables = []
         for path in spectrum_paths:
-            for row in _pq_rows(path):
-                key = str(row["object_id"])
-                if key in needed:
-                    spectra[key] = row
+            with fsspec.open(path, "rb") as f:
+                pf = pq.ParquetFile(f)
+                for i in range(pf.num_row_groups):
+                    t = pf.read_row_group(i)
+                    keep = pc.is_in(pc.cast(t["object_id"], pa.string()), needed)
+                    if pc.any(keep).as_py():
+                        tables.append(t.filter(keep))
+        matched = pa.concat_tables(tables) if tables else None
+        spectra = (
+            {}
+            if matched is None
+            else {
+                matched["object_id"][j].as_py(): j for j in range(matched.num_rows)
+            }
+        )
         for row in _pq_rows(image_path):
             spectrum_id = wanted.get(str(row["object_id"]))
             if spectrum_id is None:
                 continue
-            spectrum_row = spectra.get(str(spectrum_id))
-            if spectrum_row is None:  # index newer than the catalog revision
+            j = spectra.get(str(spectrum_id))
+            if j is None:  # index newer than the catalog revision
                 continue
+            spectrum_row = matched.slice(j, 1).to_pylist()[0]
             merged = dict(row)
             merged["spectrum"] = spectrum_row["spectrum"]
             for key in ("Z", "ZERR", "ZWARN"):
