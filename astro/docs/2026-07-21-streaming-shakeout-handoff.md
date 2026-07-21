@@ -129,3 +129,66 @@ Attempt 3 died at step 3989 on walltime. The ~240K tok/s readings at launch
 were never sustained — mean was ~4.6s/step from step 0. gpu5's 1 Gbit NIC is
 the hard ceiling. Full diagnosis, fix (workers back to 8), and relaunch
 guidance: [streaming throughput audit](2026-07-21-streaming-throughput-audit.md).
+
+## Update (2026-07-21 evening): pairs + scalars run, three bugs, healthy then SIGINT
+
+Moved from the nopairs shakeout to the **full corpus**: new run
+`astropt3-70m-jetformer-mmu` (config `astropt3-70m-jetformer-mmu.yaml`,
+launch `bash astro/scripts/launch_mmu_gpu5.sh` — the script now takes the run
+name as `$1`, defaulting to this run). It adds the crossmatched **pairs**
+source (published match index
+`hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet`,
+validated: 137,906 pairs across 173 image cells, 0 missing from the current
+catalog revision) at the ADR 0006 0.60/0.15/0.25 weights, plus the **ADR 0008
+scalar modalities** Z/ebv/photometry. Fresh run dir because the scalar heads
+change the model shape — the nopairs checkpoints cannot resume into it.
+
+Launching it surfaced **three streaming bugs**, all fixed and pushed
+(branch `adr-0006-stream-mmu-upstream`):
+
+1. **Shard count vs DP world size** (`f2fd5e0`). The pairs source has 165
+   train cells after the val split, and `165 % dp 2 != 0` tripped datasets'
+   example-stepping fallback: `n_shards` collapsed to 1, the loader clamped
+   to one worker. `aligned()` in `streaming.py` truncates each source's
+   shuffled train list to a multiple of `num_shards` (≤ dp−1 cells dropped,
+   rotating with the epoch shuffle).
+
+2. **Nested datasets streams inside DataLoader workers** (`a3a3860`, the real
+   clamp cause — #1 alone did not fix it). `_paired_examples` built inner
+   `load_dataset(streaming=True)` readers per partition, and datasets'
+   `_iter_pytorch` worker-splits **any** stream iterated inside a worker: each
+   inner single-shard reader landed on worker 0, and workers 1..N-1 silently
+   read empty streams — no pairs in 7 of 8 workers and an instantly-exhausted
+   pairs source (which also drove the earlier restart hot-loop). Inner reads
+   now use plain pyarrow row-group iteration (`_pq_rows`), which has no worker
+   magic. `open_stream` now logs per-source and combined `n_shards` on every
+   build so this class of failure is visible.
+
+3. **96 GiB slurm cgroup OOM** (`a0ed8ce`). The box has 502 GB but the job
+   runs under a 96 GiB cgroup (`memory.max` up the hierarchy; `oom_kill`
+   incremented). A bulk `to_pylist` of a 56 MB image row group is ~0.5 GB of
+   Python objects per worker, and the Python-dict spectra map was ~0.75 GB
+   resident per worker — 16 workers blew the cap. `_pq_rows` now converts one
+   row per `slice`, and `_paired_examples` holds matched spectra as a filtered
+   Arrow table, converting per-row only on a hit. Memory then sat flat at
+   ~81 GiB.
+
+After the three fixes the run was **healthy**: reached step 759 at ~0.59s/step
+(~110K tok/s/GPU, ~3.7s/step mean including the periodic ~15-25s DNS/link
+stalls — link-bound with pairs, as the audit predicted), memory flat ~81 GiB,
+all five losses converging (lm_loss ~ −20, images/spectra/Z/ebv/photometry all
+trending down), DNS blips ridden out by the rebuild retry.
+
+**It then died at 17:25:28 from an external SIGINT** (torch elastic root
+cause: "Signal 2 (SIGINT) received by PID 59987"), NOT a pipeline fault — rank
+0 was blocked in the dataloader queue and took the signal there
+(KeyboardInterrupt in `queue.get`). The streaming path itself was working. The
+SIGINT source is undetermined (manual interrupt or a stray signal to the
+process group); the slurm job still had ~21 h of its 24 h walltime.
+
+**State for relaunch:** checkpoint **512** exists with
+`dataset_state/dp_{0,1}.pt` saved at the current 8-worker layout, so
+`bash astro/scripts/launch_mmu_gpu5.sh` resumes cleanly from `latest.txt`
+(512). Resume must keep `num_loading_workers: 8` (the loader refuses a worker
+count mismatch). Only ~760 steps in, so a fresh restart also costs little and
+keeps the 20k curve contiguous — either is fine. GPUs are free.
