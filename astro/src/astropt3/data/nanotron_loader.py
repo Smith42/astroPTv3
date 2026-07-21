@@ -231,6 +231,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             "epoch": 0,
             "stream_state": None,
             "data_root": self.data_root,
+            "skim_images": self.skim_images,
         }
 
     def load_state_dict(self, state: dict | None) -> None:
@@ -241,6 +242,18 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 f"dataset state was saved for data_root={state['data_root']!r}, "
                 f"this stream reads {self.data_root!r}"
             )
+        # skim on/off changes the source assembly (3 sources map-first vs 2
+        # generator-first), so a cross-assembly stream position cannot map —
+        # loading it dies deep in datasets with KeyError: 'examples_iterable'.
+        # States saved before this key existed were all non-skim.
+        if bool(state.get("skim_images", False)) != self.skim_images:
+            raise ValueError(
+                f"dataset state was saved with skim_images="
+                f"{bool(state.get('skim_images', False))}, this stream uses "
+                f"skim_images={self.skim_images}; the source assemblies differ "
+                "so the stream position cannot be restored (is "
+                "resume_checkpoint_path pointing at the other run?)"
+            )
         self._resume_state = dict(state)
 
     def _snapshot(self, records: int) -> dict:
@@ -250,6 +263,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             "epoch": self._epoch,
             "stream_state": None if self._stream is None else self._stream.state_dict(),
             "data_root": self.data_root,
+            "skim_images": self.skim_images,
         }
 
     # -- record sources -----------------------------------------------------

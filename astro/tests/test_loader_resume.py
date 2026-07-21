@@ -118,6 +118,25 @@ def test_load_rejects_wrong_data_root(tiny_config):
         )
 
 
+def test_load_rejects_cross_skim_state(tiny_config):
+    # skim on/off changes the source assembly, so a stream position saved by
+    # one cannot restore into the other — this is the 2026-07-21 crash, where
+    # resume_checkpoint_path pointed at the non-skim baseline and the load
+    # died as KeyError: 'examples_iterable' inside a loader worker. States
+    # saved before the key existed (the baseline's) count as skim_images=False.
+    skim = make_stream(tiny_config, "mmu", match_index="present", skim_images=True)
+    legacy_nonskim_state = {
+        "records": 0,
+        "epoch": 0,
+        "stream_state": None,
+        "data_root": "mmu",
+    }
+    with pytest.raises(ValueError, match="skim_images"):
+        skim.load_state_dict(legacy_nonskim_state)
+    # own state round-trips
+    skim.load_state_dict(skim.state_dict())
+
+
 def test_rejects_a_stale_local_corpus_path(tiny_config):
     # ADR 0006 deleted the local reshard; a config still pointing at it must
     # fail loudly rather than silently stream something else
