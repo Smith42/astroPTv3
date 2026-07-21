@@ -127,11 +127,14 @@ data_stages:
         match_index: hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
         object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu/objects.log
       seed: 42
-      # 8/rank (16 total) to saturate gpu5's 1 Gbit NIC — the DNS races
-      # (ENOTFOUND + hub's close_session) are survived by the loader's
-      # rebuild-from-snapshot retry. Full arithmetic in
+      # 6/rank (12 total): 8/rank saturated gpu5's 1 Gbit NIC hard enough that
+      # interactive SSH logins to the box timed out, so back off to ~75% of the
+      # link and leave headroom for other users (the run goes proportionally
+      # slower — the link is the ceiling either way). The DNS races (ENOTFOUND
+      # + hub's close_session) are survived by the loader's rebuild-from-
+      # snapshot retry. Full arithmetic in
       # docs/2026-07-21-streaming-throughput-audit.md.
-      num_loading_workers: 8
+      num_loading_workers: 6
 optimizer:
   accumulate_grad_in_fp32: true
   clip_grad: 1.0
