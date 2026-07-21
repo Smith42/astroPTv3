@@ -1,4 +1,4 @@
-# ADR 0009: Skim single-modality records from the crossmatch scans
+# ADR 0011: Skim single-modality records from the crossmatch scans
 
 - **Status:** In progress (2026-07-21) — design accepted for validation,
   **not yet adopted**; the offline prototype gate below decides.
