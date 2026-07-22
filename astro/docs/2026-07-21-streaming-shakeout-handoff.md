@@ -192,3 +192,64 @@ process group); the slurm job still had ~21 h of its 24 h walltime.
 (512). Resume must keep `num_loading_workers: 8` (the loader refuses a worker
 count mismatch). Only ~760 steps in, so a fresh restart also costs little and
 keeps the 20k curve contiguous — either is fine. GPUs are free.
+
+## Update (2026-07-21 late): 6-worker rerun reveals a slow OOM leak in the stream
+
+Relaunched fresh at `num_loading_workers: 6` (commit `f6e5be6`) after the
+8-worker run saturated the 1 Gbit NIC hard enough to block interactive SSH to
+gpu5. The previous run dir is archived at
+`astropt3-70m-jetformer-mmu.sigint-759`. Six workers fixed the SSH problem
+(job memory started at ~62.5 GiB vs ~81 at eight) and trained cleanly to
+**step ~2121**, then a DataLoader worker was **OOM-killed** (`signal: Killed`;
+cgroup `oom_kill` 5 → 8). `max-restarts=0`, so the whole run tore down.
+Checkpoints 1…2000 saved (`latest.txt` = 2000).
+
+**This is a slow memory leak, not a worker-count problem.** Memory started at
+62.5 GiB and climbed to the 96 GiB cgroup cap over ~2100 steps. Fewer workers
+only lengthened the fuse (the 8-worker run never reached this — it died at 759
+to the external SIGINT, so no long run had previously exercised the pipeline
+past ~760 steps). Strong correlation with the **DNS-rebuild path**: 14
+"rebuilding the stream" events this run, accelerating toward the end (steps
+16, 49, 616, then a cluster at 1436/1494/1567/1873/1940/1948/1972/2115), OOM
+right after 2115. Hypothesis: each DNS blip triggers `open_stream` →
+`_mmu_records`' `open_records(prev_state)`, building a fresh `datasets`
+streaming pipeline (new interleave, new `HfFileSystem`, new prefetch threads
+in `RandomlyCyclingMultiSourcesExamplesIterable._iter_arrow`) while the
+abandoned one's background threads/buffers are never torn down — so RSS climbs
+per rebuild, which slows I/O, which makes DNS blip more, which rebuilds more.
+gpu5's flaky single-router DNS is the accelerant; a stable-DNS training
+cluster would rebuild rarely and may not hit this — so the leak may be
+gpu5-specific in practice, but it is a real unbounded-growth path either way.
+
+**NOT relaunched** — a resume from 2000 just re-OOMs ~2000 steps later. Needs
+one of: (a) confirm + fix the rebuild-path leak (explicitly tear down the old
+stream before rebuilding — datasets has no clean `close()` for an
+`IterableDataset`'s prefetch threads, so this needs care; a `gc.collect()`
+alone won't join threads), (b) cut rebuild frequency at the source (reduce
+gpu5 DNS blips — userspace resolver cache, or absorb blips inside
+huggingface_hub's own retry so they don't escalate to a full stream rebuild),
+or (c) accept it as gpu5-specific and move the real run to the training
+cluster. Confirm the leak is rebuild-driven vs a steady per-step leak before
+picking: an offline RSS-growth probe over repeated `open_stream` builds is the
+cheap check. GPUs are free; run dir `astropt3-70m-jetformer-mmu` holds ckpt
+2000 (6-worker layout — resume needs `num_loading_workers: 6`).
+
+### Resolution (2026-07-22): fixed — `gc.collect()` on the rebuild path
+
+Took option (a). The offline probe was built (drives the real `datasets`
+machinery over local parquet via `tests/fake_mmu.fake_open_stream`, CPU-only)
+and confirms the leak is rebuild-driven, 3 arms, growth over 40 rebuilds:
+**abandon +79.5 MiB / gc.collect() +1.9 MiB / close()+gc.collect() +1.8 MiB.**
+So `gc.collect()` alone bounds it — contra the note above, it need not *join*
+the abandoned threads, only reclaim their buffers, which the collector does.
+An explicit `records.close()` adds nothing here: on this path the stream
+generator has already died by exception (the `client has been closed`
+`RuntimeError`), so `.close()` is a no-op.
+
+Fix (`nanotron_loader.py` rebuild block): drop the last live reference
+(`self._stream = None`) and `gc.collect()` before reopening. Guarded by
+`tests/test_nanotron_loader.py::test_transient_error_rebuilds_and_reclaims`
+(first test to exercise the rebuild path: asserts recovery + reclaim). Resume
+from ckpt 2000 (`num_loading_workers: 6`) is unblocked. The leak was a real
+unbounded-growth path, so this helps any run, not just gpu5's flaky DNS —
+though a stable-DNS cluster rebuilds rarely and would rarely trigger it.

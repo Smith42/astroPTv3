@@ -50,6 +50,7 @@ caller (worker-prefetched batches are accounted for by torchdata). The
 trainer captures either kind of loader through :func:`loader_state_dict`.
 """
 
+import gc
 import itertools
 import time
 from pathlib import Path
@@ -415,8 +416,18 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                         flush=True,
                     )
                     time.sleep(wait)
+                    # Reclaim the abandoned stream before rebuilding, or its
+                    # datasets/pyarrow prefetch buffers leak per rebuild and RSS
+                    # climbs to the cgroup OOM. Drop our last live reference
+                    # (self._stream — the dead generator's own frame is already
+                    # cleared by the exception) and force a collection. An offline
+                    # 3-arm probe over the real datasets machinery: +79 MiB / 40
+                    # rebuilds abandoned vs +2 MiB with gc.collect(); an explicit
+                    # records.close() adds nothing (the generator died by
+                    # exception, so close() is a no-op here).
                     self._stream = None
                     self._epoch = prev_state["epoch"]
+                    gc.collect()
                     records = open_records(prev_state)
                     continue
                 net_retries = 0  # a successful draw resets the blip budget
