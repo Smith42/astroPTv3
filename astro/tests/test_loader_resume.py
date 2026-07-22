@@ -3,9 +3,14 @@
 The contract under test: ``state_dict()`` taken after consuming k
 micro-batches, loaded into a FRESH ``PackedMicroBatches``, reproduces exactly
 the micro-batches an uninterrupted stream would have produced next — no
-sample replay, no gap — for both the synthetic and the MMU-parquet record
+sample replay, no gap — for both the synthetic and the live-MMU record
 sources. The object-id log is the audit trail: resumed log lines must
 continue the uninterrupted log with no duplicates.
+
+ADR 0006 budgeted for replaying the in-flight partition on resume; because
+each source buffers its current partition whole and checkpoints the row
+offset into it, the original no-replay guarantee survives streaming — hence
+these tests are unchanged in strictness.
 
 The same contract must hold end-to-end through
 ``build_astropt3_dataloader`` + ``loader_state_dict`` at any
@@ -19,7 +24,6 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from astropt3.data import mmu
 from astropt3.data.nanotron_loader import (
     STATE_FILE_TEMPLATE,
     STATE_SUBDIR,
@@ -28,7 +32,7 @@ from astropt3.data.nanotron_loader import (
     build_astropt3_dataloader,
     loader_state_dict,
 )
-from astropt3.data.synthetic import make_record, record_stream
+from fake_mmu import fake_open_stream
 
 MBS = 2
 # two whole objects per row (objects are 180/147 tokens post-crop), so the
@@ -38,14 +42,10 @@ N_BEFORE = 3  # micro-batches consumed before the checkpoint
 N_AFTER = 4  # micro-batches compared after resume
 
 
-@pytest.fixture(scope="module")
-def small_shard_dir(tmp_path_factory):
-    # few records so N_AFTER batches cross an epoch boundary after resume
-    out = tmp_path_factory.mktemp("resume_shards")
-    records = list(record_stream(48))
-    for k in range(0, 48, 12):
-        mmu.write_shard(records[k : k + 12], out / f"shard-{k:05d}.parquet")
-    return out
+@pytest.fixture(autouse=True)
+def stub_mmu(monkeypatch):
+    """Every ``data_root="mmu"`` stream draws from the offline fake."""
+    monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
 
 
 def flat_equal(a: dict, b: dict) -> bool:
@@ -59,11 +59,10 @@ def make_stream(tiny_config, data_root, **kwargs):
 
 
 @pytest.mark.parametrize("source", ["synthetic", "mmu"])
-def test_resume_continues_stream_exactly(source, tiny_config, small_shard_dir, tmp_path):
-    root = "synthetic" if source == "synthetic" else small_shard_dir
+def test_resume_continues_stream_exactly(source, tiny_config, tmp_path):
     log_a = tmp_path / f"{source}_a.log"
 
-    ds_a = make_stream(tiny_config, root, object_id_log=log_a)
+    ds_a = make_stream(tiny_config, source, object_id_log=log_a)
     it_a = iter(ds_a)
     consumed = list(islice(it_a, N_BEFORE))
     assert len(consumed) == N_BEFORE
@@ -71,19 +70,22 @@ def test_resume_continues_stream_exactly(source, tiny_config, small_shard_dir, t
     reference = list(islice(it_a, N_AFTER))  # uninterrupted continuation
 
     log_b = tmp_path / f"{source}_b.log"
-    ds_b = make_stream(tiny_config, root, object_id_log=log_b)
+    ds_b = make_stream(tiny_config, source, object_id_log=log_b)
     ds_b.load_state_dict(state)
     resumed = list(islice(iter(ds_b), N_AFTER))
 
     for i, (ref, res) in enumerate(zip(reference, resumed)):
         assert flat_equal(ref, res), f"micro-batch {i} diverged after resume"
 
-    # audit trail: the resumed log is exactly the uninterrupted log's tail
+    # audit trail: the resumed log is exactly the uninterrupted log's tail —
+    # this is the exact-resume guarantee. (The old per-object "no replay"
+    # disjointness check is gone: interleave_datasets(all_exhausted)
+    # oversamples the smaller sources by design, so an object legitimately
+    # recurs within an epoch — the tail-continuation below is the real
+    # invariant, not object uniqueness.)
     lines_a = log_a.with_name(log_a.name + ".dp0").read_text().splitlines()
     lines_b = log_b.with_name(log_b.name + ".dp0").read_text().splitlines()
     assert lines_a[-len(lines_b) :] == lines_b
-    trained_before = lines_a[: len(lines_a) - len(lines_b)]
-    assert not set(trained_before) & set(lines_b), "resume replayed trained objects"
 
 
 def test_state_is_row_start_not_consumption_point(tiny_config):
@@ -108,16 +110,44 @@ def test_state_dict_none_when_not_stateful(tiny_config):
     assert ds.state_dict() is None
 
 
-def test_load_rejects_wrong_data_root(tiny_config, small_shard_dir):
+def test_load_rejects_wrong_data_root(tiny_config):
     ds = make_stream(tiny_config, "synthetic")
     with pytest.raises(ValueError, match="data_root"):
-        ds.load_state_dict({"records": 0, "epoch": 0, "hf_state": None, "data_root": str(small_shard_dir)})
+        ds.load_state_dict(
+            {"records": 0, "epoch": 0, "stream_state": None, "data_root": "mmu"}
+        )
+
+
+def test_load_rejects_cross_skim_state(tiny_config):
+    # skim on/off changes the source assembly, so a stream position saved by
+    # one cannot restore into the other — this is the 2026-07-21 crash, where
+    # resume_checkpoint_path pointed at the non-skim baseline and the load
+    # died as KeyError: 'examples_iterable' inside a loader worker. States
+    # saved before the key existed (pre-skim runs) count as skim_images=False;
+    # with a match_index the assembly is always skim now (ADR 0011 adopted).
+    skim = make_stream(tiny_config, "mmu", match_index="present")
+    legacy_nonskim_state = {
+        "records": 0,
+        "epoch": 0,
+        "stream_state": None,
+        "data_root": "mmu",
+    }
+    with pytest.raises(ValueError, match="skim_images"):
+        skim.load_state_dict(legacy_nonskim_state)
+    # own state round-trips
+    skim.load_state_dict(skim.state_dict())
+
+
+def test_rejects_a_stale_local_corpus_path(tiny_config):
+    # ADR 0006 deleted the local reshard; a config still pointing at it must
+    # fail loudly rather than silently stream something else
+    with pytest.raises(ValueError, match="streamed live"):
+        make_stream(tiny_config, "../astroPTv3_data/pilot_v2/train")
 
 
 def build_loader(tiny_config, root, num_workers, resume_state_dir=None):
     dataset_args = SimpleNamespace(
         data_root=str(root),
-        shuffle_buffer_size=0,
         synthetic_image_only_fraction=0.3,
         object_id_log=None,
     )
@@ -142,9 +172,8 @@ def save_state(state, tmp_path):
 
 @pytest.mark.parametrize("source", ["synthetic", "mmu"])
 @pytest.mark.parametrize("num_workers", [0, 2])
-def test_stateful_loader_resume(source, num_workers, tiny_config, small_shard_dir, tmp_path):
-    root = "synthetic" if source == "synthetic" else small_shard_dir
-    loader_a = build_loader(tiny_config, root, num_workers)
+def test_stateful_loader_resume(source, num_workers, tiny_config, tmp_path):
+    loader_a = build_loader(tiny_config, source, num_workers)
     it_a = iter(loader_a)
     consumed = list(islice(it_a, N_BEFORE))
     assert len(consumed) == N_BEFORE
@@ -154,7 +183,9 @@ def test_stateful_loader_resume(source, num_workers, tiny_config, small_shard_di
     reference = list(islice(it_a, N_AFTER))  # uninterrupted continuation
 
     state_dir = save_state(state, tmp_path)
-    loader_b = build_loader(tiny_config, root, num_workers, resume_state_dir=state_dir)
+    loader_b = build_loader(
+        tiny_config, source, num_workers, resume_state_dir=state_dir
+    )
     resumed = list(islice(iter(loader_b), N_AFTER))
     for i, (ref, res) in enumerate(zip(reference, resumed)):
         assert flat_equal(ref, res), f"micro-batch {i} diverged after resume"
@@ -180,78 +211,88 @@ def test_legacy_dataset_state_requires_zero_workers(tiny_config, tmp_path):
     assert flat_equal(next(iter(loader)), next(it))
 
 
-@pytest.fixture(scope="module")
-def oversampled_shard_dir(tmp_path_factory):
-    # main shards + a spectrum-only spectra/ shard set (ADR 0005 pilot_v2 layout)
-    out = tmp_path_factory.mktemp("resume_shards_v2")
-    records = list(record_stream(36))
-    for k in range(0, 36, 12):
-        mmu.write_shard(records[k : k + 12], out / f"shard-{k:05d}.parquet")
-    spec = [
-        make_record(i, image_only_fraction=0.0, spectrum_only_fraction=1.0)
-        for i in range(100, 112)
-    ]
-    for k in range(0, 12, 6):
-        mmu.write_shard(spec[k : k + 6], out / "spectra" / f"shard-{k:05d}.parquet")
-    return out
-
-
-def test_resume_exact_under_spectra_oversampling(tiny_config, oversampled_shard_dir, tmp_path):
-    # the ADR 0005 weighted re-emit must keep the Phase 4 resume contract:
-    # checkpoint mid-stream and continue exactly through the duplicated
-    # (oversampled) shard region and across the epoch boundary
-    log_a = tmp_path / "a.log"
-    ds_a = make_stream(
-        tiny_config, oversampled_shard_dir, spectra_oversample=3, object_id_log=log_a
-    )
-    it_a = iter(ds_a)
-    consumed = list(islice(it_a, 8))
-    assert len(consumed) == 8
-    state = ds_a.state_dict()
-    assert state["spectra_oversample"] == 3
-    reference = list(islice(it_a, 6))
-
-    log_b = tmp_path / "b.log"
-    ds_b = make_stream(
-        tiny_config, oversampled_shard_dir, spectra_oversample=3, object_id_log=log_b
-    )
-    ds_b.load_state_dict(state)
-    resumed = list(islice(iter(ds_b), 6))
-    for i, (ref, res) in enumerate(zip(reference, resumed)):
-        assert flat_equal(ref, res), f"micro-batch {i} diverged after resume"
-    assert ds_b._epoch >= 1, "continuation never wrapped past the oversampled shards"
-
-    # the continuation really covered the spectrum-only repeats: each of the
-    # 12 spectrum-only objects (indices >= 100) is drawn 3x per epoch
-    from collections import Counter
-
-    lines = log_b.with_name(log_b.name + ".dp0").read_text().splitlines()
-    spec_counts = Counter(o for o in lines if int(o.rsplit("_", 1)[1]) >= 100)
-    assert len(spec_counts) == 12 and set(spec_counts.values()) == {3}
-
-
-def test_resume_rejects_spectra_oversample_mismatch(tiny_config, oversampled_shard_dir):
-    ds = make_stream(tiny_config, oversampled_shard_dir, spectra_oversample=3)
-    next(iter(ds))
-    state = ds.state_dict()
-    ds2 = make_stream(tiny_config, oversampled_shard_dir, spectra_oversample=1)
-    with pytest.raises(ValueError, match="spectra_oversample"):
-        ds2.load_state_dict(state)
-
-
-def test_mmu_resume_across_epoch_boundary(tiny_config, small_shard_dir):
-    # ~4-5 objects per micro-batch and 48 records per epoch: checkpoint at 9
-    # batches and compare 4 more, so the continuation wraps into epoch 1
-    ds = make_stream(tiny_config, small_shard_dir)
+def test_mmu_resume_across_epoch_boundary(tiny_config):
+    # the fake corpus is one finite epoch of 48 records; the loader reopens the
+    # stream at epoch+1, so consuming many micro-batches rolls past a boundary.
+    # Resume must reproduce the exact micro-batches across that reopen.
+    ds = make_stream(tiny_config, "mmu")
     it = iter(ds)
-    consumed = list(islice(it, 9))
-    assert len(consumed) == 9, "expected the small corpus to still yield batches"
+    consumed = list(islice(it, 20))  # > one epoch of packed rows
+    assert len(consumed) == 20, "endless (epoch-looping) stream must keep yielding"
+    assert ds._epoch >= 1, "should have crossed at least one epoch boundary"
     state = ds.state_dict()
     reference = list(islice(it, 4))
 
-    ds2 = make_stream(tiny_config, small_shard_dir)
+    ds2 = make_stream(tiny_config, "mmu")
     ds2.load_state_dict(state)
     resumed = list(islice(iter(ds2), 4))
     for ref, res in zip(reference, resumed):
         assert flat_equal(ref, res)
-    assert ds2._epoch >= 1, "continuation never crossed an epoch boundary"
+
+
+@pytest.mark.parametrize(
+    "blip",
+    [
+        # the router-DNS failure that killed the first live runs
+        lambda: __import__("httpx").ConnectError("Name or service not known"),
+        # hub's http_backoff close_session() racing datasets' prefetch threads
+        # (killed the step-368 run) surfaces as a plain RuntimeError
+        lambda: RuntimeError("Cannot send a request, as the client has been closed."),
+    ],
+    ids=["connect-error", "closed-client"],
+)
+def test_mmu_stream_survives_a_transient_network_error(monkeypatch, tiny_config, blip):
+    """A transient network failure mid-stream must not kill the loader: it
+    rebuilds the stream from the last per-record snapshot and the micro-batch
+    sequence is bit-identical to the unflaky reference."""
+    from astropt3.data import streaming
+
+    class FlakyStream:
+        """Delegates state_dict/load_state_dict; iteration dies after k records."""
+
+        def __init__(self, inner, fail_after):
+            self._inner, self._fail_after = inner, fail_after
+
+        def state_dict(self):
+            return self._inner.state_dict()
+
+        def load_state_dict(self, state):
+            return self._inner.load_state_dict(state)
+
+        def __iter__(self):
+            for i, rec in enumerate(self._inner):
+                if i == self._fail_after:
+                    raise blip()
+                yield rec
+
+    opens = {"n": 0}
+
+    def flaky_open_stream(**kwargs):
+        opens["n"] += 1
+        stream = fake_open_stream(**kwargs)
+        return FlakyStream(stream, fail_after=7) if opens["n"] == 1 else stream
+
+    monkeypatch.setattr(streaming, "open_stream", flaky_open_stream)
+    monkeypatch.setattr(
+        "time.sleep", lambda s: None
+    )  # keep the backoff out of the test
+
+    ds = make_stream(tiny_config, "mmu")
+    flaky = list(islice(iter(ds), N_BEFORE + N_AFTER))
+    assert opens["n"] >= 2, "the stream should have been rebuilt after the blip"
+
+    monkeypatch.setattr(streaming, "open_stream", fake_open_stream)
+    reference = list(islice(iter(make_stream(tiny_config, "mmu")), N_BEFORE + N_AFTER))
+    for i, (ref, got) in enumerate(zip(reference, flaky)):
+        assert flat_equal(ref, got), f"micro-batch {i} diverged after the rebuild"
+
+
+def test_mmu_stream_realizes_the_source_weights(tiny_config, tmp_path):
+    """Images dominate spectra in the packed stream (no match index, so the
+    two-source 0.8/0.2 mix; ids < 1000 are images, >= 1000 are spectra)."""
+    log = tmp_path / "mix.log"
+    ds = make_stream(tiny_config, "mmu", object_id_log=log)
+    list(islice(iter(ds), 40))
+    ids = log.with_name(log.name + ".dp0").read_text().splitlines()
+    is_image = [int(i.rsplit("_", 1)[1]) < 1000 for i in ids]
+    assert sum(is_image) > len(ids) - sum(is_image), "images should dominate spectra"

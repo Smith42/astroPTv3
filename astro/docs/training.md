@@ -23,7 +23,7 @@ Three distinct environments; do not mix them.
 | env | where | contents | used for |
 |-----|-------|----------|----------|
 | `uv sync --extra dev` | anywhere | torch (CPU ok), torchdata, transformers, datasets | unit tests, CPU smoke, eval code |
-| `uv sync --extra data` | machine with network | + lsdb, hats, nested-pandas | data prep (crossmatch) only |
+| `uv sync --extra data` | machine with network | + lsdb | match-index build only (ADR 0006) |
 | GPU venv | training machine | torch + **flash-attn** + nanotron (editable `nanotron/`) + astro (editable `astro/`) + psutil + torchdata | training, GPU tests, conversion |
 
 flash-attn wheels are the constraint for the GPU venv: pick a torch version
@@ -45,33 +45,47 @@ pytest -m gpu astro/tests/test_nanotron_gpu.py astro/tests/test_phase4_gpu.py
 
 ## 2. Data
 
-### 2.1 Prepare the pilot corpus (network, `[data]` env)
+### 2.1 The corpus is streamed (ADR 0006)
 
-```bash
-cd astro
-uv run --extra data python scripts/prepare_pilot_data.py            # full corpus
-uv run --extra data python scripts/prepare_pilot_data.py \
-    --cone 217.9688 32.6198 600                                     # 10' smoke test
-```
+There is one small prep step (the match-index, below) and no local copy of
+the corpus: `data/streaming.py` opens the MMU HATS catalogs on the HF hub at
+train time via `hats` + `pyarrow` and interleaves three sources per
+record — images-only, spectra-only, and their 1" inner crossmatch — at
+provisional weights 0.60/0.15/0.25. Set `data_root: mmu` in the nanotron
+config (`synthetic` for smoke runs); a path to the retired local corpus
+raises.
 
-This lsdb-LEFT-crossmatches the MMU image catalog (~14M rows, ~4TB) with
-DESI EDR SV3 spectra (1″ radius) and writes ~shard-sized parquet under
-`../astroPTv3_data/pilot_v1/{train,val}/` (override with
-`$ASTROPT3_DATA_ROOT` or `--out`). Facts to know:
+Facts to know:
 
-- It is **journalled and resumable**: each HEALPix partition is logged in
-  `progress.jsonl` only after its shards are atomically renamed into place.
-  Kill it anytime; rerun the same command anywhere with the same `--out` and
-  it continues with no loss and no duplicates. The full run is a multi-day
-  job (~70 obj/s single-process); partial corpora are usable immediately.
-- Train/val assignment hashes **whole order-7 HEALPix tiles** — spatially
-  disjoint splits, stable across reruns (do not change the salt mid-corpus).
-- **Never point a `--cone`/`--limit-partitions` smoke run at the canonical
-  corpus directory**: cone runs row-filter partitions, and a partition
-  journalled as "done" from filtered rows would be silently skipped (=data
-  loss) by the full run later. Give smoke runs their own `--out`.
-- DESI coverage is patchy: most partitions have 0% spectra matches, SV3
-  rosettes have ~25%. Expect ~7% matched overall.
+- **Network is a hard dependency.** Hub downtime or rate-limiting stalls
+  training with no local fallback. Budget for it.
+- **Resume is exact and cheap.** Each source buffers its current partition
+  whole and checkpoints `(epoch, partition cursor, row offset)`, so a kill
+  replays nothing; skipped partitions are never downloaded. The whole
+  stream state is a handful of ints — no RNG state, because the source draw
+  order is a fixed repeating pattern rather than a sampler.
+- **Train/val split is whole HEALPix partitions** (the first
+  `streaming.VAL_PARTITIONS` of each source), so it is spatially disjoint
+  and cannot leak. Val is streamed fresh each eval and is deterministic, so
+  every checkpoint in a sweep is scored on identical records.
+- **Sharding is by partition index modulo `world_size × num_workers`**, so
+  ranks and workers are disjoint with no coordination. The pairs source has
+  only ~200 partitions — exceed that product and the loader raises rather
+  than starving a rank.
+- **Prefetch needs a dask client.** Without one, partition fetches are
+  synchronous and block the training loop; image partitions are ~170 MB.
+- Revisions float to latest upstream, so a long run can see the corpus
+  change if MMU pushes.
+- **The pairs source needs a match-index.** Build it once (~1 hour, login
+  node, `[data]` env) and pass the path; without it the corpus is images +
+  spectra only:
+
+  ```bash
+  uv run --extra data python scripts/build_match_index.py --out match_index.parquet
+  ```
+
+  Partitions are streamed a row group at a time (~56 MB), so a worker holds
+  ~56 MB per source rather than a whole 774 MB partition.
 
 ### 2.2 Image normalization (no calibration step)
 
@@ -83,18 +97,19 @@ from the surveys' own documentation, so there is nothing to calibrate per
 corpus — unknown bands raise `NotImplementedError` (add them to
 `BAND_REGISTRY`).
 
-### 2.3 Gate the data before burning GPU-hours
+### 2.2b Gate the data before burning GPU-hours
+
+`scripts/check_pilot_data.py` went with the reshard. The equivalent check is
+the live streaming test, which decodes real hub rows through the sequencer
+and asserts the token shapes:
 
 ```bash
-HF_DATASETS_OFFLINE=1 uv run python scripts/check_pilot_data.py \
-    --workers 8 --seq-len 4096 --target-tokens-per-sec <training tok/s>
+uv run pytest tests/test_streaming.py -k live
 ```
 
-Two checks: decoded objects must show per-patch mean ≈ 0 / std ≈ 1 and
-spectra λ within 3600–9824 Å; and dataloader-only throughput should be
-**≥2× the training consumption** you expect (see §4 for reference numbers;
-remember each DP rank runs its own workers, so per-process throughput
-multiplies by DP).
+Throughput is now a property of the hub and your prefetch setup rather than
+of a local corpus — watch the trainer's own step time, and give the loader a
+dask client if fetches dominate.
 
 ## 3. Configs
 
@@ -127,8 +142,7 @@ parallelism:
 data_stages:
 - data:
     dataset:
-      data_root: <shard dir>   # or the literal string "synthetic"
-      shuffle_buffer_size: 2000
+      data_root: mmu           # or the literal string "synthetic"
       # object_id_log: <path>  # audit trail: one object_id/line as trained
     num_loading_workers: 8     # resume-exact at any value (torchdata
                                # StatefulDataLoader); keep it FIXED per run
@@ -236,8 +250,9 @@ Constraints and semantics:
   state maps per-worker, so **resume with the same `num_loading_workers`
   as the saving run** — a mismatch is rejected at load. Checkpoints written
   before this change (dataset-format) still resume, at workers 0 only.
-- With `shuffle_buffer_size > 0`, resume skips at most the in-flight buffer
-  and never replays a trained record (HF shuffle semantics).
+- The MMU stream replays nothing: each source checkpoints its row offset
+  into a whole-buffered partition, so resume re-fetches that partition but
+  re-trains none of it.
 - Set `dataset.object_id_log` to get a per-rank file with one `object_id`
   per trained object — the audit trail we use to *prove* no-replay in the
   GPU tests.
@@ -322,10 +337,11 @@ The fork's trainer syncs it for astropt3 streams.
 `general.ignore_sanity_checks: true` (required; see §3).
 
 **Throughput far below the reference numbers** — almost always the
-dataloader. Check `check_pilot_data.py` throughput vs consumption, raise
-`num_loading_workers` (exact resume survives workers now), make sure the
-shard count per rank ≥ workers (HF assigns whole shards to workers), and
-keep `pin_memory` on (default). The synthetic generator is CPU-bound too — don't
+dataloader. With the streamed corpus this is usually hub fetch latency:
+give the loader a dask client so partitions prefetch, raise
+`num_loading_workers` (exact resume survives workers now; partitions are
+split modulo `world_size × num_workers`, and the pairs source has only ~200),
+and keep `pin_memory` on (default). The synthetic generator is CPU-bound too — don't
 benchmark compute with `data_root: synthetic` and 0 workers.
 
 **Loss stuck ≈1.0 on synthetic-looking data** — per-patch standardization
@@ -334,10 +350,11 @@ data's bands are in `band_registry.BAND_REGISTRY` (so the physical
 normalization applies at the right flux scale) and that the data has
 patch-scale structure.
 
-**Don't** use `datasets.IterableDataset.shuffle()` anywhere in the pipeline:
-in datasets 5.x it collapses `n_shards` to 1 and silently destroys
-rank/worker sharding. `MMUIterableDataset` implements its own seeded
-shard-order + buffer shuffle for exactly this reason.
+**Shuffling is partition-order, not row-order**: `MMUStream` permutes each
+source's partition list per epoch from `(seed, epoch)` — identical on every
+rank, so the modulo shard split stays disjoint — which breaks the spatial
+clustering of HEALPix-ordered partitions without any cross-rank
+coordination and without a shuffle buffer to checkpoint.
 
 **BeeGFS/checkpoint pressure**: a 70M checkpoint dir is ~1GB (weights +
 ZeRO-1 optimizer state); the Pythia schedule to 20k steps is ~30 dirs.
@@ -349,7 +366,8 @@ as they land at larger sizes.
 1. `uv run pytest` (CPU suite) green in `astro/`.
 2. `pytest -m gpu astro/tests/test_nanotron_gpu.py astro/tests/test_phase4_gpu.py`
    green in the GPU env.
-3. `check_pilot_data.py` decode sanity + ≥2× throughput on the actual corpus.
+3. `uv run pytest tests/test_streaming.py -k live` — real hub rows decode
+   and sequence, and the cursor round-trips against live partitions.
 4. 100-step dry run at the target topology: tokens/s/GPU + MFU logged and
    sane, memory has headroom, per-modality losses within ~5×.
 5. Then launch, with the probe sweep watching from a spare GPU.

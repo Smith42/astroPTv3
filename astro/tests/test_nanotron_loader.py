@@ -11,14 +11,14 @@ from itertools import islice
 import pytest
 import torch
 
-from astropt3.data import mmu
+from astropt3.data import nanotron_loader
 from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
     flatten_packed_batch,
     regroup_micro_batch as regroup,
 )
-from astropt3.data.synthetic import record_stream
 from astropt3.tokenization import BOS_ID, modality_token_ids
+from fake_mmu import fake_open_stream
 
 MBS = 2
 SEQ_LEN = 896
@@ -99,16 +99,66 @@ def test_deterministic_across_instances(tiny_config):
         assert torch.equal(first[key], second[key]), key
 
 
-def test_mmu_stream_loops_epochs(tiny_config, tmp_path):
-    # 8 objects/shard x 2 shards: pulling many batches must cross an epoch
-    # boundary without exhausting the stream
-    records = list(record_stream(16))
-    mmu.write_shard(records[:8], tmp_path / "shard-00000.parquet")
-    mmu.write_shard(records[8:], tmp_path / "shard-00001.parquet")
-    stream = PackedMicroBatches(
-        tiny_config, MBS, SEQ_LEN, data_root=str(tmp_path), shuffle_buffer_size=4
-    )
-    batches = list(islice(iter(stream), 8))  # 8 batches x >=2 objects/row > 16 records
+def test_mmu_stream_loops_epochs(tiny_config, monkeypatch):
+    # the fake sources hold 24 records each: pulling many batches must cross
+    # an epoch boundary without exhausting the endless stream
+    monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
+    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, data_root="mmu")
+    batches = list(islice(iter(stream), 8))
     assert len(batches) == 8
+    for flat in batches:
+        assert flat["input_ids"].shape == (MBS, SEQ_LEN)
+
+
+class _FlakyStream:
+    """Wraps a real fake stream to raise a 'client has been closed' RuntimeError
+    once mid-iteration (the DNS-blip signature), delegating state_dict so the
+    loader can resume the rebuilt stream from the pre-error snapshot."""
+
+    def __init__(self, inner, fail_at):
+        self._inner = inner
+        self._fail_at = fail_at
+
+    def __iter__(self):
+        for i, rec in enumerate(self._inner):
+            if self._fail_at is not None and i == self._fail_at:
+                self._fail_at = None
+                raise RuntimeError("client has been closed")
+            yield rec
+
+    def state_dict(self):
+        return self._inner.state_dict()
+
+    def load_state_dict(self, s):
+        self._inner.load_state_dict(s)
+
+
+def test_transient_error_rebuilds_and_reclaims(tiny_config, monkeypatch):
+    # A DNS blip surfaces as this RuntimeError; the loader must ride it out by
+    # rebuilding the stream AND reclaiming the abandoned one (gc.collect), or its
+    # datasets/pyarrow prefetch buffers leak per rebuild to the cgroup OOM.
+    builds = {"n": 0}
+
+    def flaky(**kw):
+        builds["n"] += 1
+        return _FlakyStream(fake_open_stream(**kw), fail_at=5 if builds["n"] == 1 else None)
+
+    collects = {"n": 0}
+    real_collect = nanotron_loader.gc.collect
+
+    def spy_collect(*a, **k):
+        collects["n"] += 1
+        return real_collect(*a, **k)
+
+    monkeypatch.setattr("astropt3.data.streaming.open_stream", flaky)
+    monkeypatch.setattr(nanotron_loader.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(nanotron_loader.gc, "collect", spy_collect)
+
+    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, data_root="mmu")
+    batches = list(islice(iter(stream), 4))
+
+    assert builds["n"] >= 2, "the stream was never rebuilt — error path not taken"
+    assert collects["n"] >= 1, "rebuild did not reclaim the abandoned stream"
+    assert len(batches) == 4  # recovered and kept producing valid batches
     for flat in batches:
         assert flat["input_ids"].shape == (MBS, SEQ_LEN)

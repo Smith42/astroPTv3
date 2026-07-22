@@ -13,8 +13,7 @@ checkpoints:
 data_stages:
 - data:
     dataset:
-      data_root: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_data/shakeout_mix2/train
-      shuffle_buffer_size: 2000
+      data_root: mmu
     num_loading_workers: 8
     seed: 42
   name: real-shakeout

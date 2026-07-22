@@ -32,11 +32,20 @@ def val_batches(config, data_root, *, n_batches, micro_batch_size, seq_len, seed
         rank=0,
         world_size=1,
         seed=seed,
+        # ADR 0006 §5: the MMU path draws the reserved val partitions, which
+        # are spatially disjoint from train (the synthetic path holds out by
+        # record index instead, below)
+        split="val",
     )
     if data_root == "synthetic":
         # start the val stream far past any training index (held-out records)
         stream.load_state_dict(
-            {"records": SYNTHETIC_VAL_OFFSET, "epoch": 0, "hf_state": None, "data_root": "synthetic"}
+            {
+                "records": SYNTHETIC_VAL_OFFSET,
+                "epoch": 0,
+                "stream_state": None,
+                "data_root": "synthetic",
+            }
         )
     names = config.modality_registry().names()
     for flat in islice(iter(stream), n_batches):

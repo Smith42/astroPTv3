@@ -1,0 +1,155 @@
+# ADR 0006 first streaming run: the corpus is read live from the MMU HATS
+# catalogs (no local reshard), with NO match_index — so the corpus is
+# images-only + spectra-only at renormalized 0.8/0.2 weights and there are
+# NO cross-modal pairs. Purpose is to shake out the streaming loader end to
+# end; the paired source lands once build_match_index.py has run.
+#
+# Expect rank 0 to log "[data] no match_index: streaming images + spectra
+# only" at startup. The redshift linear probe will NOT work on this run
+# (it needs image tokens + Z, which only paired records carry) — run the
+# sweep with --pool-modality spectra or not at all.
+#
+# Throughput: the ADR 0006 spike measured ~79.5 obj/s per loader worker,
+# read-dominated (85%) and network-bound. 16 workers is ~1270 obj/s against
+# ~1680 obj/s of consumption at this GBS — i.e. ~0.76x, so this run is
+# EXPECTED to be data-bound, well short of the >=2x floor. That is a real
+# measurement of the streaming path on a 96G/16-core box, not a model
+# problem: read tokens/s/GPU as a loader number, and raise workers only as
+# far as RSS allows.
+general:
+  project: astropt3
+  run: astropt3-70m-jetformer-mmu-nopairs
+  seed: 42
+  step: null
+  consumed_train_samples: null
+  benchmark_csv_path: null
+  ignore_sanity_checks: true
+logging:
+  iteration_step_info_interval: 1
+  log_level: info
+  log_level_replica: info
+model:
+  ddp_bucket_cap_mb: 25
+  dtype: bfloat16
+  init_method:
+    std: 0.02
+  make_vocab_size_divisible_by: 1
+  model_config:
+    is_astropt3_config: true
+    modalities:
+      - name: images
+        input_size: 192
+        patch_size: 8
+        pos_type: index
+        pos_input_size: 1
+        max_positions: 361
+        loss_weight: 1.0
+      - name: spectra
+        input_size: 256
+        patch_size: 256
+        pos_type: continuous
+        pos_input_size: 1
+        max_positions: 1024
+        loss_weight: 1.0
+    tokeniser: jetformer
+    jetformer_flow_steps: 4
+    jetformer_flow_hidden: 128
+    jetformer_gmm_k: 4
+    jetformer_noise_max: 0.1
+    jetformer_noise_min: 0.0
+    spectra_norm_divisor: 10.0 # ADR 0007 arcsinh knee (nMgy)
+    huber_delta: 1.0
+    hidden_size: 512
+    num_hidden_layers: 23
+    num_attention_heads: 8
+    num_key_value_heads: 2
+    intermediate_size: 1536
+    max_position_embeddings: 4096
+    rope_theta: 100000.0
+    no_rope_layer: 4
+    rms_norm_eps: 1.0e-06
+    rope_interleaved: false
+    hidden_act: silu
+    attention_bias: false
+    initializer_range: 0.02
+    vocab_size: 64
+    pad_token_id: 0
+    bos_token_id: 1
+    eos_token_id: 1
+    tie_word_embeddings: false
+    use_cache: false
+    _attn_implementation: flash_attention_2
+    _use_qkv_packed: true
+    _use_doc_masking: true
+    _fused_rms_norm: true
+    _fused_rotary_emb: true
+    log_attn_probs: false
+parallelism:
+  dp: 2
+  pp: 1
+  tp: 1
+  context_parallel_size: 1
+  expert_parallel_size: 1
+  pp_engine: 1f1b
+  tp_mode: ALL_REDUCE
+  tp_linear_async_communication: false
+  recompute_layer: false
+data_stages:
+  - name: mmu-stream-nopairs
+    start_training_step: 1
+    data:
+      dataset:
+        data_root: mmu
+        object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-nopairs/objects.log
+      seed: 42
+      # 8/rank (16 total). gpu5's 1 Gbit NIC is the hard ceiling: ~250 KB/image
+      # on the wire (image.flux is 50 MB of every 56 MB row group, noisy
+      # float32, incompressible) x ~420 images/micro-batch ≈ 105 MB/rank/step,
+      # so the compute-bound 0.55s/step would need ~3 Gbit/s — unreachable
+      # here; best case is ~1.8s/step at link saturation. At 4/rank (DNS-blip
+      # insurance) each worker sustained only ~31 obj/s and the link sat at
+      # ~37% — 4.6s/step. Both DNS races (ENOTFOUND + hub's close_session)
+      # are now survived by the loader's rebuild-from-snapshot retry, so run
+      # enough workers to saturate the link instead.
+      num_loading_workers: 8
+optimizer:
+  accumulate_grad_in_fp32: true
+  clip_grad: 1.0
+  learning_rate_scheduler:
+    learning_rate: 0.001
+    lr_warmup_steps: 200
+    lr_warmup_style: linear
+    lr_decay_style: cosine
+    lr_decay_steps: null
+    lr_decay_starting_step: null
+    min_decay_lr: 0.0001
+  optimizer_factory:
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    name: adamW
+    torch_adam_is_fused: true
+  weight_decay: 0.1
+  weight_decay_exclude_named_params:
+    - .*layernorm.*
+    - .*layer_norm.*
+  zero_stage: 1
+tokens:
+  sequence_length: 4096
+  train_steps: 20000
+  micro_batch_size: 16
+  batch_accumulation_per_replica: 1
+  val_check_interval: 100
+  limit_val_batches: 0
+  limit_test_batches: 0
+checkpoints:
+  checkpoints_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-nopairs
+  # resume from latest.txt when present (nanotron never auto-derives this)
+  resume_checkpoint_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-nopairs
+  checkpoint_interval: 1000
+  save_initial_state: false
+  save_final_state: true
+  checkpoint_schedule: pythia
+tokenizer:
+  tokenizer_name_or_path: null
+profiler: null

@@ -12,7 +12,7 @@ with AstroPT-style continuous-token regression (NAIRR260009).
   Phase 3+); the transformers implementation here is the release/probing
   artifact and the CPU test target.
 - **Pilot data**: `UniverseTBD/mmu_ssl_legacysurvey_north` (3×152×152 flux
-  cubes → 361 patch-8 tokens) × `UniverseTBD/mmu_desi_edr_sv3` (7781-bin
+  cubes, center-cropped to 96×96 → 144 patch-8 tokens) × `UniverseTBD/mmu_desi_edr_sv3` (7781-bin
   spectra → 31 patch-256 tokens), lsdb-crossmatched offline.
 
 ## Setup
@@ -20,7 +20,7 @@ with AstroPT-style continuous-token regression (NAIRR260009).
 ```bash
 cd astro
 uv sync --extra dev          # CPU-safe: model, packing, tests
-uv sync --extra data         # + lsdb/hats (login-node data prep only)
+uv sync --extra data         # + lsdb (match-index build only; not needed to train)
 uv sync --extra train        # + nanotron/flash-attn (training machine only)
 ```
 
@@ -42,28 +42,37 @@ and why (data→tokens→model, size family, parallelism semantics);
 [`docs/training.md`](docs/training.md) — how to run it (environments, data
 prep, launching, checkpoint/resume, eval, troubleshooting).
 
-## Pilot data (login node, network)
+## Pilot data (streamed, ADR 0006)
 
-Both MMU sources are HATS collections with margin caches, so the crossmatch
-is a single lsdb call. Prepare once, then everything downstream is offline:
+The corpus is **streamed live from the HF hub at train time** — there is no
+prep step and no local copy. Three HATS sources are interleaved per
+record: images-only (~14M LegacySurvey), spectra-only (~1.1M DESI EDR SV3),
+and their 1" inner crossmatch, at provisional weights 0.60/0.15/0.25.
+
+Reads are `hats` (partition enumeration) + `pyarrow` (row groups); lsdb runs
+only offline, to build the match-index that the pairs source joins on:
 
 ```bash
-uv run --extra data python scripts/prepare_pilot_data.py
-    # LEFT-crossmatch (1", nearest) → ~256MB parquet shards under
-    # {root}/{train,val}/ + provenance.json; resumable per partition;
-    # logs matched/image-only counts. Smoke: --cone RA DEC RADIUS_ARCSEC
-uv run python scripts/check_pilot_data.py --target-tokens-per-sec N
-    # decoded-object sanity (~N(0,1) patches, λ range) + dataloader
-    # throughput bench (want ≥2× training consumption)
+uv run --extra data python scripts/build_match_index.py --out match_index.parquet
+    # ~200 crossmatch partitions, ~1h; ids only (tens of MB, no pixels copied)
+uv run pytest tests/test_streaming.py    # cursor logic offline + one live check
 ```
+
+Without a match index there is no pairs source and the corpus degrades to
+images + spectra — visible in the logs rather than silent.
+
+`data_root` is `synthetic` (tests, smoke) or `mmu` (real training); a path
+to the retired local corpus raises. Partitions are addressed by index, so
+resume skips without downloading and replays nothing; the whole stream
+state is a handful of ints. Val reserves whole HEALPix partitions, so
+train/val stay spatially disjoint.
 
 Image normalization is physical (band-registry-keyed rescale → bright-pixel
 clamp → arcsinh; `data/band_registry.py`), so there is no per-corpus
 calibration step.
 
-Training streams the shards with `astropt3.data.mmu.MMUIterableDataset`
-(`HF_DATASETS_OFFLINE=1`; DP-rank and DataLoader-worker sharded; keep
-`num_workers ≤ n_shards / world_size`).
+Network is a hard training dependency: hub downtime stalls training with no
+local fallback. That is the deliberate trade for dropping the reshard.
 
 ## Training (nanotron fork) + async eval
 
@@ -88,7 +97,7 @@ cd .. && CUDA_DEVICE_MAX_CONNECTIONS=1 \
 ```bash
 python astro/scripts/run_probe_sweep.py \
   --checkpoints-dir <run_ckpt_dir> --out-dir <eval_dir> \
-  --data-root <val_shards|synthetic> --watch --until-step <train_steps>
+  --data-root <mmu|synthetic> --watch --until-step <train_steps>
     # per checkpoint: convert to HF -> fixed-batch val loss
     # (astropt3.eval.val_loss) -> ridge redshift probe
     # (astropt3.eval.linear_probe) -> one line in probe_results.jsonl
