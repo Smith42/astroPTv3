@@ -1,8 +1,18 @@
+> ## ⛔ Superseded by ADR 0010 (2026-07-20)
+>
+> This ADR is **Superseded by [ADR 0010 — Remove the affine and aim tokenisers](0010-remove-affine-and-aim-tokenisers.md)**.
+> ADR 0010 removes the `affine` tokeniser (and the fork-only `aim`) entirely,
+> making `jetformer` the sole tokeniser. ADR 0002's proposal — ivar-weighted
+> Huber on the `affine` + Huber path — has **no host** once the affine path is
+> gone, and ADR 0001 already rejected ivar-weighting for the jetformer head
+> ("the density head is the ivar"). The body below is retained as a historical
+> record of the parked proposal; it is not cleared for implementation.
+
 # ADR 0002: Inverse-variance-weighted Huber loss for the affine tokeniser
 
-- **Status:** Proposed (Parked) — see *Parked* banner below.
+- **Status:** Superseded by ADR 0010 — see *Superseded-by-0010* banner above.
 - **Date:** 2026-07-15 (facts refreshed 2026-07-16 for physical normalization;
-  decision untouched — see *Superseded context* below)
+  decision untouched — see *Superseded context* below; **superseded 2026-07-20**).
 - **References:**
   - [`0001-jetformer-inverse-variance-loss.md`](0001-jetformer-inverse-variance-loss.md)
     (this repo — Rejected for the `tokeniser: jetformer` head; the
