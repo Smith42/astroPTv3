@@ -54,6 +54,7 @@ import gc
 import itertools
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import httpx
 import torch
@@ -62,7 +63,7 @@ from ..configuration_astropt3 import AstroPT3Config
 from .band_registry import _DIV_FACTOR
 from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
 from .packing import ObjectSequencer, PackedCollator
-from .streaming import MMU_ROOT, SYNTHETIC_ROOT
+from .streaming import MMU_ROOT, SOURCE_ASSEMBLY, SYNTHETIC_ROOT
 from .synthetic import make_record
 
 STATE_FILE_TEMPLATE = "dp_{rank}.pt"
@@ -188,8 +189,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 f"{self.data_root!r}; the local parquet corpus was removed by "
                 "ADR 0006 — the MMU catalogs are streamed live"
             )
-        # ADR 0006: the precomputed crossmatch; without it there is no pairs
-        # source and the corpus is images + spectra only
+        # The MMU branch has one assembly and requires its precomputed index.
         self.match_index = match_index
         self.synthetic_image_only_fraction = synthetic_image_only_fraction
         self.synthetic_spectrum_only_fraction = synthetic_spectrum_only_fraction
@@ -210,17 +210,8 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
     # -- checkpoint state ---------------------------------------------------
 
     @property
-    def _skim(self) -> bool:
-        """Whether the stream uses the ADR 0011 skim assembly (the only MMU
-        assembly with a match index, since the 2026-07-21 A/B). Kept in the
-        stream state under the historical ``skim_images`` key so states saved
-        by the flag-era code load unchanged."""
-        from .streaming import resolve_match_index
-
-        return (
-            self.data_root == MMU_ROOT
-            and resolve_match_index(self.match_index) is not None
-        )
+    def _source_assembly(self) -> str:
+        return SOURCE_ASSEMBLY if self.data_root == MMU_ROOT else SYNTHETIC_ROOT
 
     def state_dict(self) -> dict | None:
         """Stream position at the start of the current partial row.
@@ -241,7 +232,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             "epoch": 0,
             "stream_state": None,
             "data_root": self.data_root,
-            "skim_images": self._skim,
+            "source_assembly": self._source_assembly,
         }
 
     def load_state_dict(self, state: dict | None) -> None:
@@ -252,18 +243,12 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 f"dataset state was saved for data_root={state['data_root']!r}, "
                 f"this stream reads {self.data_root!r}"
             )
-        # skim on/off changes the source assembly (3 sources map-first vs 2
-        # generator-first), so a cross-assembly stream position cannot map —
-        # loading it dies deep in datasets with KeyError: 'examples_iterable'.
-        # States saved before this key existed were all non-skim (pre-ADR 0011
-        # runs, e.g. the astropt3-70m-jetformer-mmu baseline).
-        if bool(state.get("skim_images", False)) != self._skim:
+        saved_assembly = state.get("source_assembly")
+        if saved_assembly != self._source_assembly:
             raise ValueError(
-                f"dataset state was saved with skim_images="
-                f"{bool(state.get('skim_images', False))}, this stream's "
-                f"assembly is skim_images={self._skim}; the source assemblies "
-                "differ so the stream position cannot be restored (a pre-skim "
-                "run's stream state cannot resume under the ADR 0011 corpus)"
+                f"dataset state uses source_assembly={saved_assembly!r}; "
+                f"this branch requires {self._source_assembly!r}. Start a new "
+                "run rather than restoring a checkpoint from another corpus."
             )
         self._resume_state = dict(state)
 
@@ -274,7 +259,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             "epoch": self._epoch,
             "stream_state": None if self._stream is None else self._stream.state_dict(),
             "data_root": self.data_root,
-            "skim_images": self._skim,
+            "source_assembly": self._source_assembly,
         }
 
     # -- record sources -----------------------------------------------------
@@ -293,32 +278,11 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             )
 
     def _mmu_records(self, start_epoch, stream_state, worker):
-        """Endless weighted interleave of the three live MMU sources.
-
-        Each ``open_stream`` is one finite epoch (a reshuffled pass over the
-        catalog files); the loop reopens at ``epoch + 1`` forever. Partitions
-        are split across DP ranks by ``split_dataset_by_node``; the
-        DataLoader-worker split is left to ``datasets`` (its ``_iter_pytorch``
-        shards per worker and shifts the interleave RNG per worker), because a
-        manual worker split on top double-shards and collapses the loader to
-        one worker. Resume loads the datasets ``state_dict`` into the
-        saved epoch's stream, then continues into later epochs normally.
-        """
+        """Repeat finite crossmatch-only epochs and restore their exact state."""
         import itertools
 
-        from .streaming import open_stream, resolve_match_index
+        from .streaming import open_stream
 
-        worker_id = worker.id if worker else 0
-        if (
-            resolve_match_index(self.match_index) is None
-            and self.rank == 0
-            and worker_id == 0
-        ):
-            print(
-                "[data] no match_index: streaming images + spectra only, with "
-                "NO cross-modal pairs (scripts/build_match_index.py)",
-                flush=True,
-            )
         for epoch in itertools.count(start_epoch):
             self._epoch = epoch  # seeds the ADR 0008 span shuffle
             stream = open_stream(
@@ -332,7 +296,22 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             if epoch == start_epoch and stream_state is not None:
                 stream.load_state_dict(stream_state)
             self._stream = stream
-            yield from stream
+            iterator = iter(stream)
+            while True:
+                try:
+                    yield next(iterator)
+                except StopIteration:
+                    break
+
+    def _open_records(self, state, worker):
+        """(Re)open the record source at ``state`` (None = fresh start)."""
+        if self.data_root == SYNTHETIC_ROOT:
+            return self._synthetic_records(state["records"] if state else 0, worker)
+        return self._mmu_records(
+            state["epoch"] if state else 0,
+            state.get("stream_state") if state else None,
+            worker,
+        )
 
     # -- iteration ------------------------------------------------------------
 
@@ -351,24 +330,19 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self._epoch = start_epoch
         self._stream = None
 
-        def open_records(state):
-            """(Re)open the record source at ``state`` (None = fresh start)."""
-            if self.data_root == SYNTHETIC_ROOT:
-                return self._synthetic_records(state["records"] if state else 0, worker)
-            return self._mmu_records(
-                state["epoch"] if state else 0,
-                state.get("stream_state") if state else None,
-                worker,
-            )
-
-        records = open_records(state)
+        records = self._open_records(state, worker)
 
         log = None
         if self.object_id_log is not None:
             worker_suffix = f".w{worker.id}" if worker else ""
             log_path = Path(f"{self.object_id_log}.dp{self.rank}{worker_suffix}")
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            log = open(log_path, "a")
+            try:
+                log = open(log_path, "a")
+            except OSError as error:
+                raise RuntimeError(
+                    f"cannot open object audit log {log_path}"
+                ) from error
 
         # prev_state = stream position BEFORE the record about to be drawn;
         # row_start = position at the first record of the current partial row.
@@ -385,32 +359,40 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         net_retries = 0
         try:
             while True:
+                error = None
+                record = None
                 try:
                     record = next(records)
                 except StopIteration:
                     break
-                except (httpx.HTTPError, OSError, RuntimeError) as err:
+                except httpx.HTTPError as caught:
+                    error = caught
+                except OSError as caught:
+                    error = caught
+                except RuntimeError as caught:
+                    error = caught
+                if error is not None:
                     # hub's http_backoff close_session() on a ConnectError
                     # races datasets' prefetch threads sharing the global
                     # httpx client -> plain RuntimeError; a rebuild gets a
                     # fresh client from get_session(). Match the message:
                     # a blanket RuntimeError catch would mask real bugs.
                     if isinstance(
-                        err, RuntimeError
-                    ) and "client has been closed" not in str(err):
-                        raise
+                        error, RuntimeError
+                    ) and "client has been closed" not in str(error):
+                        raise error
                     # transient network failure: rebuild the stream from the
                     # last per-record snapshot — exact, nothing replayed or
                     # skipped (prev_state is the position BEFORE the record
                     # that failed to draw). Only possible when stateful.
                     if prev_state is None:
-                        raise
+                        raise error
                     net_retries += 1
                     if net_retries > _MAX_NET_RETRIES:
-                        raise
+                        raise error
                     wait = min(5 * 2 ** (net_retries - 1), _MAX_NET_RETRY_WAIT)
                     print(
-                        f"[data] {type(err).__name__}: rebuilding the stream from "
+                        f"[data] {type(error).__name__}: rebuilding the stream from "
                         f"the last record snapshot in {wait}s "
                         f"(retry {net_retries}/{_MAX_NET_RETRIES})",
                         flush=True,
@@ -428,8 +410,10 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                     self._stream = None
                     self._epoch = prev_state["epoch"]
                     gc.collect()
-                    records = open_records(prev_state)
+                    records = self._open_records(prev_state, worker)
                     continue
+                if record is None:
+                    raise AssertionError("record source returned None")
                 net_retries = 0  # a successful draw resets the blip budget
                 # live epoch feeds the modality-order parity (ADR 0005
                 # amendment); pure function of (object_id, epoch), so the
@@ -445,13 +429,12 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                     row_start = prev_state  # the new row starts at this record
                     if len(rows) == self.micro_batch_size:
                         batch = self.collator([o for r in rows for o in r])
-                        assert batch["input_ids"].shape == (
-                            self.micro_batch_size,
-                            self.seq_len,
-                        ), (
-                            f"greedy repack mismatch: {batch['input_ids'].shape} != "
-                            f"({self.micro_batch_size}, {self.seq_len})"
-                        )
+                        expected_shape = (self.micro_batch_size, self.seq_len)
+                        if batch["input_ids"].shape != expected_shape:
+                            raise AssertionError(
+                                f"greedy repack mismatch: {batch['input_ids'].shape} != "
+                                f"{expected_shape}"
+                            )
                         if stateful:
                             self._ckpt_state = row_start
                         if log is not None:
@@ -568,7 +551,7 @@ def build_astropt3_dataloader(
     if resume_state_dir is not None:
         state_file = Path(resume_state_dir) / STATE_FILE_TEMPLATE.format(rank=dp_rank)
         if state_file.exists():
-            state = torch.load(state_file, weights_only=False)
+            state = torch.load(state_file, weights_only=True)
             if isinstance(state, dict) and state.get("format") == LOADER_STATE_FORMAT:
                 if state["num_workers"] != num_workers:
                     raise ValueError(
@@ -576,7 +559,7 @@ def build_astropt3_dataloader(
                         f"{state['num_workers']}, this run uses {num_workers}; "
                         "per-worker stream positions only map onto the same count"
                     )
-                loader.load_state_dict(state["loader"])
+                cast(Any, loader).load_state_dict(state["loader"])
             else:  # legacy dataset-format state (pre-StatefulDataLoader)
                 if num_workers != 0:
                     raise ValueError(

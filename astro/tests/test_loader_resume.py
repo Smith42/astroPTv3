@@ -53,6 +53,8 @@ def flat_equal(a: dict, b: dict) -> bool:
 
 
 def make_stream(tiny_config, data_root, **kwargs):
+    if str(data_root) == "mmu":
+        kwargs.setdefault("match_index", "present")
     return PackedMicroBatches(
         tiny_config, MBS, SEQ_LEN, data_root=str(data_root), **kwargs
     )
@@ -95,6 +97,7 @@ def test_state_is_row_start_not_consumption_point(tiny_config):
     it = iter(ds)
     next(it)
     state = ds.state_dict()
+    assert state is not None
     # the packer has drawn more records than the checkpoint position exposes
     # (the partial row + the overflow record are re-drawn on resume)
     assert state["records"] > 0
@@ -118,24 +121,18 @@ def test_load_rejects_wrong_data_root(tiny_config):
         )
 
 
-def test_load_rejects_cross_skim_state(tiny_config):
-    # skim on/off changes the source assembly, so a stream position saved by
-    # one cannot restore into the other — this is the 2026-07-21 crash, where
-    # resume_checkpoint_path pointed at the non-skim baseline and the load
-    # died as KeyError: 'examples_iterable' inside a loader worker. States
-    # saved before the key existed (pre-skim runs) count as skim_images=False;
-    # with a match_index the assembly is always skim now (ADR 0011 adopted).
-    skim = make_stream(tiny_config, "mmu", match_index="present")
-    legacy_nonskim_state = {
+def test_load_rejects_another_source_assembly(tiny_config):
+    stream = make_stream(tiny_config, "mmu")
+    old_state = {
         "records": 0,
         "epoch": 0,
         "stream_state": None,
         "data_root": "mmu",
+        "source_assembly": "skim",
     }
-    with pytest.raises(ValueError, match="skim_images"):
-        skim.load_state_dict(legacy_nonskim_state)
-    # own state round-trips
-    skim.load_state_dict(skim.state_dict())
+    with pytest.raises(ValueError, match="source_assembly"):
+        stream.load_state_dict(old_state)
+    stream.load_state_dict(stream.state_dict())
 
 
 def test_rejects_a_stale_local_corpus_path(tiny_config):
@@ -148,6 +145,7 @@ def test_rejects_a_stale_local_corpus_path(tiny_config):
 def build_loader(tiny_config, root, num_workers, resume_state_dir=None):
     dataset_args = SimpleNamespace(
         data_root=str(root),
+        match_index="present" if str(root) == "mmu" else None,
         synthetic_image_only_fraction=0.3,
         object_id_log=None,
     )
@@ -178,6 +176,7 @@ def test_stateful_loader_resume(source, num_workers, tiny_config, tmp_path):
     consumed = list(islice(it_a, N_BEFORE))
     assert len(consumed) == N_BEFORE
     state = loader_state_dict(loader_a)
+    assert state is not None
     assert state["format"] == LOADER_STATE_FORMAT
     assert state["num_workers"] == num_workers
     reference = list(islice(it_a, N_AFTER))  # uninterrupted continuation

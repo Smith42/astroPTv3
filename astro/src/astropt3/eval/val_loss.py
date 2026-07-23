@@ -45,6 +45,7 @@ def val_batches(config, data_root, *, n_batches, micro_batch_size, seq_len, seed
                 "epoch": 0,
                 "stream_state": None,
                 "data_root": "synthetic",
+                "source_assembly": "synthetic",
             }
         )
     names = config.modality_registry().names()
@@ -53,7 +54,16 @@ def val_batches(config, data_root, *, n_batches, micro_batch_size, seq_len, seed
 
 
 @torch.no_grad()
-def evaluate(model, data_root, *, n_batches=512, micro_batch_size=4, seq_len=896, seed=0, batches=None):
+def evaluate(
+    model,
+    data_root,
+    *,
+    n_batches=512,
+    micro_batch_size=4,
+    seq_len=896,
+    seed=0,
+    batches=None,
+):
     """Mean loss (and per-modality means) over the fixed val batches.
 
     ``batches`` is an optional pre-built list from :func:`val_batches` — the
@@ -78,7 +88,16 @@ def evaluate(model, data_root, *, n_batches=512, micro_batch_size=4, seq_len=896
         )
     ):
         kwargs = {
-            k: ({kk: vv.to(device=device, dtype=dtype if vv.is_floating_point() else None) for kk, vv in v.items()} if isinstance(v, dict) else v.to(device))
+            k: (
+                {
+                    kk: vv.to(
+                        device=device, dtype=dtype if vv.is_floating_point() else None
+                    )
+                    for kk, vv in v.items()
+                }
+                if isinstance(v, dict)
+                else v.to(device)
+            )
             for k, v in kwargs.items()
         }
         out = model(**kwargs)
@@ -97,7 +116,15 @@ def evaluate(model, data_root, *, n_batches=512, micro_batch_size=4, seq_len=896
 
 
 def evaluate_checkpoint(
-    checkpoint, data_root, *, n_batches=512, micro_batch_size=4, seq_len=896, device=None, seed=0, batches=None
+    checkpoint,
+    data_root,
+    *,
+    n_batches=512,
+    micro_batch_size=4,
+    seq_len=896,
+    device=None,
+    seed=0,
+    batches=None,
 ):
     import astropt3  # noqa: F401  -- registers the Auto classes
 
@@ -122,8 +149,12 @@ def evaluate_checkpoint(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True, help="converted HF checkpoint dir")
-    parser.add_argument("--data-root", required=True, help="val shard dir or 'synthetic'")
+    parser.add_argument(
+        "--checkpoint", required=True, help="converted HF checkpoint dir"
+    )
+    parser.add_argument(
+        "--data-root", required=True, help="val shard dir or 'synthetic'"
+    )
     parser.add_argument("--batches", type=int, default=512)
     parser.add_argument("--micro-batch-size", type=int, default=4)
     parser.add_argument("--seq-len", type=int, default=896)
@@ -143,8 +174,11 @@ def main():
     )
     print(json.dumps(result, indent=2))
     if args.out:
-        with open(args.out, "w") as f:
-            json.dump(result, f, indent=2)
+        try:
+            with open(args.out, "w") as file:
+                json.dump(result, file, indent=2)
+        except OSError as error:
+            raise RuntimeError(f"cannot write validation output {args.out}") from error
 
 
 if __name__ == "__main__":

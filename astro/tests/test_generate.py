@@ -2,6 +2,7 @@
 and the shared sample-rendering layer on top of it (astropt3.eval.samples)."""
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import torch
@@ -16,9 +17,14 @@ from astropt3.eval.samples import (
     sample_template,
 )
 from astropt3.generation import generate, reconstruct, sample_gmm
-from fake_mmu import fake_open_stream, fixed_records
+from fake_mmu import fixed_records
 
-CONFIG = Path(__file__).resolve().parents[1] / "configs" / "model" / "test-tiny-jetformer.yaml"
+CONFIG = (
+    Path(__file__).resolve().parents[1]
+    / "configs"
+    / "model"
+    / "test-tiny-jetformer.yaml"
+)
 
 
 @pytest.fixture(scope="module")
@@ -39,7 +45,9 @@ def smoke_model(jet_config, tmp_path_factory):
     model = AstroPT3Model(jet_config)
     model.train()
     opt = configure_optimizer(model, lr=1e-3)
-    for batch in make_batches(jet_config, n_objects=10, objects_per_batch=2, seq_len=896):
+    for batch in make_batches(
+        jet_config, n_objects=10, objects_per_batch=2, seq_len=896
+    ):
         out = model(**batch)
         opt.zero_grad(set_to_none=True)
         out.loss.backward()
@@ -101,11 +109,15 @@ def test_image_to_spectra_teacher_forces_images(smoke_model, template):
 def test_generate_rejects_affine_and_missing_span(smoke_model, template, jet_config):
     from astropt3 import AstroPT3Config, AstroPT3Model
 
-    affine = AstroPT3Model(AstroPT3Config(**{**jet_config.to_dict(), "tokeniser": "affine"}))
+    affine = AstroPT3Model(
+        AstroPT3Config(**{**jet_config.to_dict(), "tokeniser": "affine"})
+    )
     with pytest.raises(ValueError, match="not jetformer"):
         generate(affine, template, {"images"})
 
-    image_only = ObjectSequencer(jet_config).build(make_record(0, image_only_fraction=1.1))
+    image_only = ObjectSequencer(jet_config).build(
+        make_record(0, image_only_fraction=1.1)
+    )
     with pytest.raises(ValueError, match="spectra"):
         generate(smoke_model, image_only, {"spectra"})
 
@@ -126,7 +138,9 @@ def test_sample_template_modes(smoke_model, template):
     # by test_unconditional_shapes
     def draw(seed):
         g = torch.Generator().manual_seed(seed)
-        return sample_template(smoke_model, template, "image-to-spectra", n=1, generator=g)
+        return sample_template(
+            smoke_model, template, "image-to-spectra", n=1, generator=g
+        )
 
     a = draw(0)
     assert set(a) == {"spectra"}  # teacher-forced images are not returned
@@ -172,11 +186,16 @@ def test_spiral_checkpoint_decodes_pixel_identical_to_raster(jet_config, tmp_pat
     spiral_template = ObjectSequencer(spiral_config).build(record)
     raster_template = ObjectSequencer(raster_config).build(record)
     # forward half: the sequencer spiralises image tokens iff config.spiral
-    assert not torch.equal(spiral_template.values["images"], raster_template.values["images"])
-    assert torch.equal(
-        antispiralise(spiral_template.values["images"]), raster_template.values["images"]
+    assert not torch.equal(
+        spiral_template.values["images"], raster_template.values["images"]
     )
-    assert torch.equal(spiral_template.values["spectra"], raster_template.values["spectra"])
+    assert torch.equal(
+        antispiralise(spiral_template.values["images"]),
+        raster_template.values["images"],
+    )
+    assert torch.equal(
+        spiral_template.values["spectra"], raster_template.values["spectra"]
+    )
 
     # inverse half, through the shared samples path: rendering each
     # template's own tokens under its own config draws the same image
@@ -202,7 +221,7 @@ def test_sequencer_rejects_spiral_override(jet_config):
     """ADR 0004: patch order comes from the checkpoint's config only — the
     old per-call kwarg is gone, so a contradicting override fails loud."""
     with pytest.raises(TypeError):
-        ObjectSequencer(jet_config, spiral=True)
+        cast(Any, ObjectSequencer)(jet_config, spiral=True)
     assert ObjectSequencer(jet_config).spiral is jet_config.spiral
 
 
@@ -227,7 +246,10 @@ def test_spectrum_only_template_selects_imageless_records(monkeypatch):
 
 def test_template_selection_is_bounded(monkeypatch):
     """A shape the corpus never yields raises instead of streaming forever."""
-    images_only = lambda **kw: fake_open_stream(**kw, only="images")  # noqa: E731
+
+    def images_only(**_):
+        return iter(make_record(i, image_only_fraction=1.0) for i in range(10_000))
+
     monkeypatch.setattr("astropt3.data.streaming.open_stream", images_only)
 
     with pytest.raises(ValueError, match="val draws"):

@@ -14,7 +14,6 @@ import torch
 from astropt3.data import nanotron_loader
 from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
-    flatten_packed_batch,
     regroup_micro_batch as regroup,
 )
 from astropt3.tokenization import BOS_ID, modality_token_ids
@@ -28,8 +27,6 @@ SEQ_LEN = 896
 def micro_batches(tiny_config):
     stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN)
     return list(islice(iter(stream), 3))
-
-
 
 
 def test_micro_batch_contract(tiny_config, micro_batches):
@@ -103,7 +100,9 @@ def test_mmu_stream_loops_epochs(tiny_config, monkeypatch):
     # the fake sources hold 24 records each: pulling many batches must cross
     # an epoch boundary without exhausting the endless stream
     monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
-    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, data_root="mmu")
+    stream = PackedMicroBatches(
+        tiny_config, MBS, SEQ_LEN, data_root="mmu", match_index="present"
+    )
     batches = list(islice(iter(stream), 8))
     assert len(batches) == 8
     for flat in batches:
@@ -141,7 +140,9 @@ def test_transient_error_rebuilds_and_reclaims(tiny_config, monkeypatch):
 
     def flaky(**kw):
         builds["n"] += 1
-        return _FlakyStream(fake_open_stream(**kw), fail_at=5 if builds["n"] == 1 else None)
+        return _FlakyStream(
+            fake_open_stream(**kw), fail_at=5 if builds["n"] == 1 else None
+        )
 
     collects = {"n": 0}
     real_collect = nanotron_loader.gc.collect
@@ -154,7 +155,9 @@ def test_transient_error_rebuilds_and_reclaims(tiny_config, monkeypatch):
     monkeypatch.setattr(nanotron_loader.time, "sleep", lambda *_: None)
     monkeypatch.setattr(nanotron_loader.gc, "collect", spy_collect)
 
-    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, data_root="mmu")
+    stream = PackedMicroBatches(
+        tiny_config, MBS, SEQ_LEN, data_root="mmu", match_index="present"
+    )
     batches = list(islice(iter(stream), 4))
 
     assert builds["n"] >= 2, "the stream was never rebuilt — error path not taken"

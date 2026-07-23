@@ -1,26 +1,11 @@
-"""ADR 0006 streaming loader (HF datasets backend): decode, split, weights, resume.
-
-The hand-rolled reader is gone; ``open_stream`` returns a ``datasets``
-interleave. Offline coverage uses :mod:`fake_mmu`, which builds the SAME kind
-of interleave over synthetic records — so per-record weighting, node
-splitting and ``state_dict`` resume are exercised for real, just on local
-data. Decode is tested directly on synthetic rows (``synthetic.py`` mirrors
-the MMU schema, so a synthetic record is shaped like a hub row).
-"""
+"""Crossmatch-only MMU stream: decode, ownership, splitting, and resume."""
 
 from pathlib import Path
+from typing import Any, cast
 
-import numpy as np
 import pytest
 
-from astropt3.data.streaming import (
-    aligned,
-    decode_record,
-    pairs_dataset,
-    shuffled,
-    split_files,
-    union_features,
-)
+from astropt3.data.streaming import aligned, decode_record, shuffled, split_files
 from astropt3.data.synthetic import make_record
 from fake_mmu import fake_open_stream
 
@@ -118,144 +103,65 @@ def test_aligned_truncates_to_a_shard_multiple():
     assert aligned(files, 2) == files[:164]  # a prefix, order untouched
 
 
-def test_pairs_generator_reads_survive_dataloader_workers():
-    """A nested datasets stream iterated inside a DataLoader worker gets
-    worker-split AGAIN: its single shard lands on worker 0 and every other
-    worker silently reads an empty stream — no pairs, an instantly-exhausted
-    source. The pairs generator's inner reads use pyarrow to stay immune."""
-    import json
-
+def test_crossmatch_generator_reads_survive_dataloader_workers():
     import torch
 
-    from fake_mmu import _fixtures
-
-    fx = _fixtures()
-    features = union_features(fx["images"][0], fx["spectra"][0])
-    ds = pairs_dataset(
-        image_paths=[fx["images"][0], fx["images"][1]],
-        match_json=[json.dumps(fx["match"])] * 2,
-        spectra_paths=[fx["spectra"], fx["spectra"]],
-        features=features,
-    )
-    solo = sum(1 for _ in ds)
+    stream = fake_open_stream()
+    solo = sum(1 for _ in stream)
     assert solo > 0
-    loader = torch.utils.data.DataLoader(ds, batch_size=None, num_workers=2)
+    loader = torch.utils.data.DataLoader(
+        cast(Any, fake_open_stream()), batch_size=None, num_workers=2
+    )
     assert sum(1 for _ in loader) == solo
 
 
-# -- image-only skim (ADR 0011) ----------------------------------------------
+# -- crossmatch-only corpus --------------------------------------------------
 
 
-def _skim_records(image_paths, match, images_per_pair):
-    """Decode a demux scan over ``image_paths`` -> (object_id, has_image,
-    has_spectrum) per record, so both the mix and the exact stream are checkable."""
-    import json
-
-    from fake_mmu import _fixtures
-
-    fx = _fixtures()
-    features = union_features(fx["images"][0], fx["spectra"][0])
-    ds = pairs_dataset(
-        image_paths=image_paths,
-        match_json=[json.dumps(match)] * len(image_paths),
-        spectra_paths=[fx["spectra"]] * len(image_paths),
-        features=features,
-        images_per_pair=images_per_pair,
-    )
-    return [
-        (r["object_id"], r.get("image") is not None, r.get("spectrum") is not None)
-        for r in ds.map(decode_record)
-    ]
+def test_crossmatch_only_yields_all_kinds_from_one_scan():
+    got = kinds(fake_open_stream(seed=0), 300)
+    assert set(got) == {(True, True), (True, False), (False, True)}
 
 
-def test_pairs_source_without_skim_yields_only_pairs():
-    """Default images_per_pair=0: the scan drops every unmatched row, as before."""
-    from fake_mmu import _fixtures
-
-    recs = _skim_records(_fixtures()["images"], _fixtures()["match"], images_per_pair=0.0)
-    assert recs  # non-empty
-    assert {(im, sp) for _, im, sp in recs} == {(True, True)}  # pairs only, no skim
-
-
-def test_image_skim_yields_image_only_from_discards():
-    """With skim on, unmatched rows come back as image-only records; pairs stay."""
-    from fake_mmu import _fixtures
-
-    kinds_ = {(im, sp) for _, im, sp in _skim_records(
-        _fixtures()["images"], _fixtures()["match"], images_per_pair=2.4)}
-    assert (True, False) in kinds_   # image-only, skimmed from the discards
-    assert (True, True) in kinds_    # pairs still emitted
-    assert (False, True) not in kinds_  # the scan never emits spectrum-only
-
-
-def test_image_skim_governor_caps_surplus_discards():
-    """At low match density the governor caps the skim near the ratio and drops
-    the rest — it does NOT dump every downloaded discard into the stream."""
-    from fake_mmu import _fixtures
-
-    fx = _fixtures()
-    sparse = dict(list(fx["match"].items())[:3])  # 3 pairs, ~21 discards available
-    recs = _skim_records(fx["images"], sparse, images_per_pair=2.4)
-    pairs = sum(1 for _, im, sp in recs if im and sp)
-    images = sum(1 for _, im, sp in recs if im and not sp)
-    assert pairs == 3
-    assert images < 21          # surplus discards dropped, not all emitted
-    assert 3 <= images <= 3 * 3  # governed to ~2.4:1 (per-partition flooring)
-
-
-def test_image_skim_is_deterministic():
-    """The budget governor is a pure counter — same scan, identical stream."""
-    from fake_mmu import _fixtures
-
-    fx = _fixtures()
-    a = _skim_records(fx["images"], fx["match"], images_per_pair=2.4)
-    b = _skim_records(fx["images"], fx["match"], images_per_pair=2.4)
-    assert a == b
-
-
-def test_skim_open_stream_drops_standalone_images_and_keeps_all_kinds():
-    """Assembled skim corpus: image-only draws now come from the scan (there is
-    no standalone images source), spectra stay single-sourced, pairs present."""
-    got = kinds(fake_open_stream(seed=0, match_index="present"), 300)
-    assert (True, False) in got   # image-only, from the scan's discards
-    assert (False, True) in got   # spectra
-    assert (True, True) in got    # pairs
-
-
-# -- weighting + resume (real datasets interleave, offline) ------------------
-
-
-def test_weights_are_realized_per_record():
-    """Two-source corpus (no match index) hits the renormalized 0.8/0.2 mix."""
-    got = kinds(fake_open_stream(seed=0), 2000)
-    img = got.count((True, False)) / len(got)
-    assert img == pytest.approx(0.8, abs=0.05)
-
-
-def test_resume_reproduces_the_record_sequence():
-    """datasets state_dict/load_state_dict continues the stream exactly.
-
-    Mid-epoch resume (the fake corpus is one finite epoch of 48 records; the
-    loader loops epochs on top of this)."""
+def test_crossmatch_only_resume_and_ranks_are_disjoint():
     stream = fake_open_stream(seed=0)
-    it = iter(stream)
-    first = [next(it)["object_id"] for _ in range(20)]
+    iterator = iter(stream)
+    for _ in range(15):
+        next(iterator)
     state = stream.state_dict()
-    reference = [next(it)["object_id"] for _ in range(10)]
+    reference = [next(iterator)["object_id"] for _ in range(8)]
 
     resumed = fake_open_stream(seed=0)
     resumed.load_state_dict(state)
-    assert [r["object_id"] for r, _ in zip(iter(resumed), range(10))] == reference
+    assert [
+        record["object_id"] for record, _ in zip(iter(resumed), range(8))
+    ] == reference
+
+    rank_ids = [
+        {record["object_id"] for record in fake_open_stream(shard=rank, num_shards=2)}
+        for rank in range(2)
+    ]
+    assert rank_ids[0] and rank_ids[1]
+    assert rank_ids[0].isdisjoint(rank_ids[1])
 
 
-def test_no_match_index_drops_the_pairs_source():
-    got = kinds(fake_open_stream(seed=0), 500)
-    assert (True, True) not in got  # nothing paired
+def test_spectrum_only_rows_are_disjoint_between_train_and_val():
+    def spectrum_only_ids(split):
+        return {
+            record["object_id"]
+            for record in fake_open_stream(split=split)
+            if record.get("image") is None
+        }
+
+    assert spectrum_only_ids("train").isdisjoint(spectrum_only_ids("val"))
 
 
-def test_only_restricts_to_one_source():
-    got = kinds(fake_open_stream(seed=0, only="spectra", match_index="present"), 200)
-    assert set(got) == {(False, True)}  # spectra-only
+def test_crossmatch_only_requires_an_index(monkeypatch):
+    from astropt3.data.streaming import MATCH_INDEX_ENV, open_stream
+
+    monkeypatch.delenv(MATCH_INDEX_ENV, raising=False)
+    with pytest.raises(ValueError, match="requires match_index"):
+        open_stream()
 
 
 # -- match index -------------------------------------------------------------
@@ -305,12 +211,6 @@ def test_match_index_round_trips(tmp_path):
     assert spectra_of == {(6, 7): {(8, 2), (8, 3)}, (6, 9): {(8, 2)}}
 
 
-# The pairs join (_paired_examples) is exercised for real by
-# test_skim_open_stream_drops_standalone_images_and_keeps_all_kinds (all
-# record kinds flow through the assembled corpus) and by the live network
-# test below.
-
-
 # -- live hub (network) ------------------------------------------------------
 
 
@@ -322,14 +222,14 @@ def test_live_mmu_rows_decode_and_sequence():
     """
     from astropt3.config_io import load_model_config
     from astropt3.data.packing import ObjectSequencer
-    from astropt3.data.streaming import open_stream
+    from astropt3.data.streaming import open_stream, resolve_match_index
 
+    match_index = resolve_match_index()
+    if match_index is None:
+        pytest.skip("live crossmatch test requires ASTROPT3_MATCH_INDEX")
     config, _ = load_model_config(CONFIGS / "model" / "test-tiny.yaml")
     sequencer = ObjectSequencer(config)
-
-    # no match index -> images + spectra live; the pairs join is covered
-    # offline by test_paired_examples_joins_images_to_spectra
-    stream = open_stream(seed=0)
+    stream = open_stream(seed=0, match_index=match_index)
     it = iter(stream)
     records = [next(it) for _ in range(40)]
 
@@ -346,13 +246,14 @@ def test_live_mmu_rows_decode_and_sequence():
             if "Z" in shapes:
                 assert shapes["Z"] == (1, 1)
         seen.add((record.get("image") is not None, record.get("spectrum") is not None))
-    assert seen == {(True, False), (False, True)}  # both live sources appear
+    assert seen <= {(True, False), (False, True), (True, True)}
+    assert seen
 
     # resume round-trips against live partitions (one iterator, mid-stream
     # snapshot, then compare the continuation to a fresh load_state_dict)
     state = stream.state_dict()
     reference = [next(it)["object_id"] for _ in range(5)]
-    resumed = open_stream(seed=0)
+    resumed = open_stream(seed=0, match_index=match_index)
     resumed.load_state_dict(state)
     rit = iter(resumed)
     assert [next(rit)["object_id"] for _ in range(5)] == reference
