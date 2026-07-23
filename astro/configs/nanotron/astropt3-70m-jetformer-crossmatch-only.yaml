@@ -88,7 +88,7 @@ data_stages:
         match_index: >-
           hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
         object_id_log: >-
-          /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only/objects.log
+          /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only/objects.log
       seed: 42
       # 8 workers/rank needs the whole 68.7G slurm memory cgroup to itself:
       # co-launching the eval sidecar on top OOM-killed a worker at step 2168
@@ -128,9 +128,9 @@ tokens:
   limit_test_batches: 0
 checkpoints:
   checkpoints_path: >-
-    /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only
+    /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only
   resume_checkpoint_path: >-
-    /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only
+    /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only
   checkpoint_interval: 1000
   save_initial_state: false
   save_final_state: true
