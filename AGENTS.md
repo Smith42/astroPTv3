@@ -12,7 +12,9 @@ Multimodal Universe. The repo is a fork of `huggingface/smollm`: `text/`,
 lives in `astro/`. The approved phase plan (decisions are fixed) is
 `astro/PLAN.md`; hard constraints are in `AGENTS.md` — the critical ones:
 **no GPU or training runs on this machine** (CPU tests/smoke only), tests
-must pass without network access, special-token ids in
+may use the network but only `network`-marked ones may require it
+(ADR 0006 streams the corpus live; deselect with `-m 'not network'` when
+the HF hub is down), special-token ids in
 `astro/src/astropt3/tokenization.py` are frozen, and dependencies are
 managed only through uv in `astro/pyproject.toml`.
 
@@ -43,17 +45,33 @@ stages is implicit and easy to break, so understand it before editing:
    generates schema-identical fixtures so everything runs offline; both
    modalities are optional per record (image-only is the common case, ~13M
    of 14M; spectrum-only rows are the non-crossmatched ZWARN==0 DESI
-   spectra of `pilot_v2`, ADR 0005). Real records flow through
-   `data/mmu.py`: `scripts/prepare_pilot_data.py` (login node, `[data]`
-   env, network) lsdb-LEFT-crossmatches the two MMU HATS collections into
-   local parquet shards (train/val by hashing coarse HEALPix tiles —
-   spatially disjoint), with a second spectra-LEFT-images pass writing the
-   unmatched spectra into a `spectra/` subdir of each split;
-   `MMUIterableDataset` streams everything back offline, sharded by DP rank
-   and DataLoader worker, listing each spectrum-only shard
-   `spectra_repeat`/`spectra_oversample` times per epoch (the ADR 0005
-   draw-frequency knob; `loss_weight` stays 1:1).
-   `scripts/check_pilot_data.py` is the sanity/throughput gate.
+   spectra, ADR 0005). Real records are **streamed live from the HF hub**
+   by `data/streaming.py` (ADR 0006, which deleted the local reshard and
+   its `PILOT_FEATURES` schema): with a match index, two HATS sources —
+   the **crossmatch scan** (ADR 0011, adopted 2026-07-21: one pass over the
+   matched image partitions demuxed into pairs plus image-only records
+   skimmed from the unmatched discards, governed to the 0.60:0.25
+   images:pairs ratio — no standalone images download) and **spectra-only**
+   — interleaved **per record** by fixed weights (0.85/0.15, from the
+   provisional 0.60/0.15/0.25 source mix) using a repeating draw pattern,
+   never a sampler, so no RNG state is ever checkpointed. Pre-skim
+   (3-source) stream states cannot resume — the loader rejects them;
+   weights still load.
+   `row_to_record` is the sole decode adapter over MMU-native rows. Reads are
+   `hats` (partition enumeration + `hf://` paths) + `pyarrow` (row groups) —
+   **no lsdb at train time**; the crossmatch is precomputed offline by
+   `scripts/build_match_index.py` into a match-index of ids, and the pairs
+   source joins on it in memory. Partitions are addressed by index, split
+   across DP ranks by modulo (`datasets`' `_iter_pytorch` does the
+   loader-worker split itself — a manual `world_size × num_workers` split
+   double-shards and clamps the loader to one worker), and streamed **one row group
+   at a time** (~56 MB, not a 774 MB partition) — so resume is
+   `(epoch, partition cursor, row group, row offset)` per source, all ints,
+   and stays exactly no-replay. Without a match index there is no pairs
+   source and the corpus degrades to images + spectra. `data_root` is `synthetic` or `mmu`;
+   a stale path to the old corpus raises. Val reserves the first
+   `VAL_PARTITIONS` partitions of every source (whole partitions ⇒
+   spatially disjoint).
 2. **`ObjectSequencer`** (`data/packing.py`) turns a record into an
    `ObjectSeq`: central 96×96 crop (`packing.IMAGE_CROP`; JWST cubes are
    already 96×96) + physical band-registry normalization

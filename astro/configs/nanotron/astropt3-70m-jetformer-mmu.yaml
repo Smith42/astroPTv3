@@ -1,0 +1,183 @@
+# ADR 0006 full streaming run: images + spectra + crossmatched pairs (via the
+# published match index) at the 0.60/0.15/0.25 weights, plus the ADR 0008
+# scalar modalities (Z/ebv/photometry). Successor to the -nopairs shakeout;
+# fresh run dir because the scalar heads change the model shape (nopairs
+# checkpoints cannot resume here).
+#
+# SUPERSEDED as the run of record by astropt3-70m-jetformer-mmu-skim after the
+# 2026-07-21 ADR 0011 A/B. Relaunching this run will load its weights but
+# CANNOT resume its saved stream position: the skim is now the only assembly
+# with a match_index, and the loader rejects the pre-skim stream state.
+#
+# The redshift linear probe works on this run (paired records carry image
+# tokens + Z).
+#
+# Throughput on gpu5 (see docs/2026-07-21-streaming-throughput-audit.md): the
+# 1 Gbit NIC is the ceiling, and the pairs source streams whole image
+# partitions keeping only matched rows (~1 MB/pair vs ~250 KB/image, median
+# 750 matches per 774 MB partition) — bytes/record roughly double vs nopairs,
+# so expect a ~3.5-4 s/step floor and set walltime for ~20+ h, not the 10 h
+# of the nopairs run. On the training cluster this does not bind.
+general:
+  project: astropt3
+  run: astropt3-70m-jetformer-mmu
+  seed: 42
+  step: null
+  consumed_train_samples: null
+  benchmark_csv_path: null
+  ignore_sanity_checks: true
+logging:
+  iteration_step_info_interval: 1
+  log_level: info
+  log_level_replica: info
+model:
+  ddp_bucket_cap_mb: 25
+  dtype: bfloat16
+  init_method:
+    std: 0.02
+  make_vocab_size_divisible_by: 1
+  model_config:
+    is_astropt3_config: true
+    modalities:
+      - name: images
+        input_size: 192
+        patch_size: 8
+        pos_type: index
+        pos_input_size: 1
+        max_positions: 361
+        loss_weight: 1.0
+      - name: spectra
+        input_size: 256
+        patch_size: 256
+        pos_type: continuous
+        pos_input_size: 1
+        max_positions: 1024
+        loss_weight: 1.0
+      # ADR 0008 scalar modalities: one-token spans, GMM heads (scalar_gmm_k),
+      # loss_weight 0.1 keeps images/spectra dominant
+      - name: Z
+        input_size: 1
+        patch_size: 1
+        pos_type: index
+        pos_input_size: 1
+        max_positions: 1
+        loss_weight: 0.1
+        scalar: true
+      - name: ebv
+        input_size: 1
+        patch_size: 1
+        pos_type: index
+        pos_input_size: 1
+        max_positions: 1
+        loss_weight: 0.1
+        scalar: true
+      - name: photometry
+        input_size: 3
+        patch_size: 1
+        pos_type: index
+        pos_input_size: 1
+        max_positions: 1
+        loss_weight: 0.1
+        scalar: true
+    tokeniser: jetformer
+    jetformer_flow_steps: 4
+    jetformer_flow_hidden: 128
+    jetformer_gmm_k: 4
+    jetformer_noise_max: 0.1
+    jetformer_noise_min: 0.0
+    scalar_gmm_k: 5
+    spectra_norm_divisor: 10.0 # ADR 0007 arcsinh knee (nMgy)
+    huber_delta: 1.0
+    hidden_size: 512
+    num_hidden_layers: 23
+    num_attention_heads: 8
+    num_key_value_heads: 2
+    intermediate_size: 1536
+    max_position_embeddings: 4096
+    rope_theta: 100000.0
+    no_rope_layer: 4
+    rms_norm_eps: 1.0e-06
+    rope_interleaved: false
+    hidden_act: silu
+    attention_bias: false
+    initializer_range: 0.02
+    vocab_size: 64
+    pad_token_id: 0
+    bos_token_id: 1
+    eos_token_id: 1
+    tie_word_embeddings: false
+    use_cache: false
+    _attn_implementation: flash_attention_2
+    _use_qkv_packed: true
+    _use_doc_masking: true
+    _fused_rms_norm: true
+    _fused_rotary_emb: true
+    log_attn_probs: false
+parallelism:
+  dp: 2
+  pp: 1
+  tp: 1
+  context_parallel_size: 1
+  expert_parallel_size: 1
+  pp_engine: 1f1b
+  tp_mode: ALL_REDUCE
+  tp_linear_async_communication: false
+  recompute_layer: false
+data_stages:
+  - name: mmu-stream
+    start_training_step: 1
+    data:
+      dataset:
+        data_root: mmu
+        match_index: hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
+        object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu/objects.log
+      seed: 42
+      # 6/rank (12 total): 8/rank saturated gpu5's 1 Gbit NIC hard enough that
+      # interactive SSH logins to the box timed out, so back off to ~75% of the
+      # link and leave headroom for other users (the run goes proportionally
+      # slower — the link is the ceiling either way). The DNS races (ENOTFOUND
+      # + hub's close_session) are survived by the loader's rebuild-from-
+      # snapshot retry. Full arithmetic in
+      # docs/2026-07-21-streaming-throughput-audit.md.
+      num_loading_workers: 6
+optimizer:
+  accumulate_grad_in_fp32: true
+  clip_grad: 1.0
+  learning_rate_scheduler:
+    learning_rate: 0.001
+    lr_warmup_steps: 200
+    lr_warmup_style: linear
+    lr_decay_style: cosine
+    lr_decay_steps: null
+    lr_decay_starting_step: null
+    min_decay_lr: 0.0001
+  optimizer_factory:
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    name: adamW
+    torch_adam_is_fused: true
+  weight_decay: 0.1
+  weight_decay_exclude_named_params:
+    - .*layernorm.*
+    - .*layer_norm.*
+  zero_stage: 1
+tokens:
+  sequence_length: 4096
+  train_steps: 20000
+  micro_batch_size: 16
+  batch_accumulation_per_replica: 1
+  val_check_interval: 100
+  limit_val_batches: 0
+  limit_test_batches: 0
+checkpoints:
+  checkpoints_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu
+  # resume from latest.txt when present (nanotron never auto-derives this)
+  resume_checkpoint_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu
+  checkpoint_interval: 1000
+  save_initial_state: false
+  save_final_state: true
+  checkpoint_schedule: pythia
+tokenizer:
+  tokenizer_name_or_path: null
+profiler: null

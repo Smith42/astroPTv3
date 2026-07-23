@@ -1,14 +1,9 @@
-# 70M JETFORMER test pretraining run (GH200 node, DP=2, ZeRO-1).
-# Identical to astropt3-70m-shakeout.yaml except tokeniser: jetformer (+ its
-# noise-curriculum fields) and this cluster's data/checkpoint paths, so the
-# loss/probe curves are directly comparable to the affine shakeout.
-# Loss is the exact patch-space likelihood NLL_GMM(z) - logdet — negative
-# values are correct; watch grad norms early (nats-scale loss vs Huber's
-# ~0.1 scale is the main hyperparameter unknown; knobs if unstable are
-# jetformer_noise_max, learning_rate, clip_grad).
+# Clean crossmatch-only run: every downloaded matched-partition row trains once.
+# No skim governor, standalone source, source weighting, prefunded quota, cache,
+# or environment source-mode switch. Start from a fresh checkpoint path.
 general:
   project: astropt3
-  run: astropt3-70m-jetformer
+  run: astropt3-70m-jetformer-crossmatch-only
   seed: 42
   step: null
   consumed_train_samples: null
@@ -27,27 +22,27 @@ model:
   model_config:
     is_astropt3_config: true
     modalities:
-    - name: images
-      input_size: 192
-      patch_size: 8
-      pos_type: index
-      pos_input_size: 1
-      max_positions: 361
-      loss_weight: 1.0
-    - name: spectra
-      input_size: 256
-      patch_size: 256
-      pos_type: continuous
-      pos_input_size: 1
-      max_positions: 1024
-      loss_weight: 1.0
+      - name: images
+        input_size: 192
+        patch_size: 8
+        pos_type: index
+        pos_input_size: 1
+        max_positions: 361
+        loss_weight: 1.0
+      - name: spectra
+        input_size: 256
+        patch_size: 256
+        pos_type: continuous
+        pos_input_size: 1
+        max_positions: 1024
+        loss_weight: 1.0
     tokeniser: jetformer
-    spiral: true  # center-outward image patch order (ADR 0004)
     jetformer_flow_steps: 4
     jetformer_flow_hidden: 128
     jetformer_gmm_k: 4
     jetformer_noise_max: 0.1
     jetformer_noise_min: 0.0
+    spectra_norm_divisor: 10.0 # ADR 0007 arcsinh knee (nMgy)
     huber_delta: 1.0
     hidden_size: 512
     num_hidden_layers: 23
@@ -85,17 +80,25 @@ parallelism:
   tp_linear_async_communication: false
   recompute_layer: false
 data_stages:
-- name: jetformer-test
-  start_training_step: 1
-  data:
-    dataset:
-      data_root: mmu
-      object_id_log: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer/objects.log
-    seed: 42
-    num_loading_workers: 8
+  - name: jetformer-test
+    start_training_step: 1
+    data:
+      dataset:
+        data_root: mmu
+        match_index: >-
+          hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
+        object_id_log: >-
+          /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only/objects.log
+      seed: 42
+      # 8 workers/rank needs the whole 68.7G slurm memory cgroup to itself:
+      # co-launching the eval sidecar on top OOM-killed a worker at step 2168
+      # (16 x ~3.8G RSS + 2 ranks + sidecar), and 4 workers starved the feed
+      # (~80K vs 115K tok/s/GPU). Run the probe sweep post-hoc instead of via
+      # EVAL_GPU while the cgroup budget is this tight.
+      num_loading_workers: 8
 optimizer:
   accumulate_grad_in_fp32: true
-  clip_grad: 1.0
+  clip_grad: 100.0
   learning_rate_scheduler:
     learning_rate: 0.001
     lr_warmup_steps: 200
@@ -112,8 +115,8 @@ optimizer:
     torch_adam_is_fused: true
   weight_decay: 0.1
   weight_decay_exclude_named_params:
-  - .*layernorm.*
-  - .*layer_norm.*
+    - .*layernorm.*
+    - .*layer_norm.*
   zero_stage: 1
 tokens:
   sequence_length: 4096
@@ -124,7 +127,10 @@ tokens:
   limit_val_batches: 0
   limit_test_batches: 0
 checkpoints:
-  checkpoints_path: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer
+  checkpoints_path: >-
+    /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only
+  resume_checkpoint_path: >-
+    /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only
   checkpoint_interval: 1000
   save_initial_state: false
   save_final_state: true

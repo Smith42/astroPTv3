@@ -93,8 +93,7 @@ data_stages:
       # train split written by astro/scripts/prepare_pilot_data.py; path is
       # relative to the launch cwd (repo root) — point at scratch on the
       # training cluster if the corpus lives elsewhere
-      data_root: ../astroPTv3_data/pilot_v1/train
-      shuffle_buffer_size: 2000
+      data_root: mmu
     seed: 42
     # resume-exact with workers via torchdata's StatefulDataLoader; a resumed
     # run must use the SAME worker count as the run that saved the checkpoint
