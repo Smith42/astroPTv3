@@ -5,7 +5,8 @@
 #
 # Usage, from the REPO ROOT:
 #   bash astro/scripts/launch_mmu_gpu5.sh                # pairs+scalars run
-#   bash astro/scripts/launch_mmu_gpu5.sh astropt3-70m-jetformer-mmu-nopairs
+#   bash astro/scripts/launch_mmu_gpu5.sh astropt3-70m-jetformer-crossmatch-only
+#   NPROC=1 bash astro/scripts/launch_mmu_gpu5.sh <run>   # single-GPU box
 set -euo pipefail
 
 RUN=${1:-astropt3-70m-jetformer-mmu}
@@ -21,7 +22,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1 # required by nanotron's comm overlap
 export WANDB_MODE=${WANDB_MODE:-online}
 
 exec python -m torch.distributed.run \
-	--nproc-per-node=2 \
+	--nproc-per-node=${NPROC:-2} \
 	--rdzv-backend=c10d \
 	--rdzv-endpoint=localhost:0 \
 	--max-restarts=0 \

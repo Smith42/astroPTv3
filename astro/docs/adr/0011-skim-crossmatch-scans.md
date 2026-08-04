@@ -324,6 +324,39 @@ Note this is a **worse stall rate than the skim A/B it replaces** (17.5 % vs
 not directly comparable — but crossmatch-only is not the throughput win the
 skim was. Its argument is byte honesty: every row downloaded is a row trained.
 
+### Validated (`astropt3-70m-jetformer-crossmatch-v3-check`, gpu7, 2026-08-04)
+
+600 steps, dp=1, 6 workers, one A100, against the published index — the run
+that confirms the fixes above on live catalogs rather than fixtures.
+
+- **Completed 600/600, no OOM, no tracebacks**, 547 ms/step, 120 K tok/s/GPU,
+  `lm_loss` −14.2 at the end.
+- **RSS is flat**: growth stopped by ~step 330 and the last 270 steps sat in a
+  19.4–23.1 GiB band (whole process tree), largest single worker 3.71 GiB.
+  Compare the pre-fix run's `16 x ~3.8 G` plus unbounded per-cell spikes
+  against a 68.7 GiB cgroup.
+- **No-replay holds on real data**: 399,193 objects across six worker logs,
+  **zero repeats**, and worker id sets are disjoint. Single epoch.
+- Rank 0 logged `open_stream crossmatch_only_v3 ... n_shards=165` — the whole
+  train corpus reaches the rank, with no `aligned()` truncation.
+
+Two caveats on that evidence. The topology that actually OOM'd was dp=2 with
+8 workers/rank; extrapolating 3.71 GiB x 16 workers + 2 trainers gives ~64 GiB
+against the 68.7 GiB cap, which is arithmetic, not measurement. And the run
+went straight through, so checkpoints 200/400 exist but resume was never
+exercised on live data.
+
+One regression this surfaced: **~8 % of micro-batches contain no image tokens**
+(`images_loss` logged as 0) against ~1.0 % in the pre-fix run, stable across
+its 13,354 steps. Part is dp=1 pooling half the records per logged step; part
+is the bounded buffer moving a fat cell's overflow from the tail of the cell
+to the head, so ~10 k spectra now precede that cell's first image. Epoch
+totals are unchanged (regression-tested), but the local mix is lumpier. The
+clean fix is to pipeline cell N+1's spectra read against cell N's image scan —
+bounded memory AND a smooth mix — which is a generator restructure, deferred.
+Token-matched, images loss is unaffected: median 121.0 vs 172.0 at 0–4 M
+tokens, 97.5 vs 103.0 at 4–8 M, 83.9 vs 92.3 at 12–16 M.
+
 Stream states carry a `source_assembly` tag; it is bumped on any change to
 record ORDER, since a saved position is an index into it. `crossmatch_only_v2`
 bounded the unmatched buffer, `crossmatch_only_v3` deals partitions to ranks.
