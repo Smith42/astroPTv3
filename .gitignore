@@ -167,3 +167,8 @@ cython_debug/
 
 # wandb local run data
 wandb/
+
+# Streaming/eval scratch: hub caches and run temporaries, tens of GB (ADR 0006
+# streams the corpus live, so these are rebuildable and never committed)
+cache/
+tmp/
