@@ -301,11 +301,11 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             # at pilot dp.
             if worker is not None and worker.num_workers > stream.n_shards:
                 raise ValueError(
-                    f"crossmatch-only has {stream.n_shards * self.world_size} "
-                    f"train partitions; dp({self.world_size}) x "
-                    f"num_loading_workers({worker.num_workers}) exceeds it — "
-                    f"reduce num_loading_workers to <= {stream.n_shards} "
-                    f"or reduce dp"
+                    f"dp rank {self.rank} owns {stream.n_shards} crossmatch "
+                    f"train partitions but num_loading_workers is "
+                    f"{worker.num_workers} — reduce num_loading_workers to "
+                    f"<= {stream.n_shards}, or reduce dp({self.world_size}) "
+                    f"so each rank owns more partitions"
                 )
             if epoch == start_epoch and stream_state is not None:
                 stream.load_state_dict(stream_state)

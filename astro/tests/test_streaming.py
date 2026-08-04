@@ -5,7 +5,12 @@ from typing import Any, cast
 
 import pytest
 
-from astropt3.data.streaming import aligned, decode_record, shuffled, split_files
+from astropt3.data.streaming import (
+    decode_record,
+    owned_by_rank,
+    shuffled,
+    split_files,
+)
 from astropt3.data.synthetic import make_record
 from fake_mmu import fake_open_stream
 
@@ -94,13 +99,19 @@ def test_shuffled_is_deterministic_and_epoch_dependent():
     assert sorted(a) == sorted(files)  # a permutation, nothing lost
 
 
-def test_aligned_truncates_to_a_shard_multiple():
-    """An odd shard count (pairs: 165 % dp 2) silently collapses datasets'
-    rank/worker split to one shard — aligned() must prevent it."""
+def test_dp_ranks_partition_the_corpus_without_dropping_any():
+    """The DP deal must cover every cell exactly once at any rank count.
+
+    split_dataset_by_node only assigns shards when the count divides evenly and
+    otherwise reads everything on every rank; truncating to a multiple instead
+    cost 37 of 165 cells an epoch at dp=64. Dealing the list does neither.
+    """
     files = [f"f{i}" for i in range(165)]
-    assert len(aligned(files, 2)) == 164
-    assert aligned(files, 1) == files  # single shard: keep everything
-    assert aligned(files, 2) == files[:164]  # a prefix, order untouched
+    assert owned_by_rank(files, 0, 1) == files  # single rank: keep everything
+    for dp in (2, 8, 32, 64):
+        deals = [owned_by_rank(files, rank, dp) for rank in range(dp)]
+        assert sorted(f for deal in deals for f in deal) == sorted(files)
+        assert max(map(len, deals)) - min(map(len, deals)) <= 1
 
 
 def test_crossmatch_generator_reads_survive_dataloader_workers():

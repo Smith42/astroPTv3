@@ -17,7 +17,7 @@ from datasets import Array3D, Dataset, Features, Sequence, Value
 
 from astropt3.data.streaming import (
     _spectrum_owners,
-    aligned,
+    owned_by_rank,
     crossmatch_dataset,
     decode_record,
     shuffled,
@@ -166,15 +166,14 @@ def fake_open_stream(
     """Open the local crossmatch-only fixture with production semantics."""
     import json
 
-    from datasets.distributed import split_dataset_by_node
-
     if match_index is None:
         raise ValueError("crossmatch-only streaming requires a match index")
 
     fx = _fixtures()
     all_images = fx["images"]
-    selected = aligned(
+    selected = owned_by_rank(
         shuffled(split_files(list(range(len(all_images))), split), seed, epoch),
+        shard,
         num_shards,
     )
     spectra_paths_by_cell = {cell: fx["spectra"] for cell in range(len(all_images))}
@@ -190,6 +189,4 @@ def fake_open_stream(
         matched_spectra_ids={str(value) for value in fx["match"].values()},
         features=union_features(all_images[0], fx["spectra"][0]),
     )
-    if num_shards > 1:
-        stream = split_dataset_by_node(stream, rank=shard, world_size=num_shards)
     return stream.map(decode_record)

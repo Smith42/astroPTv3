@@ -7,9 +7,10 @@ spectra. There is no standalone source, weighting, skim governor, or local
 cache; the modality mix follows the data.
 
 ``datasets.IterableDataset.from_generator`` owns worker sharding and resume.
-DP ranks are split with ``split_dataset_by_node``. Never call
-``IterableDataset.shuffle()``: datasets 5.x collapses ``n_shards`` to one.
-Instead, partition paths are deterministically permuted per epoch.
+DP ranks are split by dealing the partition list (``owned_by_rank``), not by
+``split_dataset_by_node``. Never call ``IterableDataset.shuffle()``: datasets
+5.x collapses ``n_shards`` to one. Instead, partition paths are
+deterministically permuted per epoch.
 """
 
 from __future__ import annotations
@@ -29,10 +30,11 @@ IMAGE_SHAPE = (3, 152, 152)
 
 SYNTHETIC_ROOT = "synthetic"
 MMU_ROOT = "mmu"
-# v2 bounds the unmatched-spectrum buffer, which reorders a fat cell's records
-# (overflow leads the cell instead of trailing it) -- so a v1 stream position
-# no longer names the same record and must be rejected on load.
-SOURCE_ASSEMBLY = "crossmatch_only_v2"
+# Bumped whenever the record ORDER changes, since a saved stream position is
+# an index into it: v2 bounded the unmatched-spectrum buffer (a fat cell's
+# overflow now leads the cell instead of trailing it), v3 deals partitions to
+# DP ranks instead of truncating and node-splitting them.
+SOURCE_ASSEMBLY = "crossmatch_only_v3"
 # ~74.6 KiB per DESI spectrum row (measured, scripts/probe_stream_rss.py), so
 # this is ~3.5k rows held per worker. Sized against the 68.7 GiB slurm cgroup
 # at 8 workers x 2 ranks; raise it only with that arithmetic redone.
@@ -169,9 +171,18 @@ def shuffled(files: list, seed: int, epoch: int) -> list:
     return [files[i] for i in order]
 
 
-def aligned(files: list, num_shards: int) -> list:
-    """Rotate then truncate paths to a multiple of the DP shard count."""
-    return files[: len(files) - len(files) % num_shards] if num_shards > 1 else files
+def owned_by_rank(files: list, shard: int, num_shards: int) -> list:
+    """Deal partitions round-robin to one DP rank.
+
+    Replaces ``datasets.split_dataset_by_node``, which only assigns shards when
+    ``num_shards % world_size == 0`` and otherwise silently degrades to "keep 1
+    example out of world_size" — every rank then opens every partition and
+    discards the rest, i.e. world_size times the wire bytes for the same
+    tokens. Dealing the list ourselves cannot hit that path, and unlike
+    truncating to a shard multiple it drops nothing (that cost 37 of 165 cells
+    an epoch at dp=64). Ranks may differ by one partition.
+    """
+    return files[shard::num_shards] if num_shards > 1 else files
 
 
 # -- match index -------------------------------------------------------------
@@ -379,7 +390,7 @@ def _spectrum_owners(spectra_paths_by_cell: dict) -> dict:
     }
 
 
-def _crossmatch_dataset(match_index, split, seed, epoch, num_shards):
+def _crossmatch_dataset(match_index, split, seed, epoch, shard, num_shards):
     image_files, image_by_cell = catalog_files(IMAGES_CATALOG)
     spectrum_files, spectrum_by_cell = catalog_files(SPECTRA_CATALOG)
     matches, spectra_of = load_match_index(match_index)
@@ -398,15 +409,7 @@ def _crossmatch_dataset(match_index, split, seed, epoch, num_shards):
     }
     owners = _spectrum_owners(paths_by_cell)
     in_split = split_files(all_cells, split)
-    cells = aligned(shuffled(in_split, seed, epoch), num_shards)
-    if len(in_split) != len(cells):
-        # aligned() drops up to num_shards-1 cells so datasets can shard
-        # evenly. Harmless at dp=2; at dp=64 it is 37 of 165 cells an epoch.
-        print(
-            f"[data] {split}: {len(in_split) - len(cells)} of {len(in_split)} "
-            f"partitions dropped this epoch to align with {num_shards} DP shards",
-            flush=True,
-        )
+    cells = owned_by_rank(shuffled(in_split, seed, epoch), shard, num_shards)
     return crossmatch_dataset(
         image_paths=[image_by_cell[cell] for cell in cells],
         match_json=[json.dumps(matches[cell]) for cell in cells],
@@ -434,17 +437,15 @@ def open_stream(
     match_index: str | None = None,
 ):
     """Open one finite, deterministic epoch of the crossmatch-only corpus."""
-    from datasets.distributed import split_dataset_by_node
-
     match_index = resolve_match_index(match_index)
     if match_index is None:
         raise ValueError(
             f"crossmatch-only MMU streaming requires match_index or ${MATCH_INDEX_ENV}"
         )
 
-    stream = _crossmatch_dataset(match_index, split, seed, epoch, num_shards)
-    if num_shards > 1:
-        stream = split_dataset_by_node(stream, rank=shard, world_size=num_shards)
+    # The DP split is the partition deal in owned_by_rank, not
+    # split_dataset_by_node — see its docstring for why.
+    stream = _crossmatch_dataset(match_index, split, seed, epoch, shard, num_shards)
     print(
         f"[data] open_stream {SOURCE_ASSEMBLY} split={split} epoch={epoch} "
         f"shard={shard}/{num_shards} n_shards={stream.n_shards}",

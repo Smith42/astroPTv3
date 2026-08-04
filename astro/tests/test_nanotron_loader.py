@@ -137,11 +137,13 @@ def test_run_configs_fit_the_crossmatch_partition_ceiling():
         stage = config["data_stages"][0]["data"]
         if stage["dataset"].get("data_root") != "mmu":
             continue
-        demand = config["parallelism"]["dp"] * stage["num_loading_workers"]
-        assert demand <= ceiling, (
-            f"{path.name}: dp({config['parallelism']['dp']}) x "
-            f"num_loading_workers({stage['num_loading_workers']}) = {demand} "
-            f"exceeds the {ceiling} train partitions"
+        dp = config["parallelism"]["dp"]
+        workers = stage["num_loading_workers"]
+        # owned_by_rank deals the partitions, so the thinnest rank holds
+        # floor(train / dp) — that is what caps this config's workers.
+        assert workers <= ceiling // dp, (
+            f"{path.name}: num_loading_workers({workers}) exceeds the "
+            f"{ceiling // dp} partitions a dp({dp}) rank owns"
         )
 
 
