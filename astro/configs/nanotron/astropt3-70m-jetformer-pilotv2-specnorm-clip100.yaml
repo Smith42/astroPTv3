@@ -90,6 +90,7 @@ data_stages:
   data:
     dataset:
       data_root: mmu
+      match_index: hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
       object_id_log: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer-pilotv2-specnorm-clip100/objects.log
     seed: 42
     # 8 workers/rank needs the whole 68.7G slurm memory cgroup to itself:

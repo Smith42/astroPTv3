@@ -397,7 +397,16 @@ def _crossmatch_dataset(match_index, split, seed, epoch, num_shards):
         for cell in all_cells
     }
     owners = _spectrum_owners(paths_by_cell)
-    cells = aligned(shuffled(split_files(all_cells, split), seed, epoch), num_shards)
+    in_split = split_files(all_cells, split)
+    cells = aligned(shuffled(in_split, seed, epoch), num_shards)
+    if len(in_split) != len(cells):
+        # aligned() drops up to num_shards-1 cells so datasets can shard
+        # evenly. Harmless at dp=2; at dp=64 it is 37 of 165 cells an epoch.
+        print(
+            f"[data] {split}: {len(in_split) - len(cells)} of {len(in_split)} "
+            f"partitions dropped this epoch to align with {num_shards} DP shards",
+            flush=True,
+        )
     return crossmatch_dataset(
         image_paths=[image_by_cell[cell] for cell in cells],
         match_json=[json.dumps(matches[cell]) for cell in cells],

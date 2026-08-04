@@ -7,11 +7,12 @@ semantics.
 """
 
 from itertools import islice
+from pathlib import Path
 
 import pytest
 import torch
 
-from astropt3.data import nanotron_loader
+from astropt3.data import nanotron_loader, streaming
 from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
     regroup_micro_batch as regroup,
@@ -107,6 +108,39 @@ def test_mmu_stream_loops_epochs(tiny_config, monkeypatch):
     assert len(batches) == 8
     for flat in batches:
         assert flat["input_ids"].shape == (MBS, SEQ_LEN)
+
+
+def test_more_workers_than_partitions_raises_a_named_error(tiny_config, monkeypatch):
+    # datasets only WARNS and stops the surplus workers, so an over-subscribed
+    # run trains on a fraction of its loaders. The fake corpus has 3 train
+    # cells, so 4 workers must fail loudly with the remedy in the message.
+    monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
+    stream = PackedMicroBatches(
+        tiny_config, MBS, SEQ_LEN, data_root="mmu", match_index="present"
+    )
+    loader = torch.utils.data.DataLoader(stream, batch_size=None, num_workers=4)
+    with pytest.raises(ValueError, match="reduce num_loading_workers"):
+        next(iter(loader))
+
+
+def test_run_configs_fit_the_crossmatch_partition_ceiling():
+    """dp x num_loading_workers must fit the ~165-cell crossmatch corpus."""
+    import yaml
+
+    ceiling = 165 - streaming.VAL_PARTITIONS  # train cells at the published index
+    configs = sorted((Path(__file__).parents[1] / "configs" / "nanotron").glob("*.yaml"))
+    assert configs, "no nanotron run configs found"
+    for path in configs:
+        config = yaml.safe_load(path.read_text())
+        stage = config["data_stages"][0]["data"]
+        if stage["dataset"].get("data_root") != "mmu":
+            continue
+        demand = config["parallelism"]["dp"] * stage["num_loading_workers"]
+        assert demand <= ceiling, (
+            f"{path.name}: dp({config['parallelism']['dp']}) x "
+            f"num_loading_workers({stage['num_loading_workers']}) = {demand} "
+            f"exceeds the {ceiling} train partitions"
+        )
 
 
 class _FlakyStream:
