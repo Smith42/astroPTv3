@@ -54,7 +54,8 @@ Spectra unchanged. Additive; gated on `uv run pytest` + the
 
 | Entry | Kind | Status |
 |---|---|---|
-| [`mmu_crossmatch_research.md`](mmu_crossmatch_research.md) | Research | Recommendation: extend pairwise graph through Legacy South × DESI, then HSC/SDSS and Gaia/APOGEE; no code changes. |
+| [`mmu_modality_expansion_plan.md`](mmu_modality_expansion_plan.md) | Plan | **Governing.** Byte-economics order: hub-and-spokes attachments (galaxies-with-hats → SDSS → PROVABGS), then JWST → HSC. |
+| [`mmu_crossmatch_research.md`](mmu_crossmatch_research.md) | Research | Superseded for sequencing by the plan above; still the reference for governance rules, per-catalog schemas and exclusions. |
 
 ---
 

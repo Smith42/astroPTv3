@@ -1,6 +1,33 @@
 # MMU HATS crossmatch research
 
-**Status:** recommendation (2026-08-06)  
+> **Superseded for sequencing (2026-08-04).** The phase order below (Legacy
+> South → HSC×SDSS → Gaia×APOGEE → TESS) ranks candidates by *science value*.
+> The governing plan is
+> [`mmu_modality_expansion_plan.md`](mmu_modality_expansion_plan.md), which
+> ranks the same catalogs by *return per wire byte* — the binding constraint,
+> since the run is NIC-bound — and reaches a materially different order:
+> `galaxies-with-hats` → SDSS → PROVABGS (attachments), then JWST → HSC
+> (second imaging regime), with Legacy South at neutral throughput and the
+> Gaia stellar branch reserved but unbuilt.
+>
+> It also corrects the *shape*: hub-and-spokes (one image scan, N optional
+> ids-only attachments), not a walk of pairwise survey expansions. A measured
+> probe settles it — in a cone yielding 1,031 image×DESI pairs, DESI×SDSS
+> overlap was **7 objects**, so a strict N-way join collapses.
+>
+> Three specific corrections to what follows: SDSS is a **drop-in second
+> spectrum index** (same struct as DESI), not a Phase-B instrument-transfer
+> edge needing a new band registry; JWST is near-term (the packer already
+> handles 96×96 cubes, it needs only NIRCam band-registry entries), not
+> "specialised, later"; and `galaxies-with-hats` and PROVABGS — the two
+> cheapest, highest-yield attachments — are missing from this document
+> entirely.
+>
+> Everything below remains the reference for **governance rules**, per-catalog
+> schemas, footprints and row counts, and the catalogs to exclude
+> (PROVABGS/GZ10 as pretraining sources, PLAsTiCC as unmatchable).
+
+**Status:** recommendation (2026-08-06), superseded for sequencing  
 **Question:** Which additional Multimodal Universe (MMU) HATS catalogs should
 AstroPTv3 crossmatch to add modalities and scalars without breaking its current
 image/spectrum streaming contract?
