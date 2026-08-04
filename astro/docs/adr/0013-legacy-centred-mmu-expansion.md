@@ -6,6 +6,13 @@
 - **References:** [ADR 0006](0006-stream-mmu-upstream.md),
   [ADR 0008](0008-scalar-modalities.md),
   [ADR 0011](0011-skim-crossmatch-scans.md), and PR #31
+- **Implementation progress (2026-08-04):** the shared modality metadata,
+  config-carried token allocation, registry-driven packing, backward-compatible
+  family objective, HF/nanotron parity surface, and family logging are
+  implemented. Existing ids 0–16 and historical loss behavior remain frozen;
+  new ADR 0013 configs explicitly select `loss_aggregation: family`. Anchor
+  scouting/selection, stream topology, and source spokes remain pending, so no
+  `SOURCE_ASSEMBLY` bump has occurred.
 
 ## Question
 

@@ -45,7 +45,10 @@ Usage (training machine, alongside a run):
 Needs the ``[train]`` extra (matplotlib + wandb for the panels).
 """
 
+from __future__ import annotations
+
 import argparse
+import importlib
 import json
 import os
 import random
@@ -56,7 +59,9 @@ from pathlib import Path
 
 ASTRO_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = ASTRO_DIR.parent
-DEFAULT_CONVERTER = REPO_ROOT / "nanotron" / "tools" / "astropt3" / "convert_nanotron_to_hf.py"
+DEFAULT_CONVERTER = (
+    REPO_ROOT / "nanotron" / "tools" / "astropt3" / "convert_nanotron_to_hf.py"
+)
 
 
 def completed_steps(checkpoints_dir: Path) -> list[int]:
@@ -64,19 +69,33 @@ def completed_steps(checkpoints_dir: Path) -> list[int]:
     latest_file = checkpoints_dir / "latest.txt"
     if not latest_file.exists():
         return []
-    latest = int(latest_file.read_text().strip())
-    steps = [
-        int(p.name)
-        for p in checkpoints_dir.iterdir()
-        if p.is_dir() and p.name.isdigit() and (p / "model_config.json").exists()
-    ]
+    try:
+        latest = int(latest_file.read_text().strip())
+        steps = [
+            int(path.name)
+            for path in checkpoints_dir.iterdir()
+            if path.is_dir()
+            and path.name.isdigit()
+            and (path / "model_config.json").exists()
+        ]
+    except (OSError, ValueError) as error:
+        raise RuntimeError(
+            f"cannot read checkpoint state from {checkpoints_dir}"
+        ) from error
     return sorted(s for s in steps if s <= latest)
 
 
 def processed_steps(results_path: Path) -> set[int]:
     if not results_path.exists():
         return set()
-    return {json.loads(line)["step"] for line in results_path.read_text().splitlines() if line.strip()}
+    try:
+        return {
+            json.loads(line)["step"]
+            for line in results_path.read_text().splitlines()
+            if line.strip()
+        }
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise RuntimeError(f"cannot read sweep results from {results_path}") from error
 
 
 def steps_to_eval(
@@ -133,7 +152,10 @@ def convert_checkpoint(converter: Path, checkpoint: Path, save_path: Path) -> No
 
 
 def process_step(step: int, args, sample_records: list[dict], cache: dict) -> dict:
-    from astropt3.eval.linear_probe import load_or_collect_probe_objects, probe_checkpoint
+    from astropt3.eval.linear_probe import (
+        load_or_collect_probe_objects,
+        probe_checkpoint,
+    )
     from astropt3.eval.samples import sample_checkpoint
     from astropt3.eval.val_loss import evaluate_checkpoint, val_batches
 
@@ -175,6 +197,7 @@ def process_step(step: int, args, sample_records: list[dict], cache: dict) -> di
     )
     result["val_loss"] = val["loss"]
     result["val_modality_losses"] = val["modality_losses"]
+    result["val_family_losses"] = val["family_losses"]
     try:
         if "probe_set" not in cache:
             cache["probe_set"] = load_or_collect_probe_objects(
@@ -261,9 +284,15 @@ def process_step(step: int, args, sample_records: list[dict], cache: dict) -> di
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoints-dir", required=True, help="nanotron run checkpoint dir")
+    parser.add_argument(
+        "--checkpoints-dir", required=True, help="nanotron run checkpoint dir"
+    )
     parser.add_argument("--out-dir", required=True)
-    parser.add_argument("--data-root", required=True, help="'mmu' (streams the reserved val partitions) or 'synthetic'")
+    parser.add_argument(
+        "--data-root",
+        required=True,
+        help="'mmu' (streams the reserved val partitions) or 'synthetic'",
+    )
     parser.add_argument("--converter", default=str(DEFAULT_CONVERTER))
     parser.add_argument("--val-batches", type=int, default=512)
     parser.add_argument("--probe-objects", type=int, default=2048)
@@ -282,7 +311,9 @@ def main():
         "this does NOT keep the early powers of two, so --eval-every 1000 skips "
         "steps 1..512",
     )
-    parser.add_argument("--watch", action="store_true", help="poll until --until-step is processed")
+    parser.add_argument(
+        "--watch", action="store_true", help="poll until --until-step is processed"
+    )
     parser.add_argument("--poll-interval", type=float, default=60.0)
     parser.add_argument(
         "--until-step",
@@ -341,7 +372,9 @@ def main():
     )
     args = parser.parse_args()
     if args.samples_every < 1:
-        parser.error("--samples-every must be >= 1 (disable sampling with --sample-records none)")
+        parser.error(
+            "--samples-every must be >= 1 (disable sampling with --sample-records none)"
+        )
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -354,20 +387,27 @@ def main():
     if args.sample_records != "none":
         from astropt3.eval.samples import load_template_record
 
+        try:
+            record_indices = [
+                (token, int(token.lstrip("s")))
+                for token in args.sample_records.split(",")
+            ]
+        except ValueError as error:
+            parser.error(f"invalid --sample-records: {error}")
         sample_records = [
             load_template_record(
                 args.data_root,
-                int(tok.lstrip("s")),
+                index,
                 prefer_spectrum=True,
-                spectrum_only=tok.startswith("s"),
+                spectrum_only=token.startswith("s"),
             )
-            for tok in args.sample_records.split(",")
+            for token, index in record_indices
         ]
 
+    wandb = None
     wandb_run = None
     if args.wandb:
-        import wandb
-
+        wandb = importlib.import_module("wandb")
         run_id = args.wandb_run_id or f"eval-{Path(args.checkpoints_dir).name}"
         wandb_run = wandb.init(
             project="astropt3",
@@ -375,7 +415,11 @@ def main():
             resume="allow",
             name=run_id,
             job_type="eval",
-            config={k: v for k, v in vars(args).items() if k not in ("wandb", "wandb_run_id")},
+            config={
+                k: v
+                for k, v in vars(args).items()
+                if k not in ("wandb", "wandb_run_id")
+            },
         )
         # panels plot against the checkpoint step, not wandb's internal step
         # (which just counts log calls in this lagging sidecar run)
@@ -399,15 +443,32 @@ def main():
         for step in todo:
             print(f"[sweep] processing step {step}", flush=True)
             result = process_step(step, args, sample_records, cache)
-            with open(results_path, "a") as f:
-                f.write(json.dumps(result) + "\n")
+            try:
+                with open(results_path, "a") as file:
+                    file.write(json.dumps(result) + "\n")
+            except OSError as error:
+                raise RuntimeError(
+                    f"cannot append sweep result to {results_path}"
+                ) from error
             if wandb_run is not None:
+                assert wandb is not None
                 wandb_run.log(
                     {
                         "checkpoint_step": step,
                         "val/loss": result["val_loss"],
-                        **{f"val/loss_{m}": v for m, v in result["val_modality_losses"].items()},
-                        **({} if result["probe_r2"] is None else {"probe/r2": result["probe_r2"]}),
+                        **{
+                            f"val/loss_{m}": v
+                            for m, v in result["val_modality_losses"].items()
+                        },
+                        **{
+                            f"val/family_{family}": value
+                            for family, value in result["val_family_losses"].items()
+                        },
+                        **(
+                            {}
+                            if result["probe_r2"] is None
+                            else {"probe/r2": result["probe_r2"]}
+                        ),
                         **{
                             f"head/{k.removeprefix('head_')}": result[k]
                             for k in result

@@ -4,6 +4,9 @@
   scalar spans + uniform span shuffle in `packing.py`, GMM heads both
   implementations, `eval/scalar_head.py`, probe scalar-free)
 - **Date:** 2026-07-18
+- **Superseded for expanded-corpus loss aggregation:** [ADR 0013](0013-legacy-centred-mmu-expansion.md)
+  replaces independent scalar `loss_weight` terms with one collectively bounded
+  scalar-family mean. Historical configs retain this ADR's objective.
 - **References:**
   - `astro/src/astropt3/tokenization.py` — `_MODALITY_ID_BLOCKS`, the frozen
     64-id reservation this ADR spends ids 8–16 of
@@ -123,7 +126,7 @@ supersedes ADR 0005's parity rule.**
 ### The three new modalities
 
 | Modality | ids | `input_size` | Normalization | Source field |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `Z` | 8, 9, 10 | 1 | `log(1 + z)` | `Z`, gated `ZWARN == 0` |
 | `ebv` | 11, 12, 13 | 1 | `ebv / 0.1` | `ebv` |
 | `photometry` | 14, 15, 16 | 3 | `arcsinh(f / 0.01 nMgy)` | `flux_g/r/z` |

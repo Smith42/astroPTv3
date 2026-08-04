@@ -52,6 +52,8 @@ caller (worker-prefetched batches are accounted for by torchdata). The
 trainer captures either kind of loader through :func:`loader_state_dict`.
 """
 
+from __future__ import annotations
+
 import gc
 import itertools
 import time
@@ -567,7 +569,7 @@ def build_astropt3_dataloader(
     if resume_state_dir is not None:
         state_file = Path(resume_state_dir) / STATE_FILE_TEMPLATE.format(rank=dp_rank)
         if state_file.exists():
-            state = torch.load(state_file, weights_only=True)
+            state = torch.serialization.load(state_file, weights_only=True)
             if isinstance(state, dict) and state.get("format") == LOADER_STATE_FORMAT:
                 if state["num_workers"] != num_workers:
                     raise ValueError(

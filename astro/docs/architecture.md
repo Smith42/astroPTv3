@@ -128,8 +128,10 @@ reference):
 - **Loss**: Huber (δ=1.0) computed at positions **one to the left** of each
   modality token — `<|begin_m|>` predicts patch 0, patch *i* predicts patch
   *i+1* (AstroPT's `starts−1` alignment, implemented via `left_shift_mask`).
-  Per-modality means are combined by `loss_weight` (both 1.0 for the pilot).
-  Special tokens and pads carry no loss.
+  ADR 0013 configs average present modalities within image/spectrum/scalar,
+  then combine present family means at 1:1:0.1. Historical configs retain the
+  former per-modality `loss_weight` mean. Special tokens and pads carry no
+  loss.
 - **Init**: stock SmolLM3 `_init_weights`, normal(0, 0.02).
 
 ### Size family (Pythia-mirrored totals, no vocab head)
@@ -137,15 +139,15 @@ reference):
 Verified by `scripts/count_params.py` (asserts ±10%; all within 1.8%):
 
 | Name | layers | hidden | heads | kv heads | head_dim | intermediate | total |
-|------|--------|--------|-------|----------|----------|--------------|-------|
-| 70M  | 23 | 512  | 8  | 2 | 64  | 1536  | 70.0M |
-| 160M | 25 | 768  | 12 | 4 | 64  | 2048  | 158.3M |
-| 410M | 27 | 1024 | 16 | 4 | 64  | 4096  | 411.9M |
-| 1B   | 22 | 2048 | 16 | 4 | 128 | 5632  | 994.8M |
-| 1.4B | 31 | 2048 | 16 | 4 | 128 | 5632  | 1.401B |
+| ------ | -------- | -------- | ------- | ---------- | ---------- | -------------- | ------- |
+| 70M | 23 | 512 | 8 | 2 | 64 | 1536 | 70.0M |
+| 160M | 25 | 768 | 12 | 4 | 64 | 2048 | 158.3M |
+| 410M | 27 | 1024 | 16 | 4 | 64 | 4096 | 411.9M |
+| 1B | 22 | 2048 | 16 | 4 | 128 | 5632 | 994.8M |
+| 1.4B | 31 | 2048 | 16 | 4 | 128 | 5632 | 1.401B |
 | 2.8B | 36 | 2048 | 16 | 4 | 128 | 11008 | 2.815B (exact SmolLM3-3B body) |
 | 6.9B | 38 | 4096 | 32 | 8 | 128 | 11008 | 6.740B |
-| 12B  | 42 | 5120 | 40 | 8 | 128 | 14336 | 11.90B |
+| 12B | 42 | 5120 | 40 | 8 | 128 | 14336 | 11.90B |
 
 Modality extras are tiny (~2560×hidden ≈ 1M params at 70M, 13M at 12B); the
 small sizes gain a layer or two over Pythia to hit nominal totals.

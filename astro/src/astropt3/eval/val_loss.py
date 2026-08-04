@@ -74,6 +74,7 @@ def evaluate(
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
     total, per_key, per_key_n = 0.0, {}, {}
+    per_family, per_family_n = {}, {}
     n = 0
     for kwargs in (
         batches
@@ -105,12 +106,18 @@ def evaluate(
         for key, value in out.modality_losses.items():
             per_key[key] = per_key.get(key, 0.0) + value.item()
             per_key_n[key] = per_key_n.get(key, 0) + 1
+        for key, value in out.family_losses.items():
+            per_family[key] = per_family.get(key, 0.0) + value.item()
+            per_family_n[key] = per_family_n.get(key, 0) + 1
         n += 1
     if n == 0:
         raise ValueError("no validation batches produced")
     return {
         "loss": total / n,
         "modality_losses": {k: per_key[k] / per_key_n[k] for k in sorted(per_key)},
+        "family_losses": {
+            k: per_family[k] / per_family_n[k] for k in sorted(per_family)
+        },
         "n_batches": n,
     }
 

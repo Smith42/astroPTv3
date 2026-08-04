@@ -33,10 +33,13 @@ row-major (batch, time) order — the same order a boolean mask lookup
 ``tensor[mask]`` produces — so the model can align them without indices.
 """
 
+from __future__ import annotations
+
 import math
 import random
 import zlib
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 
@@ -44,7 +47,6 @@ from ..configuration_astropt3 import AstroPT3Config
 from ..tokenization import (
     BOS_ID,
     PAD_ID,
-    modality_token_ids,
     normalize_wavelength,
     patchify_image,
     patchify_spectrum,
@@ -63,7 +65,7 @@ IMAGE_CROP = 96
 class ObjectSeq:
     """One object's token sequence and its continuous payloads."""
 
-    input_ids: torch.LongTensor  # [L]
+    input_ids: torch.Tensor  # int64 [L]
     masks: dict  # name -> bool [L]
     values: dict  # name -> [n_m, input_size]
     positions: dict  # name -> long [n_m] or float [n_m, pos_input_size]
@@ -98,9 +100,9 @@ class ObjectSequencer:
             config, "spectra_norm_divisor", _SPECTRA_DIV_FACTOR
         )
 
-    def _images_tokens(self, record: dict):
-        mod = self.registry.get_config("images")
-        image = record["image"]
+    def _image_tokens(self, name: str, record: dict):
+        mod = self.registry.get_config(name)
+        image = record[mod.record_keys[0]]
         flux = torch.as_tensor(image["flux"], dtype=torch.float32)
         # central crop: 152x152 survey cutouts -> 96x96 (144 patch-8 tokens);
         # JWST cubes are already 96x96 and pass through untouched
@@ -121,9 +123,9 @@ class ObjectSequencer:
         positions = torch.arange(len(patches), dtype=torch.long)
         return patches, positions
 
-    def _spectra_tokens(self, record: dict):
-        mod = self.registry.get_config("spectra")
-        spec = record["spectrum"]
+    def _spectrum_tokens(self, name: str, record: dict):
+        mod = self.registry.get_config(name)
+        spec = record[mod.record_keys[0]]
         flux = torch.as_tensor(spec["flux"], dtype=torch.float32)
         lam = torch.as_tensor(spec["lambda"], dtype=torch.float32)
         mask = torch.as_tensor(spec["mask"], dtype=torch.bool)
@@ -143,17 +145,21 @@ class ObjectSequencer:
         reliability flag (ADR 0008 reuses ADR 0005's cut; a missing flag on
         a Z-bearing record — synthetic pre-ZWARN fixtures — passes).
         """
-        if name == "photometry":
-            fluxes = [record.get(k) for k in ("flux_g", "flux_r", "flux_z")]
-            if any(f is None or not math.isfinite(float(f)) for f in fluxes):
+        mod = self.registry.get_config(name)
+        values = []
+        for key in mod.record_keys:
+            raw_value: Any = record.get(key)
+            if raw_value is None:
                 return None
-            return [float(f) for f in fluxes]
-        value = record.get(name)
-        if value is None or not math.isfinite(float(value)):
+            try:
+                values.append(float(raw_value))
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"modality {name!r} has a non-numeric value") from error
+        if not all(math.isfinite(value) for value in values):
             return None
         if name == "Z" and bool(record.get("ZWARN") or False):
             return None
-        return [float(value)]
+        return values
 
     def _scalar_tokens(self, name: str, record: dict):
         value = self._scalar_value(name, record)
@@ -181,17 +187,23 @@ class ObjectSequencer:
         must pool over sequences that cannot contain the target, ADR 0008)."""
         parts = {}
         for name in self.registry.names():
-            if getattr(self.registry.get_config(name), "scalar", False):
+            mod = self.registry.get_config(name)
+            if mod.family == "scalar":
                 if include_scalars:
                     tokens = self._scalar_tokens(name, record)
                     if tokens is not None:
                         parts[name] = tokens
-            elif name == "images" and record.get("image") is not None:
-                parts[name] = self._images_tokens(record)
-            elif name == "spectra" and record.get("spectrum") is not None:
-                parts[name] = self._spectra_tokens(record)
+                continue
+            if record.get(mod.record_keys[0]) is None:
+                continue
+            if mod.family == "image":
+                parts[name] = self._image_tokens(name, record)
+            elif mod.family == "spectrum":
+                parts[name] = self._spectrum_tokens(name, record)
         if not parts:
-            raise ValueError(f"record {record.get('object_id')!r} has no known modality")
+            raise ValueError(
+                f"record {record.get('object_id')!r} has no known modality"
+            )
 
         order = list(parts)
         if modality_order is not None:
@@ -212,7 +224,12 @@ class ObjectSequencer:
         spans = {}
         for name in order:
             values, _ = parts[name]
-            begin_id, placeholder_id, end_id = modality_token_ids(name)
+            token_ids = self.registry.get_config(name).token_ids
+            if (
+                token_ids is None
+            ):  # guarded by ModalityConfig; keeps type checkers honest
+                raise ValueError(f"modality {name!r} has no token ids")
+            begin_id, placeholder_id, end_id = token_ids
             ids.append(begin_id)
             spans[name] = (len(ids), len(ids) + len(values))
             ids.extend([placeholder_id] * len(values))

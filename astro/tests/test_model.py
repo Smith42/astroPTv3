@@ -18,6 +18,7 @@ def test_forward_backward(tiny_config, sequencer, collator):
     out = model(**batch)
     assert torch.isfinite(out.loss)
     assert set(out.modality_losses) == {"images", "spectra", "Z", "ebv", "photometry"}
+    assert set(out.family_losses) == {"image", "spectrum", "scalar"}
     assert all(torch.isfinite(v) for v in out.modality_losses.values())
     out.loss.backward()
     missing = [
@@ -76,6 +77,44 @@ def test_image_only_batch(tiny_model, sequencer, collator, image_only_record):
         out = tiny_model(**batch)
     assert "spectra" not in out.modality_losses
     assert torch.isfinite(out.loss)
+
+
+def test_family_loss_matches_adr_0013(tiny_model, sequencer, collator, full_record):
+    batch = collator([sequencer.build(full_record)])
+    with torch.no_grad():
+        out = tiny_model(**batch)
+    scalar_mean = torch.stack(
+        [out.modality_losses[name] for name in ("Z", "ebv", "photometry")]
+    ).mean()
+    assert torch.allclose(out.family_losses["image"], out.modality_losses["images"])
+    assert torch.allclose(out.family_losses["spectrum"], out.modality_losses["spectra"])
+    assert torch.allclose(out.family_losses["scalar"], scalar_mean)
+    expected = (
+        out.family_losses["image"]
+        + out.family_losses["spectrum"]
+        + 0.1 * out.family_losses["scalar"]
+    ) / 2.1
+    assert torch.allclose(out.loss, expected, atol=1e-6)
+
+
+def test_legacy_loss_mode_stays_checkpoint_compatible(
+    tiny_model, tiny_config, sequencer, collator, full_record
+):
+    from astropt3 import AstroPT3Config, AstroPT3Model
+
+    config = AstroPT3Config(
+        **{**tiny_config.to_dict(), "loss_aggregation": "legacy_modality_mean"}
+    )
+    model = AstroPT3Model(config).eval()
+    model.load_state_dict(tiny_model.state_dict())
+    batch = collator([sequencer.build(full_record)])
+    with torch.no_grad():
+        out = model(**batch)
+    weights = {"images": 1.0, "spectra": 1.0, "Z": 0.1, "ebv": 0.1, "photometry": 0.1}
+    expected = torch.stack(
+        [weights[name] * loss for name, loss in out.modality_losses.items()]
+    ).sum() / len(out.modality_losses)
+    assert torch.allclose(out.loss, expected, atol=1e-6)
 
 
 def test_loss_matches_manual_computation(tiny_model, sequencer, collator, full_record):

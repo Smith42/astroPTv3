@@ -40,7 +40,9 @@ def lr_at(step, max_steps, peak_lr, warmup=10):
     if step < warmup:
         return peak_lr * (step + 1) / warmup
     frac = (step - warmup) / max(max_steps - warmup, 1)
-    return 0.1 * peak_lr + 0.5 * (peak_lr - 0.1 * peak_lr) * (1 + math.cos(math.pi * frac))
+    return 0.1 * peak_lr + 0.5 * (peak_lr - 0.1 * peak_lr) * (
+        1 + math.cos(math.pi * frac)
+    )
 
 
 def make_batches(config, n_objects, objects_per_batch, seq_len):
@@ -55,10 +57,20 @@ def make_batches(config, n_objects, objects_per_batch, seq_len):
     return batches
 
 
-def run(config_path, steps=50, objects_per_batch=4, seq_len=896, lr=3e-4, device="cpu", log_every=10):
-    config, meta = load_model_config(config_path)
+def run(
+    config_path,
+    steps=50,
+    objects_per_batch=4,
+    seq_len=896,
+    lr=3e-4,
+    device="cpu",
+    log_every=10,
+):
+    config, _ = load_model_config(config_path)
+    device = torch.device(device)
     torch.manual_seed(0)
-    model = AstroPT3Model(config).to(device)
+    model = AstroPT3Model(config)
+    model.to(device)  # type: ignore[arg-type]
     model.train()
     opt = configure_optimizer(model, lr)
 
@@ -88,8 +100,14 @@ def run(config_path, steps=50, objects_per_batch=4, seq_len=896, lr=3e-4, device
         losses.append(out.loss.item())
         if step % log_every == 0:
             per_mod = {k: f"{v.item():.4f}" for k, v in out.modality_losses.items()}
-            print(f"step {step:>4}  loss {losses[-1]:.4f}  {per_mod}  ({time.time() - t0:.1f}s)")
-    print(f"final loss {losses[-1]:.4f} (initial {losses[0]:.4f}) after {len(losses)} steps")
+            per_family = {k: f"{v.item():.4f}" for k, v in out.family_losses.items()}
+            print(
+                f"step {step:>4}  loss {losses[-1]:.4f}  "
+                f"families={per_family} modalities={per_mod}  ({time.time() - t0:.1f}s)"
+            )
+    print(
+        f"final loss {losses[-1]:.4f} (initial {losses[0]:.4f}) after {len(losses)} steps"
+    )
     return losses
 
 
