@@ -29,7 +29,14 @@ IMAGE_SHAPE = (3, 152, 152)
 
 SYNTHETIC_ROOT = "synthetic"
 MMU_ROOT = "mmu"
-SOURCE_ASSEMBLY = "crossmatch_only"
+# v2 bounds the unmatched-spectrum buffer, which reorders a fat cell's records
+# (overflow leads the cell instead of trailing it) -- so a v1 stream position
+# no longer names the same record and must be rejected on load.
+SOURCE_ASSEMBLY = "crossmatch_only_v2"
+# ~74.6 KiB per DESI spectrum row (measured, scripts/probe_stream_rss.py), so
+# this is ~3.5k rows held per worker. Sized against the 68.7 GiB slurm cgroup
+# at 8 workers x 2 ranks; raise it only with that arithmetic redone.
+UNMATCHED_BUFFER_BYTES = 256 * 1024 * 1024
 
 # Whole image cells are reserved, so image-bearing train/val objects are
 # spatially disjoint. Stable global ownership assigns each unmatched spectrum
@@ -229,6 +236,13 @@ def _rows(parquet_file):
             yield table.slice(j, 1).to_pylist()[0]
 
 
+def _spectrum_only_rows(tables):
+    """Yield each buffered spectrum row as an image-less record."""
+    for table in tables:
+        for i in range(table.num_rows):
+            yield {**table.slice(i, 1).to_pylist()[0], "image": None}
+
+
 def _crossmatch_examples(
     image_paths,
     match_json,
@@ -253,7 +267,7 @@ def _crossmatch_examples(
 
         needed = pa.array(sorted(map(str, wanted.values())), type=pa.string())
         owned = set(owned)
-        matched_tables, unmatched_tables = [], []
+        matched_tables, buffered, buffered_bytes = [], [], 0
         for path in spectrum_paths:
             with fsspec.open(path, "rb") as file:
                 parquet = pq.ParquetFile(file)
@@ -261,10 +275,21 @@ def _crossmatch_examples(
                     table = parquet.read_row_group(i)
                     ids = table["object_id"].cast(pa.string())
                     matched_tables.append(table.filter(pc.is_in(ids, needed)))
-                    if path in owned:
-                        unmatched_tables.append(
-                            table.filter(pc.invert(pc.is_in(ids, paired_globally)))
-                        )
+                    if path not in owned:
+                        continue
+                    rest = table.filter(pc.invert(pc.is_in(ids, paired_globally)))
+                    # Matched spectra must stay resident (the image scan looks
+                    # them up by id, in image order), but the unmatched ones
+                    # only wait to be strided out. Buffering a whole cell's
+                    # worth pinned up to 1.1 GiB per worker on the real
+                    # catalogs -- 16 workers x that is what OOM-killed the
+                    # crossmatch-only run at step 13,354. Past the budget,
+                    # emit immediately instead of holding.
+                    if buffered_bytes + rest.nbytes > UNMATCHED_BUFFER_BYTES:
+                        yield from _spectrum_only_rows([rest])
+                        continue
+                    buffered.append(rest)
+                    buffered_bytes += rest.nbytes
 
         matched = pa.concat_tables(matched_tables) if matched_tables else None
         spectra = (
@@ -274,9 +299,8 @@ def _crossmatch_examples(
                 str(matched["object_id"][i].as_py()): i for i in range(matched.num_rows)
             }
         )
-        unmatched = pa.concat_tables(unmatched_tables) if unmatched_tables else None
-        unmatched_count = 0 if unmatched is None else unmatched.num_rows
-        unmatched_index = 0
+        unmatched_count = sum(table.num_rows for table in buffered)
+        pending = _spectrum_only_rows(buffered)
 
         with fsspec.open(image_path, "rb") as file:
             parquet = pq.ParquetFile(file)
@@ -286,16 +310,10 @@ def _crossmatch_examples(
                 else 0
             )
             for row_position, row in enumerate(_rows(parquet)):
-                if (
-                    unmatched is not None
-                    and unmatched_index < unmatched_count
-                    and row_position % stride == 0
-                ):
-                    yield {
-                        **unmatched.slice(unmatched_index, 1).to_pylist()[0],
-                        "image": None,
-                    }
-                    unmatched_index += 1
+                if stride and row_position % stride == 0:
+                    spectrum_row = next(pending, None)
+                    if spectrum_row is not None:
+                        yield spectrum_row
 
                 spectrum_id = wanted.get(str(row["object_id"]))
                 if spectrum_id is None:
@@ -320,12 +338,7 @@ def _crossmatch_examples(
                     "ZWARN": spectrum.get("ZWARN"),
                 }
 
-        while unmatched is not None and unmatched_index < unmatched_count:
-            yield {
-                **unmatched.slice(unmatched_index, 1).to_pylist()[0],
-                "image": None,
-            }
-            unmatched_index += 1
+        yield from pending
 
 
 def crossmatch_dataset(

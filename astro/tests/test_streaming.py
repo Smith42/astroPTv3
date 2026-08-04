@@ -145,6 +145,20 @@ def test_crossmatch_only_resume_and_ranks_are_disjoint():
     assert rank_ids[0].isdisjoint(rank_ids[1])
 
 
+def test_unmatched_buffer_budget_reorders_but_never_drops_records(monkeypatch):
+    """The budget bounds memory only — the corpus must be byte-identical.
+
+    A cell's unmatched spectra are strided into the image scan out of a
+    bounded buffer; past the budget they are emitted as read. That moves
+    records within a cell, so the guarantee is on the multiset, not the order.
+    """
+    baseline = sorted(record["object_id"] for record in fake_open_stream(seed=0))
+    monkeypatch.setattr("astropt3.data.streaming.UNMATCHED_BUFFER_BYTES", 0)
+    starved = [record["object_id"] for record in fake_open_stream(seed=0)]
+    assert sorted(starved) == baseline
+    assert len(starved) == len(set(starved)), "a record was emitted twice"
+
+
 def test_spectrum_only_rows_are_disjoint_between_train_and_val():
     def spectrum_only_ids(split):
         return {
