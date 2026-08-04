@@ -32,8 +32,9 @@ survey data to model input:
 
 1. **Record**: an MMU-schema dict. `image.flux` is float32 `(3, 152, 152)`
    (g/r/z bands); `spectrum` (when present) has 7781-bin `flux`, `lambda`,
-   `ivar`, `mask`. Records stream from local parquet shards
-   (`data/mmu.py::MMUIterableDataset`) or from the synthetic generator
+   `ivar`, `mask`. Records stream live from the MMU
+   HATS catalogs (`data/streaming.py::MMUStream`, ADR 0006) or from the
+   synthetic generator
    (`data/synthetic.py`, schema-identical, used by every test).
 
 2. **Physical normalization** (`data/band_registry.py`, ported from

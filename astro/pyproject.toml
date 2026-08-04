@@ -17,15 +17,21 @@ dependencies = [
     "einops>=0.8",
     "numpy>=1.26",
     "pyyaml>=6.0",
+    # ADR 0006: the corpus is streamed from the HF hub at train time via
+    # hats (partition enumeration) + pyarrow (row-group reads). lsdb is
+    # deliberately NOT here — the crossmatch is precomputed offline into a
+    # match-index, so no train-time path needs its dask/KD-tree engine.
+    "hats",
+    "pyarrow",
+    "huggingface-hub",
+    "nested-pandas",
 ]
 
 [project.optional-dependencies]
-# Offline data preparation (login node only; lsdb/hats never needed on compute nodes)
+# Offline prep (login node): building the ADR 0006 match-index is the only
+# thing that still needs lsdb.
 data = [
     "lsdb",
-    "hats",
-    "nested-pandas",
-    "scipy",  # pass-2 matched-position KD-tree (ADR 0005)
 ]
 # Training machine only: the nanotron fork (../nanotron git submodule,
 # editable) plus flash-attn (needs a CUDA toolchain or a matching prebuilt
@@ -55,5 +61,6 @@ packages = ["src/astropt3"]
 testpaths = ["tests"]
 markers = [
     "gpu: tests that need a GPU + nanotron env (run on the training machine)",
+    "network: tests that stream live MMU catalogs from the HF hub",
 ]
 addopts = "-m 'not gpu'"

@@ -1,0 +1,5 @@
+{
+  "include": ["astro/src", "astro/tests", "astro/scripts"],
+  "venvPath": "astro",
+  "venv": ".venv"
+}

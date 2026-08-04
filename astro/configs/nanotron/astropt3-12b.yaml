@@ -90,15 +90,20 @@ data_stages:
   start_training_step: 1
   data:
     dataset:
-      # train split written by astro/scripts/prepare_pilot_data.py; path is
-      # relative to the launch cwd (repo root) — point at scratch on the
-      # training cluster if the corpus lives elsewhere
-      data_root: ../astroPTv3_data/pilot_v1/train
-      shuffle_buffer_size: 2000
+      # streamed live from the HF hub (ADR 0006). The match index defines
+      # the crossmatch-only corpus and is mandatory; $ASTROPT3_MATCH_INDEX
+      # overrides it when pointing at a locally built index
+      data_root: mmu
+      match_index: hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
     seed: 42
     # resume-exact with workers via torchdata's StatefulDataLoader; a resumed
     # run must use the SAME worker count as the run that saved the checkpoint
-    num_loading_workers: 8
+    # dp x num_loading_workers must fit the 165 crossmatch
+    # train partitions or datasets silently stops the surplus
+    # workers (streaming.py n_shards); dp=32 caps this at 5.
+    # Corpus-limited, not machine-limited — it lifts when the
+    # corpus grows past LegacySurvey North x DESI.
+    num_loading_workers: 5
 optimizer:
   accumulate_grad_in_fp32: true
   clip_grad: 1.0

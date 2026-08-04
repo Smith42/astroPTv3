@@ -1,12 +1,21 @@
 # ADR 0006: Stream MMU upstream instead of pre-resharding local parquet
 
-- **Status:** Accepted
+- **Status:** **Closed** (accepted 2026-07-17, implemented and closed
+  2026-08-04). The decision — stream MMU's own catalogs at train time instead
+  of pre-resharding them locally — stands and is in production. Two revisions
+  reshaped *what* is streamed without reopening that choice:
+  [ADR 0011](0011-skim-crossmatch-scans.md) (row-group streaming, a
+  precomputed ids-only cell-keyed match index, the crossmatch-scan demux)
+  and its 2026-08-04 amendment (**crossmatch-only**: the match index defines
+  the corpus, one scan, no weights). Remaining open items are listed at the
+  bottom with owners; none of them block this ADR.
 - **Date:** 2026-07-17
 - **References:**
   - `astro/PLAN.md` "Data pipeline" — the local-shard + `HF_DATASETS_OFFLINE=1`
     design this ADR **supersedes**
+  - `astro/src/astropt3/data/streaming.py` — the implementation
   - `astro/scripts/prepare_pilot_data.py` — the lsdb crossmatch → parquet
-    reshard being deleted (its `row_to_record` is the one thing kept)
+    reshard, deleted (its `row_to_record` moved into `streaming.py`)
   - `astro/src/astropt3/data/mmu.py` — `PILOT_FEATURES`, `MMUIterableDataset`,
     `assign_split` being deleted
   - `astro/src/astropt3/data/nanotron_loader.py` — `PackedMicroBatches`, rewired
@@ -174,8 +183,8 @@ never inflates it):
 
 - **Precompute the crossmatch into a published match-index, not joined
   records.** `lsdb.crossmatch` runs offline, once; the artifact published to HF
-  is only `(image_healpix, image_id, spectrum_healpix, spectrum_id,
-  dist_arcsec)` — ~0.7M rows, tens of MB, **no pixels duplicated** (joined
+  is only `(image_healpix, image_id, spectrum_healpix, spectrum_id)` —
+  ~0.7M rows, tens of MB, **no pixels duplicated** (joined
   records would be ~280 GB of images already hosted in the LegacySurvey
   catalog, and a second bespoke schema). The index is bounded by matched pairs,
   so it survives arbitrarily large imaging corpora unchanged. This keeps the
@@ -187,14 +196,61 @@ never inflates it):
   `pyarrow`/`fsspec` stream partition files, and matches resolve through the
   in-memory index. Removes the 256-dask-scheduler feasibility risk and drops a
   distributed-join engine from a path that only reads files sequentially.
-- **Optimize the shared decode, images-first.** The 60% images-only stream does
-  no join and shares its decode/tokenize path with the other two, so a decode
-  win lifts all three; it is also the majority of every batch and the binding
-  throughput constraint. The decode (currently per-row `iterrows`/struct
-  coercion) becomes columnar per-partition — bulk pyarrow→numpy, sliced into
-  per-object records at the frozen `ObjectSequencer` boundary — contingent on
-  the flux column being fixed-shape, which the spike confirms. `ObjectSequencer`
-  / `PackedCollator` / `tokenization.py` are untouched.
+- ~~**Optimize the shared decode, images-first.**~~ **Dropped — the spike
+  measured decode at 5% of the time.** The reasoning below was sound but aimed
+  at the wrong stage: read dominates at 85%, so a perfect decode buys ~5% on
+  the images path. The precondition held (image flux *is* fixed-shape
+  `(3, 152, 152)`, so a columnar decode is viable), and this can be revived if
+  read ever stops dominating — but it is not built now. Original rationale: the
+  60% images-only stream does no join and shares its decode/tokenize path with
+  the other two, so a decode win lifts all three.
+
+### Spike results (2026-07-20)
+
+`scripts/spike_profile_streaming.py`, one worker, 5 real partitions per source:
+
+| stage | images | spectra |
+|---|---|---|
+| read | 10.67 ms/obj (**84.8%**) | 3.25 ms/obj (**76.6%**) |
+| decode | 0.63 ms/obj (5.0%) | 0.32 ms/obj (7.5%) |
+| tokenize | 1.28 ms/obj (10.2%) | 0.67 ms/obj (15.9%) |
+| **rate** | **79.5 obj/s/worker** | **235.6 obj/s/worker** |
+
+Four conclusions, each changing a decision above:
+
+1. **Read dominates; the decode optimization is dropped.** Read is
+   network-bound — ~170 MB per images partition at ~10 MB/s per worker. This
+   is a hub-bandwidth problem, not a CPU one.
+2. **The ≥2× floor is cleared by worker parallelism alone.** The 70M reference
+   (~240k tokens/s total, `docs/training.md`) is ~1,570 obj/s at 153 tokens
+   per image object, so the floor is ~3,100 obj/s ≈ **40 workers** across the
+   job at the measured rate. No throughput work is needed to start.
+3. **256 workers is NOT RAM-feasible, and whole-partition buffering is the
+   cause.** An images partition is up to 774 MB in Arrow; buffering one per
+   source is ~2.3 GB/worker, i.e. ~74 GB at only 32 workers. **Partitions are
+   therefore streamed by row group** (~200 rows / ~56 MB each), which caps a
+   source at ~56 MB and keeps resume exact — the cursor gains a row-group
+   index. This supersedes the "restart the in-flight partition" language in
+   decision 4.
+4. **The scaling table is not linear in practice.** These are single-worker
+   extrapolations of a network-bound stage; aggregate hub bandwidth will cap
+   throughput well below 256× (256 × 10 MB/s = 2.5 GB/s from HF is not
+   realistic). Treat worker counts above ~40 as unvalidated.
+
+### Measured in production (2026-07-23/24, closing numbers)
+
+`astropt3-70m-jetformer-crossmatch-only` on gpu5 (dp=2, 8 workers/rank,
+seq 4096, mbs 16) reached **step 13,354 / 20,000**: mean **3,221 ms/step**,
+**17.5 %** of iterations ≥ 5 s, fast-step floor 0.59 s (~105 K tok/s/GPU),
+flat start to finish (first 2,000 mean 3,356 ms vs last 2,000 mean 3,412 ms),
+all five losses converging. It ended on a DataLoader-worker OOM traced to the
+per-cell unmatched-spectrum buffer, now bounded — see ADR 0011's 2026-08-04
+revision.
+
+The ≥2× floor of this section is met by worker parallelism as the spike
+predicted, but the run is **NIC-bound, not compute-bound**: the 0.59 s
+fast steps are what the GPU can do, and the 3.2 s mean is what the 1 Gbit
+link allows. That gap, not the code, is the throughput story on this box.
 
 Prefetch is the existing DataLoader worker queue (`prefetch_factor` /
 `num_workers`); no custom prefetcher is built. Network-stall resilience and
@@ -268,35 +324,132 @@ schema and three-place dataset-onboarding this ADR removes.
 - **Multi-source weighted mixing** (GitHub issue): general, config-driven source
   list with tunable sampling weights, interleave, and per-source modality
   routing — supersedes the hardcoded three sources and the provisional weights.
-- **Profiling spike (do first):** one live `pyarrow`/`hats` worker over ~5 real
-  partitions, timing `partition read` vs `row decode` vs `tokenize`, and
-  checking whether ~256 concurrent workers are RAM-feasible. Confirms whether
-  worker parallelism alone clears the floor and which path (if any) needs the
-  columnar decode — nothing else is built until this runs.
-- **`hats`-without-lsdb partition API:** verify `hats` alone exposes
-  deterministic partition enumeration, HEALPix order, and `hf://` resolution
-  (the pieces of the HATS abstraction the train-time stream needs). If it does
-  not, fall back to lsdb-at-train-time or reimplement partition discovery — the
-  latter being the worse option.
-- **Match-index build:** compute the crossmatch once with lsdb and publish
-  `(image_healpix, image_id, spectrum_healpix, spectrum_id, dist_arcsec)` to HF;
-  confirm matches for an image in partition `P` fall in the same/adjacent
-  spectrum partition so the in-memory join stays partition-local.
+  Moot under crossmatch-only (one source, emergent mix); it returns with the
+  second survey.
+- ~~**Profiling spike**~~ — **done**, see Spike results above.
+- ~~**`hats`-without-lsdb partition API**~~ — **verified**. `hats.read_hats`
+  on an `hf://` URL returns a `CatalogCollection`; `.main_catalog`
+  `.get_healpix_pixels()` gives deterministic HEALPix-ordered partitions and
+  `hats.io.paths.pixel_catalog_file` resolves each to its parquet path, read
+  through `HfFileSystem` + `pyarrow`. No lsdb at train time.
+- **Aggregate throughput at realistic worker counts** is unmeasured; the spike
+  extrapolated from one worker on a network-bound stage. Measure before
+  trusting any figure above ~40 workers.
+- ~~**Match-index build**~~ — **built** (`scripts/build_match_index.py`), schema
+  `(image_partition, image_id, spectrum_partition, spectrum_id)` where the
+  partition columns are HEALPix `(order, pixel)` cells, so the artifact
+  survives MMU adding or dropping partitions. Partition-locality **confirmed**: every image partition in
+  the smoke index maps to exactly ONE spectrum partition, so the in-memory
+  join is partition-local. The full build is ~200 partitions (the *inner*
+  crossmatch, not the 5,596 of the LEFT join) at ~17 s/partition ≈ **1 hour**.
+  **Published** at
+  `hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet`
+  — 137,906 pairs over 173 image cells — and wired into every `data_root: mmu`
+  config; `$ASTROPT3_MATCH_INDEX` overrides it for a locally built index.
 - **Revision logging:** cheap run-start capture of each catalog's resolved HF
   revision into a `provenance.json`, restoring after-the-fact traceability under
   the float-to-latest decision.
 - **Val coverage:** confirm the reserved K partitions actually contain enough
-  matched pairs for a stable redshift probe.
+  matched pairs for a stable redshift probe. Under crossmatch-only every
+  reserved cell is a matched cell by construction, so the question is only
+  whether K=8 of 173 is enough pairs, not whether any are present.
 
 ## References
 
 - `astro/src/astropt3/data/nanotron_loader.py` — `PackedMicroBatches` (rewired
-  to three weighted `pyarrow`/`hats` partition streams + match-index join),
-  per-source partition cursors, resume.
-- `astro/src/astropt3/data/mmu.py` — `row_to_record` (moved in), streaming
-  crossmatch dataset; deletions listed above.
+  to the single `pyarrow`/`hats` crossmatch scan), the partition-ceiling
+  check, resume.
+- `astro/src/astropt3/data/streaming.py` — `decode_record` (absorbed the old
+  `row_to_record`), `_crossmatch_examples`, `owned_by_rank`, `open_stream`.
+  `astro/src/astropt3/data/mmu.py` is deleted, as listed above.
 - `astro/src/astropt3/data/synthetic.py` — unchanged offline record source.
 - MMU streaming-crossmatch blog (above) — the endorsed lsdb/`CatalogStream`
   workflow.
 - [ADR 0003](0003-checkpoint-samples-in-eval-sidecar.md) — house format
   precedent.
+
+## Implementation notes (2026-07-20)
+
+Implemented in `astro/src/astropt3/data/streaming.py`. Several decisions
+changed once the code met the real API; the rest landed as written.
+
+**Superseded by the Performance revision:** the first implementation used
+lsdb's `CatalogStream` at train time and buffered whole partitions. Both are
+gone — train-time streaming is `pyarrow` + `hats` over row groups, and lsdb
+runs only in `scripts/build_match_index.py`. Notes 1-3 below still hold.
+
+1. **Weights apply per record, not per partition draw** (§2). Partitions hold
+   wildly unequal row counts — measured on the real catalogs: ~5100 rows in a
+   DESI partition, ~2447 in a LegacySurvey one, ~290 in a crossmatch one — so
+   drawing whole partitions by weight would realize a corpus mix nothing like
+   0.60/0.15/0.25. Each source buffers its current partition and only fetches
+   the next when that buffer drains.
+
+2. **Resume is exact; the ≤1-partition replay budget was not needed** (§4).
+   Because a source buffers its partition whole, the row offset into it is
+   checkpointable, so resume re-fetches the in-flight partition but re-trains
+   none of it. The Phase 4 no-replay gate and the `object_id_log` audit stand
+   unchanged. The saved state is `(draw, per-source (epoch, cursor,
+   row_off))` — all ints. There is **no sampler RNG state in the checkpoint**:
+   the source draw order is a fixed repeating length-20 pattern derived from
+   the weights, not a random draw.
+
+3. **No cassette fixture** (§9). The CPU suite may now use the network, so a
+   `network`-marked test decodes real hub rows end-to-end instead. A cassette
+   would have been a second artifact to capture, refresh, and let drift. The
+   cursor logic is covered offline by injecting fake fetchers behind the
+   `Source` API (`tests/fake_mmu.py`), which is faster and deterministic.
+
+Resolved open issues:
+
+- **`CatalogStream` resume API** — it exposes no cursor and no
+  skip-to-partition, but `_delayed_partitions` is a plain list indexed by
+  partition index and `submit_next_partitions` takes explicit indices, so the
+  partition order is ours to own. `CatalogStream` is constructed only for its
+  culled per-partition dask graphs; its own iterator is never used.
+- **Val coverage** — the pairs source is an inner join, so every reserved val
+  partition of it carries matched pairs with `Z`. K is
+  `streaming.VAL_PARTITIONS`.
+
+Closed at 2026-08-04:
+
+- **Prefetch — recorded non-decision, not a TODO.** The old framing ("requires
+  a dask client, `open_sources(client=...)`") described an API the train path
+  no longer has: lsdb and `CatalogStream` left with the Performance revision.
+  Prefetch is the DataLoader worker queue (`num_workers` / `prefetch_factor`)
+  and nothing custom is built. **Synchronous per-worker reads are accepted
+  while training is link-bound**: at 1 Gbit the link saturates around
+  1.8 s/step against a 0.55 s/step compute demand, so overlapping I/O cannot
+  buy what the NIC will not deliver. Revisit at ≥ 10 Gbit, or when a measured
+  run is compute-bound with the link below saturation — not before.
+  ADR 0012's Gate 8 holds the design if that day comes.
+- **Sharding ceiling — now enforced.** The claim above was aspirational: no
+  such check existed, and `datasets` merely warned and stopped the surplus
+  workers. The numbers also changed under crossmatch-only — the corpus is the
+  match index's 173 cells (165 train), not ~200 pairs partitions — and
+  partitions are dealt to DP ranks (`owned_by_rank`) rather than node-split,
+  so the bound is per rank: `num_loading_workers <= floor(165 / dp)`.
+  `nanotron_loader._mmu_records` raises with cause and remedy, and
+  `test_run_configs_fit_the_crossmatch_partition_ceiling` sweeps
+  `configs/nanotron/*.yaml` for violations. The lasting fix is sharding by
+  parquet row group rather than by cell — deferred, not needed at dp ≤ 32.
+
+Still open (do not block this ADR):
+
+- **Revision logging** — unchanged from above, still worth doing. Note that a
+  suspected mid-project drift was investigated and was a measurement error
+  (`images.npartitions` = 5488 vs the LEFT-crossmatch's 5596 partitions);
+  upstream had not moved.
+- **Aggregate throughput above ~40 workers** is still unmeasured, and the
+  partition ceiling now caps a dp=64 rank at 2 workers anyway. Whether that
+  starves a 1B run is unknown: per-GPU bandwidth demand falls ~10× from 70M
+  to 1B, so the 8-workers/rank figure from the 70M shakeouts does not
+  transfer. Measure at the first pilot topology.
+- **Multi-source weighted mixing** (GitHub issue) — moot for the current
+  single-source corpus, but the mechanism returns with the second survey.
+
+Out of scope, deferred to the corpus-expansion work (`mmu-corpus-expansion`
+branch, `docs/mmu_crossmatch_research.md`): Legacy South DR10 × DESI,
+HSC PDR3 × SDSS, Gaia DR3 × APOGEE, and JWST. Each needs its own gate — a
+band registry that is source-aware, an SDSS spectrum normalizer, epoch
+propagation for the stellar branch — and none of them is implemented here.

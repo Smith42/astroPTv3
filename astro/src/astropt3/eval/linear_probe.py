@@ -24,7 +24,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ..data.mmu import MMUIterableDataset
 from ..data.packing import ObjectSequencer, PackedCollator
 from ..data.synthetic import make_record
 from ..tokenization import BOS_ID, PAD_ID
@@ -38,7 +37,11 @@ def _val_records(data_root, seed=0):
             yield make_record(i)
             i += 1
     else:
-        yield from MMUIterableDataset(data_root, rank=0, world_size=1, seed=seed)
+        # ADR 0006: the reserved val partitions, streamed live. Deterministic
+        # given the seed, so every checkpoint is probed on the same records.
+        from ..data.streaming import open_stream
+
+        yield from open_stream(split="val", seed=seed)
 
 
 # record key that feeds each poolable modality (mirrors ObjectSequencer)
@@ -46,22 +49,24 @@ _POOL_RECORD_KEY = {"images": "image", "spectra": "spectrum"}
 
 
 def collect_probe_objects(
-    config, data_root, target, n_objects, *, seed=0, pool_modality="images"
+    config, data_root, target, n_objects, *, seed=0, pool_modality="images", max_scan=None
 ):
     """First ``n_objects`` val objects that carry a finite ``target`` scalar.
 
     Objects lacking the ``pool_modality`` are skipped — spectrum-only DESI
-    rows (ADR 0005) carry ``Z`` but have no image tokens to pool over. If
-    the val stream is exhausted before ``n_objects`` qualify, all qualifying
-    objects are used (with a warning); the stream is deterministic, so every
-    checkpoint in a sweep probes the same reduced set. The scan can cover
-    the whole val split, so sweep callers should collect once and pass the
-    result to :func:`probe_checkpoint` as ``probe_set``.
+    rows carry ``Z`` but have no image tokens to pool over. Both record
+    sources are endless (ADR 0006 streams the val partitions in a loop), so
+    the scan is bounded by ``max_scan`` records; if fewer than ``n_objects``
+    qualify within it, all qualifying objects are used (with a warning). The
+    stream is deterministic, so every checkpoint in a sweep probes the same
+    set — collect once and pass it to :func:`probe_checkpoint` as
+    ``probe_set``.
     """
     sequencer = ObjectSequencer(config)
     source_key = _POOL_RECORD_KEY.get(pool_modality)
     objects, targets = [], []
-    for record in _val_records(data_root, seed=seed):
+    budget = max_scan if max_scan is not None else 50 * n_objects
+    for record, _ in zip(_val_records(data_root, seed=seed), range(budget)):
         value = record.get(target)
         if value is None or not math.isfinite(float(value)):
             continue
@@ -83,7 +88,7 @@ def collect_probe_objects(
         )
     if len(objects) < n_objects:
         warnings.warn(
-            f"val stream exhausted: probing {len(objects)}/{n_objects} records that "
+            f"val scan budget reached: probing {len(objects)}/{n_objects} records that "
             f"carry target {target!r} with {pool_modality!r} tokens",
             stacklevel=2,
         )
