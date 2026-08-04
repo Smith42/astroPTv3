@@ -50,6 +50,14 @@ Spectra unchanged. Additive; gated on `uv run pytest` + the
 
 ---
 
+## MMU corpus expansion
+
+| Entry | Kind | Status |
+|---|---|---|
+| [`mmu_crossmatch_research.md`](mmu_crossmatch_research.md) | Research | Recommendation: extend pairwise graph through Legacy South × DESI, then HSC/SDSS and Gaia/APOGEE; no code changes. |
+
+---
+
 ## ADRs (decision records, `adr/`)
 
 | ADR | Status |
