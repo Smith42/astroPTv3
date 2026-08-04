@@ -98,7 +98,7 @@ data_stages:
     seed: 42
     # resume-exact with workers via torchdata's StatefulDataLoader; a resumed
     # run must use the SAME worker count as the run that saved the checkpoint
-    # dp x num_loading_workers must fit the ~157 crossmatch
+    # dp x num_loading_workers must fit the 165 crossmatch
     # train partitions or datasets silently stops the surplus
     # workers (streaming.py n_shards); dp=64 caps this at 2.
     # Corpus-limited, not machine-limited — it lifts when the

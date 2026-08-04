@@ -127,7 +127,9 @@ def test_run_configs_fit_the_crossmatch_partition_ceiling():
     """dp x num_loading_workers must fit the ~165-cell crossmatch corpus."""
     import yaml
 
-    ceiling = 165 - streaming.VAL_PARTITIONS  # train cells at the published index
+    # 173 cells in the published index minus streaming.VAL_PARTITIONS. Offline
+    # constant on purpose; recompute with load_match_index() after a rebuild.
+    ceiling = 173 - streaming.VAL_PARTITIONS
     configs = sorted((Path(__file__).parents[1] / "configs" / "nanotron").glob("*.yaml"))
     assert configs, "no nanotron run configs found"
     for path in configs:
