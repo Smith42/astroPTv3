@@ -45,12 +45,14 @@ prep, launching, checkpoint/resume, eval, troubleshooting).
 ## Pilot data (streamed, ADR 0006)
 
 The corpus is **streamed live from the HF hub at train time** — there is no
-prep step and no local copy. Three HATS sources are interleaved per
-record: images-only (~14M LegacySurvey), spectra-only (~1.1M DESI EDR SV3),
-and their 1" inner crossmatch, at provisional weights 0.60/0.15/0.25.
+prep step and no local copy. The **match index defines the corpus**
+(ADR 0011 as amended 2026-08-04): one scan of its LegacySurvey cells emits
+matched image x spectrum pairs, the unmatched images it passes, and the
+globally unmatched DESI spectra of the cells it owns. One source, one pass;
+the modality mix follows the data rather than a weighting.
 
 Reads are `hats` (partition enumeration) + `pyarrow` (row groups); lsdb runs
-only offline, to build the match-index that the pairs source joins on:
+only offline, to build the match index:
 
 ```bash
 uv run --extra data python scripts/build_match_index.py --out match_index.parquet
@@ -58,8 +60,17 @@ uv run --extra data python scripts/build_match_index.py --out match_index.parque
 uv run pytest tests/test_streaming.py    # cursor logic offline + one live check
 ```
 
-Without a match index there is no pairs source and the corpus degrades to
-images + spectra — visible in the logs rather than silent.
+The published index is
+`hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet`
+(137,906 pairs over 173 cells); every `data_root: mmu` config points at it,
+and `$ASTROPT3_MATCH_INDEX` overrides it for a locally built one. **It is
+mandatory** — without an index the stream raises rather than degrading.
+
+Because the index is the corpus, its 173 cells (165 train) are also the
+sharding unit: partitions are dealt to DP ranks, so a rank owns
+`floor(165 / dp)` and `num_loading_workers` cannot exceed that. The loader
+raises if it does; `datasets` alone would only warn and stop the surplus
+workers.
 
 `data_root` is `synthetic` (tests, smoke) or `mmu` (real training); a path
 to the retired local corpus raises. Partitions are addressed by index, so

@@ -1,7 +1,7 @@
 """Adapter: astro data pipeline -> nanotron ``astropt3_streaming`` micro-batches.
 
-Turns the record sources (:class:`~astropt3.data.streaming.MMUStream` over the
-live MMU catalogs, or the synthetic stream) into an endless stream of
+Turns the record sources (:func:`~astropt3.data.streaming.open_stream` over
+the live MMU catalogs, or the synthetic stream) into an endless stream of
 fixed-shape micro-batch dicts for the nanotron fork's ``AstroPT3ForTraining``:
 
 - ``input_ids``      long  [micro_batch_size, sequence_length]
@@ -21,25 +21,27 @@ test suite exercises it against the HF model, and only
 (``dataset_args`` is duck-typed, never isinstance-checked).
 
 Sharding: the object stream is split by DP rank (identical within a TP
-group — nanotron passes the dp process-group rank/size); the split across
-DataLoader workers is done by ``datasets`` itself — its ``_iter_pytorch``
+group — nanotron passes the dp process-group rank/size) inside
+``streaming.owned_by_rank``, which deals whole partitions; the split across
+DataLoader workers is then done by ``datasets`` itself — its ``_iter_pytorch``
 shards the stream per worker whenever it detects one. Splitting manually by
-``world_size x num_workers`` on top of that DOUBLE-shards: when the min
-source's shard count is not a multiple of the manual world size, datasets
-falls back to a 1-shard StepExamplesIterable and every worker but worker 0
-stops — the loader is clamped to one worker. (The synthetic stream, which
-has no datasets machinery underneath, still strides over record indices by
-``world_size x num_workers`` itself.)
+``world_size x num_workers`` on top of that DOUBLE-shards and clamps the
+loader to one worker, so don't. ``datasets`` only WARNS when a rank owns
+fewer partitions than it has workers, so :meth:`_mmu_records` raises instead.
+(The synthetic stream, which has no datasets machinery underneath, still
+strides over record indices by ``world_size x num_workers`` itself.)
 
 Checkpoint-resume (Phase 4): ``state_dict()`` returns the stream position at
 the START of the current partial packing row — everything already drawn into
 that row has not been trained on, so resume re-draws it and continues with
 exactly the micro-batch sequence an uninterrupted run would have produced.
-The synthetic state is a record counter; the MMU state is
-:meth:`MMUStream.state_dict` — per-source ``(epoch, partition cursor, row
-offset)``, all ints. Both are exact: ADR 0006 §4 budgeted for replaying the
-in-flight partition, but buffering it whole makes the row offset exact, so
-the no-replay guarantee survives streaming.
+The synthetic state is a record counter; the MMU state is the ``datasets``
+generator's own ``state_dict()`` (shard index + example index) alongside the
+epoch, tagged with ``source_assembly`` so a state written by a different
+record ORDER is rejected rather than resumed onto the wrong row. Both are
+exact: ADR 0006 §4 budgeted for replaying the in-flight partition, but the
+row-group cursor makes the offset exact, so the no-replay guarantee survives
+streaming.
 
 With ``num_workers == 0`` the dataset object itself carries the state. With
 ``num_workers > 0`` each DataLoader worker's dataset copy keeps its own
@@ -201,7 +203,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self._stateful = stateful
         self._resume_state: dict | None = None  # applied on next __iter__
         self._ckpt_state: dict | None = None  # updated at every yield
-        self._stream = None  # the live MMUStream, once iteration starts
+        self._stream = None  # the live datasets stream, once iteration starts
         self._epoch = 0
 
         self.sequencer = ObjectSequencer(config)

@@ -46,32 +46,40 @@ stages is implicit and easy to break, so understand it before editing:
    modalities are optional per record (image-only is the common case, ~13M
    of 14M; spectrum-only rows are the non-crossmatched ZWARN==0 DESI
    spectra, ADR 0005). Real records are **streamed live from the HF hub**
-   by `data/streaming.py` (ADR 0006, which deleted the local reshard and
-   its `PILOT_FEATURES` schema): with a match index, two HATS sources —
-   the **crossmatch scan** (ADR 0011, adopted 2026-07-21: one pass over the
-   matched image partitions demuxed into pairs plus image-only records
-   skimmed from the unmatched discards, governed to the 0.60:0.25
-   images:pairs ratio — no standalone images download) and **spectra-only**
-   — interleaved **per record** by fixed weights (0.85/0.15, from the
-   provisional 0.60/0.15/0.25 source mix) using a repeating draw pattern,
-   never a sampler, so no RNG state is ever checkpointed. Pre-skim
-   (3-source) stream states cannot resume — the loader rejects them;
-   weights still load.
-   `row_to_record` is the sole decode adapter over MMU-native rows. Reads are
-   `hats` (partition enumeration + `hf://` paths) + `pyarrow` (row groups) —
-   **no lsdb at train time**; the crossmatch is precomputed offline by
-   `scripts/build_match_index.py` into a match-index of ids, and the pairs
-   source joins on it in memory. Partitions are addressed by index, split
-   across DP ranks by modulo (`datasets`' `_iter_pytorch` does the
-   loader-worker split itself — a manual `world_size × num_workers` split
-   double-shards and clamps the loader to one worker), and streamed **one row group
-   at a time** (~56 MB, not a 774 MB partition) — so resume is
-   `(epoch, partition cursor, row group, row offset)` per source, all ints,
-   and stays exactly no-replay. Without a match index there is no pairs
-   source and the corpus degrades to images + spectra. `data_root` is `synthetic` or `mmu`;
-   a stale path to the old corpus raises. Val reserves the first
-   `VAL_PARTITIONS` partitions of every source (whole partitions ⇒
-   spatially disjoint).
+   by `data/streaming.py` (ADR 0006, closed 2026-08-04, which deleted the
+   local reshard and its `PILOT_FEATURES` schema). The **match index defines
+   the corpus** (ADR 0011 as amended 2026-08-04 — crossmatch-only, superseding
+   its own skim): ONE source, ONE pass over the index's LegacySurvey cells,
+   emitting matched pairs, the unmatched images it passes, and the globally
+   unmatched DESI spectra of the cells it owns (`_spectrum_owners`, crc32 over
+   the path, so each spectrum partition has exactly one owning cell). No
+   weights, no draw pattern, no governor, no standalone source — the modality
+   mix follows the data. The index is **mandatory**: `open_stream` raises
+   without one (`$ASTROPT3_MATCH_INDEX` is the fallback), so there is no
+   degrade-to-images path. `decode_record` is the sole decode adapter over
+   MMU-native rows. Reads are `hats` (partition enumeration + `hf://` paths) +
+   `pyarrow` (row groups) — **no lsdb at train time**; the crossmatch is
+   precomputed offline by `scripts/build_match_index.py` into a match-index of
+   ids, joined in memory. Partitions are **dealt to DP ranks**
+   (`owned_by_rank`, `files[rank::dp]`) rather than passed to
+   `split_dataset_by_node`, which only assigns shards when the count divides
+   evenly and otherwise has every rank read every partition while discarding
+   `(dp-1)/dp` of the rows; `datasets`' `_iter_pytorch` then does the
+   loader-worker split itself (a manual `world_size × num_workers` split
+   double-shards and clamps the loader to one worker). The index's 173 cells
+   (165 train) are therefore the sharding unit, so
+   `num_loading_workers <= floor(165 / dp)` — the loader raises, since
+   `datasets` only warns and silently stops the surplus workers. Partitions
+   stream **one row group at a time** (~56 MB, not a 774 MB partition), and a
+   cell's unmatched spectra are held to `UNMATCHED_BUFFER_BYTES` (256 MiB)
+   with the overflow emitted as read — materializing a whole cell pinned up to
+   1.1 GiB per worker and OOM-killed a run. Resume is the `datasets` generator
+   state plus the epoch, tagged `source_assembly`; that tag is bumped on any
+   change to record ORDER (now `crossmatch_only_v3`), so stale stream states
+   are rejected rather than resumed onto the wrong row — weights still load.
+   `data_root` is `synthetic` or `mmu`; a stale path to the old corpus raises.
+   Val reserves the first `VAL_PARTITIONS` cells (whole partitions ⇒ spatially
+   disjoint).
 2. **`ObjectSequencer`** (`data/packing.py`) turns a record into an
    `ObjectSeq`: central 96×96 crop (`packing.IMAGE_CROP`; JWST cubes are
    already 96×96) + physical band-registry normalization

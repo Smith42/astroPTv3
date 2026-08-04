@@ -1,6 +1,14 @@
 # ADR 0006: Stream MMU upstream instead of pre-resharding local parquet
 
-- **Status:** Implemented (accepted 2026-07-17)
+- **Status:** **Closed** (accepted 2026-07-17, implemented and closed
+  2026-08-04). The decision — stream MMU's own catalogs at train time instead
+  of pre-resharding them locally — stands and is in production. Two revisions
+  reshaped *what* is streamed without reopening that choice:
+  [ADR 0011](0011-skim-crossmatch-scans.md) (row-group streaming, a
+  precomputed ids-only cell-keyed match index, the crossmatch-scan demux)
+  and its 2026-08-04 amendment (**crossmatch-only**: the match index defines
+  the corpus, one scan, no weights). Remaining open items are listed at the
+  bottom with owners; none of them block this ADR.
 - **Date:** 2026-07-17
 - **References:**
   - `astro/PLAN.md` "Data pipeline" — the local-shard + `HF_DATASETS_OFFLINE=1`
@@ -229,6 +237,21 @@ Four conclusions, each changing a decision above:
    throughput well below 256× (256 × 10 MB/s = 2.5 GB/s from HF is not
    realistic). Treat worker counts above ~40 as unvalidated.
 
+### Measured in production (2026-07-23/24, closing numbers)
+
+`astropt3-70m-jetformer-crossmatch-only` on gpu5 (dp=2, 8 workers/rank,
+seq 4096, mbs 16) reached **step 13,354 / 20,000**: mean **3,221 ms/step**,
+**17.5 %** of iterations ≥ 5 s, fast-step floor 0.59 s (~105 K tok/s/GPU),
+flat start to finish (first 2,000 mean 3,356 ms vs last 2,000 mean 3,412 ms),
+all five losses converging. It ended on a DataLoader-worker OOM traced to the
+per-cell unmatched-spectrum buffer, now bounded — see ADR 0011's 2026-08-04
+revision.
+
+The ≥2× floor of this section is met by worker parallelism as the spike
+predicted, but the run is **NIC-bound, not compute-bound**: the 0.59 s
+fast steps are what the GPU can do, and the 3.2 s mean is what the 1 Gbit
+link allows. That gap, not the code, is the throughput story on this box.
+
 Prefetch is the existing DataLoader worker queue (`prefetch_factor` /
 `num_workers`); no custom prefetcher is built. Network-stall resilience and
 cross-epoch local partition caching are **out of scope** for the sub-epoch
@@ -301,6 +324,8 @@ schema and three-place dataset-onboarding this ADR removes.
 - **Multi-source weighted mixing** (GitHub issue): general, config-driven source
   list with tunable sampling weights, interleave, and per-source modality
   routing — supersedes the hardcoded three sources and the provisional weights.
+  Moot under crossmatch-only (one source, emergent mix); it returns with the
+  second survey.
 - ~~**Profiling spike**~~ — **done**, see Spike results above.
 - ~~**`hats`-without-lsdb partition API**~~ — **verified**. `hats.read_hats`
   on an `hf://` URL returns a `CatalogCollection`; `.main_catalog`
@@ -317,21 +342,26 @@ schema and three-place dataset-onboarding this ADR removes.
   the smoke index maps to exactly ONE spectrum partition, so the in-memory
   join is partition-local. The full build is ~200 partitions (the *inner*
   crossmatch, not the 5,596 of the LEFT join) at ~17 s/partition ≈ **1 hour**.
-  Publishing the artifact to HF is the remaining step; until then a local
-  path works.
+  **Published** at
+  `hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet`
+  — 137,906 pairs over 173 image cells — and wired into every `data_root: mmu`
+  config; `$ASTROPT3_MATCH_INDEX` overrides it for a locally built index.
 - **Revision logging:** cheap run-start capture of each catalog's resolved HF
   revision into a `provenance.json`, restoring after-the-fact traceability under
   the float-to-latest decision.
 - **Val coverage:** confirm the reserved K partitions actually contain enough
-  matched pairs for a stable redshift probe.
+  matched pairs for a stable redshift probe. Under crossmatch-only every
+  reserved cell is a matched cell by construction, so the question is only
+  whether K=8 of 173 is enough pairs, not whether any are present.
 
 ## References
 
 - `astro/src/astropt3/data/nanotron_loader.py` — `PackedMicroBatches` (rewired
-  to three weighted `pyarrow`/`hats` partition streams + match-index join),
-  per-source partition cursors, resume.
-- `astro/src/astropt3/data/mmu.py` — `row_to_record` (moved in), streaming
-  crossmatch dataset; deletions listed above.
+  to the single `pyarrow`/`hats` crossmatch scan), the partition-ceiling
+  check, resume.
+- `astro/src/astropt3/data/streaming.py` — `decode_record` (absorbed the old
+  `row_to_record`), `_crossmatch_examples`, `owned_by_rank`, `open_stream`.
+  `astro/src/astropt3/data/mmu.py` is deleted, as listed above.
 - `astro/src/astropt3/data/synthetic.py` — unchanged offline record source.
 - MMU streaming-crossmatch blog (above) — the endorsed lsdb/`CatalogStream`
   workflow.
@@ -381,13 +411,45 @@ Resolved open issues:
   partition of it carries matched pairs with `Z`. K is
   `streaming.VAL_PARTITIONS`.
 
-Still open:
+Closed at 2026-08-04:
 
-- **Prefetch** requires a dask client (`open_sources(client=...)`); without
-  one, partition fetches are synchronous and block the training loop.
-- **Sharding ceiling**: the pairs source has ~200 partitions, so
-  `world_size × num_workers > 200` raises rather than starving a rank.
+- **Prefetch — recorded non-decision, not a TODO.** The old framing ("requires
+  a dask client, `open_sources(client=...)`") described an API the train path
+  no longer has: lsdb and `CatalogStream` left with the Performance revision.
+  Prefetch is the DataLoader worker queue (`num_workers` / `prefetch_factor`)
+  and nothing custom is built. **Synchronous per-worker reads are accepted
+  while training is link-bound**: at 1 Gbit the link saturates around
+  1.8 s/step against a 0.55 s/step compute demand, so overlapping I/O cannot
+  buy what the NIC will not deliver. Revisit at ≥ 10 Gbit, or when a measured
+  run is compute-bound with the link below saturation — not before.
+  ADR 0012's Gate 8 holds the design if that day comes.
+- **Sharding ceiling — now enforced.** The claim above was aspirational: no
+  such check existed, and `datasets` merely warned and stopped the surplus
+  workers. The numbers also changed under crossmatch-only — the corpus is the
+  match index's 173 cells (165 train), not ~200 pairs partitions — and
+  partitions are dealt to DP ranks (`owned_by_rank`) rather than node-split,
+  so the bound is per rank: `num_loading_workers <= floor(165 / dp)`.
+  `nanotron_loader._mmu_records` raises with cause and remedy, and
+  `test_run_configs_fit_the_crossmatch_partition_ceiling` sweeps
+  `configs/nanotron/*.yaml` for violations. The lasting fix is sharding by
+  parquet row group rather than by cell — deferred, not needed at dp ≤ 32.
+
+Still open (do not block this ADR):
+
 - **Revision logging** — unchanged from above, still worth doing. Note that a
   suspected mid-project drift was investigated and was a measurement error
   (`images.npartitions` = 5488 vs the LEFT-crossmatch's 5596 partitions);
   upstream had not moved.
+- **Aggregate throughput above ~40 workers** is still unmeasured, and the
+  partition ceiling now caps a dp=64 rank at 2 workers anyway. Whether that
+  starves a 1B run is unknown: per-GPU bandwidth demand falls ~10× from 70M
+  to 1B, so the 8-workers/rank figure from the 70M shakeouts does not
+  transfer. Measure at the first pilot topology.
+- **Multi-source weighted mixing** (GitHub issue) — moot for the current
+  single-source corpus, but the mechanism returns with the second survey.
+
+Out of scope, deferred to the corpus-expansion work (`mmu-corpus-expansion`
+branch, `docs/mmu_crossmatch_research.md`): Legacy South DR10 × DESI,
+HSC PDR3 × SDSS, Gaia DR3 × APOGEE, and JWST. Each needs its own gate — a
+band registry that is source-aware, an SDSS spectrum normalizer, epoch
+propagation for the stellar branch — and none of them is implemented here.

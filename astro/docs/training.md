@@ -47,45 +47,59 @@ pytest -m gpu astro/tests/test_nanotron_gpu.py astro/tests/test_phase4_gpu.py
 
 ### 2.1 The corpus is streamed (ADR 0006)
 
-There is one small prep step (the match-index, below) and no local copy of
+There is one small prep step (the match index, below) and no local copy of
 the corpus: `data/streaming.py` opens the MMU HATS catalogs on the HF hub at
-train time via `hats` + `pyarrow` and interleaves three sources per
-record — images-only, spectra-only, and their 1" inner crossmatch — at
-provisional weights 0.60/0.15/0.25. Set `data_root: mmu` in the nanotron
-config (`synthetic` for smoke runs); a path to the retired local corpus
-raises.
+train time via `hats` + `pyarrow`. The match index **defines** the corpus
+(ADR 0011 as amended 2026-08-04): one pass over its LegacySurvey cells emits
+matched image x spectrum pairs, the unmatched images it passes, and the
+globally unmatched DESI spectra of the cells it owns. One source, one pass,
+no weighting — the modality mix follows the data. Set `data_root: mmu` in the
+nanotron config (`synthetic` for smoke runs); a path to the retired local
+corpus raises.
 
 Facts to know:
 
 - **Network is a hard dependency.** Hub downtime or rate-limiting stalls
   training with no local fallback. Budget for it.
-- **Resume is exact and cheap.** Each source buffers its current partition
-  whole and checkpoints `(epoch, partition cursor, row offset)`, so a kill
-  replays nothing; skipped partitions are never downloaded. The whole
-  stream state is a handful of ints — no RNG state, because the source draw
-  order is a fixed repeating pattern rather than a sampler.
+- **Resume is exact and cheap.** The checkpoint holds the `datasets`
+  generator's own position (shard + example index) plus the epoch, so a kill
+  replays nothing and skipped partitions are never downloaded. No RNG state
+  is saved, because there is no sampler — one source, one pass. The state is
+  tagged `source_assembly`, bumped whenever record ORDER changes (now
+  `crossmatch_only_v3`); a stale state is rejected rather than resumed onto
+  the wrong row, and weights still load.
 - **Train/val split is whole HEALPix partitions** (the first
-  `streaming.VAL_PARTITIONS` of each source), so it is spatially disjoint
-  and cannot leak. Val is streamed fresh each eval and is deterministic, so
-  every checkpoint in a sweep is scored on identical records.
-- **Sharding is by partition index modulo `world_size × num_workers`**, so
-  ranks and workers are disjoint with no coordination. The pairs source has
-  only ~200 partitions — exceed that product and the loader raises rather
-  than starving a rank.
-- **Prefetch needs a dask client.** Without one, partition fetches are
-  synchronous and block the training loop; image partitions are ~170 MB.
+  `streaming.VAL_PARTITIONS` cells), so it is spatially disjoint and cannot
+  leak. Val is streamed fresh each eval and is deterministic, so every
+  checkpoint in a sweep is scored on identical records.
+- **Sharding is by partition, dealt to DP ranks** (`owned_by_rank`,
+  `files[rank::dp]`), then split across loader workers by `datasets` itself.
+  The corpus is the match index's 173 cells (165 train), so a rank owns
+  `floor(165 / dp)` and **`num_loading_workers` cannot exceed that** — the
+  loader raises, because `datasets` alone would only warn and silently stop
+  the surplus workers. At dp=2 that ceiling is 82; at dp=64 it is 2.
+- **Prefetch is the DataLoader worker queue** (`num_workers` /
+  `prefetch_factor`); nothing custom is built and there is no dask client on
+  this path. Synchronous per-worker reads are accepted while training is
+  link-bound — at 1 Gbit the link saturates around 1.8 s/step against a
+  0.55 s/step compute demand, so overlapping I/O cannot buy what the NIC will
+  not deliver. Revisit at ≥ 10 Gbit.
 - Revisions float to latest upstream, so a long run can see the corpus
   change if MMU pushes.
-- **The pairs source needs a match-index.** Build it once (~1 hour, login
-  node, `[data]` env) and pass the path; without it the corpus is images +
-  spectra only:
+- **The match index is mandatory and defines the corpus.** Build it once
+  (~1 hour, login node, `[data]` env) or point at the published one; without
+  it the stream raises:
 
   ```bash
   uv run --extra data python scripts/build_match_index.py --out match_index.parquet
   ```
 
-  Partitions are streamed a row group at a time (~56 MB), so a worker holds
-  ~56 MB per source rather than a whole 774 MB partition.
+  The published index is
+  `hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet`
+  and every `data_root: mmu` config points at it; `$ASTROPT3_MATCH_INDEX`
+  overrides it. Partitions are streamed a row group at a time (~56 MB), so a
+  worker holds ~56 MB of images rather than a whole 774 MB partition, plus at
+  most `UNMATCHED_BUFFER_BYTES` (256 MiB) of a cell's unmatched spectra.
 
 ### 2.2 Image normalization (no calibration step)
 
@@ -107,9 +121,10 @@ and asserts the token shapes:
 uv run pytest tests/test_streaming.py -k live
 ```
 
-Throughput is now a property of the hub and your prefetch setup rather than
-of a local corpus — watch the trainer's own step time, and give the loader a
-dask client if fetches dominate.
+Throughput is now a property of the hub and your link rather than of a local
+corpus — watch the trainer's own step time. On a 1 Gbit box expect a ~3.2 s
+mean step with ~17% of iterations ≥ 5 s against a 0.59 s compute floor; that
+gap is the NIC, not the loader.
 
 ## 3. Configs
 
@@ -337,12 +352,21 @@ The fork's trainer syncs it for astropt3 streams.
 `general.ignore_sanity_checks: true` (required; see §3).
 
 **Throughput far below the reference numbers** — almost always the
-dataloader. With the streamed corpus this is usually hub fetch latency:
-give the loader a dask client so partitions prefetch, raise
-`num_loading_workers` (exact resume survives workers now; partitions are
-split modulo `world_size × num_workers`, and the pairs source has only ~200),
-and keep `pin_memory` on (default). The synthetic generator is CPU-bound too — don't
-benchmark compute with `data_root: synthetic` and 0 workers.
+dataloader, and with the streamed corpus usually the link rather than the
+code. Raise `num_loading_workers` (exact resume survives workers now, and a
+resumed run must keep the SAME count) up to `floor(165 / dp)` — past that the
+loader raises, because a rank cannot have more workers than partitions. Keep
+`pin_memory` on (default). Before blaming the loader, check the fast-step
+floor: if some steps hit the compute-bound time and the mean is several times
+worse, you are NIC-bound and no worker count fixes it. The synthetic generator
+is CPU-bound too — don't benchmark compute with `data_root: synthetic` and 0
+workers.
+
+**"dp rank N owns M crossmatch train partitions but num_loading_workers is
+…"** — the corpus has fewer partitions than the run has loaders. Reduce
+`num_loading_workers` to the number in the message, or reduce `dp`. Not a
+machine limit: it lifts when the corpus grows past LegacySurvey North ×
+DESI.
 
 **Loss stuck ≈1.0 on synthetic-looking data** — per-patch standardization
 turned structureless patches into irreducible N(0,1) targets. Check that the

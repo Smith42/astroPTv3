@@ -128,7 +128,7 @@ def test_load_rejects_another_source_assembly(tiny_config):
         "epoch": 0,
         "stream_state": None,
         "data_root": "mmu",
-        "source_assembly": "skim",
+        "source_assembly": "crossmatch_only_v1",
     }
     with pytest.raises(ValueError, match="source_assembly"):
         stream.load_state_dict(old_state)
@@ -286,9 +286,13 @@ def test_mmu_stream_survives_a_transient_network_error(monkeypatch, tiny_config,
         assert flat_equal(ref, got), f"micro-batch {i} diverged after the rebuild"
 
 
-def test_mmu_stream_realizes_the_source_weights(tiny_config, tmp_path):
-    """Images dominate spectra in the packed stream (no match index, so the
-    two-source 0.8/0.2 mix; ids < 1000 are images, >= 1000 are spectra)."""
+def test_image_bearing_records_dominate_the_scan(tiny_config, tmp_path):
+    """The scan is anchored on image cells, so image-bearing records lead.
+
+    There are no source weights left to assert — the mix is emergent — but the
+    scan walks image partitions and only strides spectrum-only rows into them,
+    so images must still outnumber them. Fixture ids < 1000 are images.
+    """
     log = tmp_path / "mix.log"
     ds = make_stream(tiny_config, "mmu", object_id_log=log)
     list(islice(iter(ds), 40))

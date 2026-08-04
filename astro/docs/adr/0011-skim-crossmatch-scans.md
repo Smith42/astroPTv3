@@ -1,6 +1,12 @@
 # ADR 0011: Skim single-modality records from the crossmatch scans
 
-- **Status:** **Adopted** (2026-07-21) — the A/B on DeltaAI passed (matched
+- **Status:** **Adopted, then collapsed to crossmatch-only** (amended
+  2026-08-04) — the skim's two-source assembly is gone; the match index now
+  *defines* the corpus and one scan emits everything. See
+  §Revision 2026-08-04 at the bottom; everything above it is the skim design
+  as adopted, kept because the byte model and the determinism argument still
+  hold.
+- **Superseded status (2026-07-21):** Adopted — the A/B on DeltaAI passed (matched
   445-iteration fresh-start window vs `astropt3-70m-jetformer-mmu`: stalls
   ≥5 s 11.0% vs 12.1%, mean step 2897 vs 3178 ms, plus the structural halving
   of hub bytes), and the skim is now the ONLY assembly whenever a
@@ -15,8 +21,9 @@
 - **References:**
   - [ADR 0006](0006-stream-mmu-upstream.md) — the streamed three-source
     corpus this modifies
-  - `astro/src/astropt3/data/streaming.py` — `_paired_examples`,
-    `interleaved`, `open_stream`
+  - `astro/src/astropt3/data/streaming.py` — `_crossmatch_examples`,
+    `owned_by_rank`, `open_stream` (the skim's `_paired_examples` and
+    `interleaved` were deleted by the 2026-08-04 revision)
   - `astro/docs/2026-07-21-streaming-throughput-audit.md` — measured wire
     costs, NIC ceiling
   - `astro/docs/2026-07-21-streaming-shakeout-handoff.md` — why the loader
@@ -259,12 +266,78 @@ hosted catalogs, not a loader change; cross-referenced so it isn't lost.
   boundary** (offline) before any live run — coarse resume must replay no
   completed partition and skip none (§Determinism model).
 
+## Revision 2026-08-04 — crossmatch-only
+
+The skim kept two sources (the demultiplexed scan at 0.85, spectra-only at
+0.15) and a governor holding the scan to a 0.60:0.25 images:pairs ratio. Both
+are gone. The match index now **defines the corpus**: one pass over its
+LegacySurvey cells emits every downloaded row — matched pairs, unmatched
+images, and the globally unmatched spectra of the cells it owns — and the
+modality mix is whatever the data gives. No weights, no draw pattern, no
+governor, no standalone source.
+
+Consequences that differ from the skim as adopted:
+
+- **The match index is mandatory.** `open_stream` raises without one. The
+  "degrade to images + spectra" fallback of ADR 0006 no longer exists, so
+  every `data_root: mmu` config must carry `match_index:` (or set
+  `$ASTROPT3_MATCH_INDEX`).
+- **Spectrum-partition ownership is global.** `_spectrum_owners` assigns each
+  spectrum partition to exactly one image cell by `crc32(path) % len(cells)`,
+  so an unmatched spectrum is emitted once per epoch and cannot cross the
+  train/val boundary.
+- **The corpus is 173 cells, not ~5,480 image partitions.** That is the
+  sharding unit for both DP and loader workers, so
+  `num_loading_workers <= floor(165 / dp)` (165 = 173 − `VAL_PARTITIONS`).
+  Invisible at the dp=2 shakeouts; at dp=64 it caps a rank at 2 workers.
+  `datasets` enforces it with a warning that silently stops the surplus
+  workers, so the loader raises instead. The real lift is sharding by parquet
+  row group (~8–12 per cell) rather than by cell — a loader change, deferred.
+- **DP ranks are dealt partitions** (`owned_by_rank`, `files[rank::dp]`)
+  rather than node-split by `datasets`. `split_dataset_by_node` only assigns
+  shards when the count divides evenly and otherwise has every rank read every
+  partition while discarding `(dp−1)/dp` of the rows — dp× the wire bytes.
+  Truncating to a multiple avoided that but dropped 37 of 165 cells an epoch
+  at dp=64; dealing does neither.
+- **Unmatched spectra are buffered to `UNMATCHED_BUFFER_BYTES`** (256 MiB)
+  and strided into the image scan, with the overflow emitted as read.
+  Materializing a whole cell pinned 3.7–1128.7 MiB per worker (measured,
+  `scripts/probe_stream_rss.py`, first 12 cells), i.e. up to 17.6 GiB across
+  8 workers × 2 ranks — which is what OOM-killed the run below.
+
+### Measured (`astropt3-70m-jetformer-crossmatch-only`, gpu5, 2026-07-23/24)
+
+20k-step run, dp=2, 8 workers/rank, seq 4096, mbs 16, the published index.
+
+- Reached **step 13,354 / 20,000**, then a DataLoader worker was OOM-killed
+  (68.7 GiB cgroup) — diagnosed above as the per-cell spectra buffer, not the
+  rebuild path (40 rebuilds grow +0.02 MiB each with the `gc.collect()`
+  reclaim in place).
+- **Mean 3,221 ms/step; 17.5 % of iterations ≥ 5 s**; fast-step floor
+  0.59 s (≈105 K tok/s/GPU). Flat throughout — first 2,000 iterations mean
+  3,356 ms, last 2,000 mean 3,412 ms — so no throughput decay.
+- 52 stream rebuilds (gpu5's single-router DNS), all ridden out.
+- All losses converging at 13.3k: `lm_loss` −123, images −97, spectra −65.3.
+
+Note this is a **worse stall rate than the skim A/B it replaces** (17.5 % vs
+11.0 %), on a different box and a different corpus mix, so the two numbers are
+not directly comparable — but crossmatch-only is not the throughput win the
+skim was. Its argument is byte honesty: every row downloaded is a row trained.
+
+Stream states carry a `source_assembly` tag; it is bumped on any change to
+record ORDER, since a saved position is an index into it. `crossmatch_only_v2`
+bounded the unmatched buffer, `crossmatch_only_v3` deals partitions to ranks.
+Pre-v3 states are rejected on load with an actionable error; weights still
+load.
+
 ## References
 
 - `astro/src/astropt3/data/streaming.py` — source construction,
-  `_paired_examples`, `interleaved`, `open_stream`.
+  `_crossmatch_examples`, `_spectrum_owners`, `owned_by_rank`, `open_stream`.
 - `astro/src/astropt3/data/packing.py` — the collator (pad-waste sizing).
 - [ADR 0006](0006-stream-mmu-upstream.md) — the three-source corpus,
   weights rationale, match-index.
+- `astro/scripts/probe_stream_rss.py` — the rebuild-leak and per-cell-spike
+  arms behind the 2026-08-04 revision's memory numbers.
 - `astro/docs/2026-07-21-streaming-throughput-audit.md` — ~250 KB/image,
   incompressible flux, 1 GbE ceiling, pre-crop republish idea (Option G).
