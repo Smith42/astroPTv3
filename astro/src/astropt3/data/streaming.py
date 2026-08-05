@@ -346,6 +346,18 @@ def resolve_match_index(match_index: str | None = None) -> str | None:
     return match_index or os.environ.get(MATCH_INDEX_ENV) or None
 
 
+def is_source_graph(graph) -> bool:
+    """Does this index need the multi-source stream rather than DESI-only?
+
+    Schema 2 is the edge list and 3 the one-row-per-anchor pivot of the same
+    graph; the layout does not change record order, only the source set does.
+    Both the assembly tag and the stream dispatch ask this one question — they
+    used to ask it separately, and adding schema 3 to only one of them sent a
+    three-spoke index down the DESI-only path.
+    """
+    return graph.schema_version in (2, 3) and set(graph.partner_revisions) != {"desi"}
+
+
 def source_assembly_for_index(match_index: str | None) -> str:
     """Return the resume-state tag implied by a resolved pointer index."""
     from pathlib import Path
@@ -356,11 +368,7 @@ def source_assembly_for_index(match_index: str | None) -> str:
     ):
         return SOURCE_ASSEMBLY
     graph = load_source_graph(resolved)
-    return (
-        SOURCE_GRAPH_ASSEMBLY
-        if graph.schema_version == 2 and set(graph.partner_revisions) != {"desi"}
-        else SOURCE_ASSEMBLY
-    )
+    return SOURCE_GRAPH_ASSEMBLY if is_source_graph(graph) else SOURCE_ASSEMBLY
 
 
 def load_match_index(path: str):
@@ -777,7 +785,8 @@ def _crossmatch_dataset(match_index, split, seed, epoch, shard, num_shards):
         )
     image_catalog = IMAGES_CATALOG
     spectrum_catalog = SPECTRA_CATALOG
-    if graph.schema_version == 2:
+    # schema 1 carried no revisions; 2 and 3 both pin them
+    if graph.schema_version in (2, 3):
         image_catalog += f"@{graph.anchor_revision}"
         spectrum_catalog += f"@{graph.partner_revisions['desi']}"
     image_files, image_by_cell = catalog_files(image_catalog)
@@ -835,10 +844,7 @@ def open_stream(
     # The DP split is the partition deal in owned_by_rank, not
     # split_dataset_by_node — see its docstring for why.
     graph = load_source_graph(match_index)
-    multi_source = graph.schema_version == 2 and set(graph.partner_revisions) != {
-        "desi"
-    }
-    if multi_source:
+    if is_source_graph(graph):
         stream = _source_graph_dataset(
             match_index, split, seed, epoch, shard, num_shards
         )

@@ -228,6 +228,13 @@ def test_wide_index_matches_the_edge_list(tmp_path):
     edge_graph = load_source_graph(spokes)
     wide_graph = load_source_graph(wide_dir)
     assert wide_graph.schema_version == 3
+
+    # the layout must not change which streaming assembly is selected, or the
+    # stream falls back to the DESI-only path and rejects the other spokes
+    from astropt3.data.streaming import SOURCE_GRAPH_ASSEMBLY, source_assembly_for_index
+
+    assert source_assembly_for_index(str(spokes)) == SOURCE_GRAPH_ASSEMBLY
+    assert source_assembly_for_index(str(wide_dir)) == SOURCE_GRAPH_ASSEMBLY
     assert wide_graph.matches == edge_graph.matches
     assert wide_graph.partner_cells == edge_graph.partner_cells
     assert wide_graph.partner_revisions == edge_graph.partner_revisions
