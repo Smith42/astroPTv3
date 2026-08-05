@@ -40,7 +40,12 @@ default crossmatch (KdTree, one neighbour, 1 arcsec) — amended 2026-08-05 from
 the reciprocal rule to the library default. The MMU collections supply the
 10-arcsec margin that makes those joins exact at partition edges;
 galaxies-with-hats publishes none, so its edge loss is measured, not assumed.
-PROVABGS joins DESI through genuine DESI identifiers. Do not build
+PROVABGS matches the anchor positionally on the same terms (owner decision,
+2026-08-05: every spoke is an LSDB positional crossmatch, no identifier or
+lineage joins anywhere). Its targets are still inferred from DESI spectra, so
+they remain distillation/circular supervision; what changed is that the
+PROVABGS row on a record is now selected by sky position rather than by being
+the same DESI observation as that record's `spectra` span. Do not build
 attachment-to-attachment spatial indexes and do not require complete N-way
 matches.
 
@@ -156,7 +161,7 @@ and exact resume.
 
 Match indexes store both source ids and cells, separation, match radius, epoch
 treatment, source revisions, and index-schema revision. Cross-survey string ids
-are never join keys except for the genuine PROVABGS→DESI lineage join.
+are never join keys; every spoke joins the anchor by sky position.
 
 Yield, characterized selection effects, provenance concerns, and bounded
 throughput costs are advisory. The project owner may accept them only through

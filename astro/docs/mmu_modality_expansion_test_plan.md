@@ -8,8 +8,8 @@ learning evidence.
 
 ## A. Index and provenance
 
-- [ ] Positional joins are only DESI/SDSS/HSC/galaxies-with-hats → selected Legacy.
-- [ ] The only lineage join is PROVABGS→DESI.
+- [ ] Every spoke — DESI/SDSS/HSC/galaxies-with-hats/PROVABGS — joins the
+      selected Legacy anchor positionally. There are no lineage joins.
 - [ ] No attachment-to-attachment spatial index is accepted.
 - [ ] Positional matches come from LSDB's default `crossmatch` (KdTree, one
       neighbour, 1 arcsec); many-to-one on the spoke side is expected, and the
@@ -18,7 +18,7 @@ learning evidence.
       source revisions, and index-schema revision.
 - [ ] Duplicate source ids and many-to-one outcomes are reported and handled
       by the declared policy.
-- [ ] Cross-survey strings are never treated as lineage ids.
+- [ ] Cross-survey strings are never treated as join keys.
 - [ ] The adaptive scout reproduces from its manifest.
 - [ ] Scout stops at ±10% relative bootstrap half-width or 32 cells.
 - [ ] A non-converged 32-cell scout reports `inconclusive`.
@@ -97,21 +97,21 @@ For each case:
 
 ### galaxies-with-hats
 
-- [ ] Reciprocal 1-arcsec positional join; no cross-release string-id join.
+- [ ] LSDB default 1-arcsec positional join; no cross-release string-id join.
 - [ ] Every accepted numeric field has registry/test coverage.
 - [ ] Failed row quality omits only the affected field.
 - [ ] No unmatched galaxies-with-hats stream is emitted.
 
 ### SDSS
 
-- [ ] SDSS→Legacy positional index passes reciprocity/cardinality checks.
+- [ ] SDSS→Legacy positional index passes cardinality checks.
 - [ ] SDSS transform rejects unknown grids/units.
 - [ ] DESI and SDSS use distinct modality ids, transforms, and heads.
 - [ ] Fetched-only unmatched SDSS is exactly once and spatially split.
 
 ### PROVABGS
 
-- [ ] PROVABGS→DESI lineage join only.
+- [ ] PROVABGS matches the anchor positionally, like every other spoke.
 - [ ] Targets may coexist with DESI by explicit design.
 - [ ] Evaluation labels circular/distillation metrics correctly.
 - [ ] No unmatched PROVABGS stream is emitted.

@@ -66,11 +66,6 @@ SCHEMA = pa.schema(
         ("separation_arcsec", pa.float32()),
         ("match_radius_arcsec", pa.float32()),
         ("epoch_treatment", pa.string()),
-        ("via_source", pa.string()),
-        ("via_revision", pa.string()),
-        ("via_order", pa.int8()),
-        ("via_pixel", pa.int64()),
-        ("via_id", pa.string()),
     ]
 )
 
@@ -106,17 +101,6 @@ def normalize_id(value: Any, strip: bool = False) -> str:
         if isinstance(decoded, bytes):
             text = decoded.decode("utf-8")
     return text.strip() if strip else text
-
-
-def partition_cells(catalog) -> set[tuple[int, int]]:
-    """Return the published ``(order, pixel)`` cells for a HATS catalog."""
-    try:
-        return {
-            (as_int(pixel.order), as_int(pixel.pixel))
-            for pixel in catalog.get_ordered_healpix_pixels()
-        }
-    except (AttributeError, TypeError, ValueError) as error:
-        raise ValueError("catalog has invalid HEALPix partitions") from error
 
 
 def alignment_cells(anchor, partner) -> dict:
@@ -175,11 +159,6 @@ def _rows(pairs, pixel, args, cells):
             "separation_arcsec": as_float(row[DISTANCE_COLUMN]),
             "match_radius_arcsec": args.radius_arcsec,
             "epoch_treatment": args.epoch_treatment,
-            "via_source": None,
-            "via_revision": None,
-            "via_order": None,
-            "via_pixel": None,
-            "via_id": None,
         }
         for name, value in values.items():
             rows[name].append(value)
@@ -196,128 +175,6 @@ def parse_cell(value: str) -> tuple[int, int]:
         raise argparse.ArgumentTypeError("cell must be ORDER/PIXEL") from error
 
 
-def _via_edges(path: str | Path, via_source: str, via_revision: str):
-    table = pq.read_table(path).to_pydict()
-    edges = {}
-    if "index_schema_version" in table:
-        for index, partner_id in enumerate(table["partner_id"]):
-            if str(table["partner_source"][index]) != via_source:
-                continue
-            revision = str(table["partner_revision"][index])
-            if revision != via_revision:
-                raise ValueError(
-                    f"via index has {via_source} revision {revision}, expected {via_revision}"
-                )
-            edge = {
-                "anchor_source": str(table["anchor_source"][index]),
-                "anchor_revision": str(table["anchor_revision"][index]),
-                "anchor_order": as_int(table["anchor_order"][index]),
-                "anchor_pixel": as_int(table["anchor_pixel"][index]),
-                "anchor_id": str(table["anchor_id"][index]),
-                "via_revision": revision,
-                "via_order": as_int(table["partner_order"][index]),
-                "via_pixel": as_int(table["partner_pixel"][index]),
-            }
-            key = str(partner_id)
-            # lsdb's default join is one-directional, so one spectrum can be the
-            # nearest neighbour of two anchors; keep the lowest anchor id so the
-            # lineage spoke stays one-to-one and the build is reproducible
-            if key not in edges or edge["anchor_id"] < edges[key]["anchor_id"]:
-                edges[key] = edge
-        if not edges:
-            raise ValueError(f"via index has no {via_source!r} edges")
-        return edges
-    if via_source != "desi":
-        raise ValueError("legacy indexes contain only DESI edges")
-    for index, partner_id in enumerate(table["spectrum_id"]):
-        edges[str(partner_id)] = {
-            "anchor_source": "legacy_north",
-            "anchor_revision": "",
-            "anchor_order": as_int(table["image_order"][index]),
-            "anchor_pixel": as_int(table["image_pixel"][index]),
-            "anchor_id": str(table["image_id"][index]),
-            "via_revision": via_revision,
-            "via_order": as_int(table["spectrum_order"][index]),
-            "via_pixel": as_int(table["spectrum_pixel"][index]),
-        }
-    return edges
-
-
-def _build_lineage(args, lsdb) -> int:
-    if args.via_index is None or not args.via_source or not args.via_revision:
-        raise ValueError("lineage joins require via-index/source/revision")
-    edges = _via_edges(args.via_index, args.via_source, args.via_revision)
-    partner = lsdb.open_catalog(
-        args.partner_catalog,
-        columns=[args.partner_id_column, "ra", "dec"],
-    )
-    cells = sorted(partition_cells(partner))
-    if args.cell is not None:
-        if args.cell not in cells:
-            raise ValueError(f"partner catalog has no partition {args.cell}")
-        cells = [args.cell]
-    elif args.limit_partitions is not None:
-        cells = cells[: args.limit_partitions]
-
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    writer = pq.ParquetWriter(args.out, SCHEMA)
-    count = 0
-    try:
-        for number, (order, pixel) in enumerate(cells, 1):
-            frame = partner.get_partition(order, pixel).compute()
-            rows = {name: [] for name in SCHEMA.names}
-            for raw_partner_id in frame[args.partner_id_column]:
-                partner_id = normalize_id(raw_partner_id, args.partner_strip_id)
-                edge = edges.get(partner_id)
-                if edge is None:
-                    continue
-                if edge["anchor_source"] != args.anchor_source:
-                    raise ValueError("via index anchor source disagrees with arguments")
-                if edge["anchor_revision"] not in {"", args.anchor_revision}:
-                    raise ValueError(
-                        "via index anchor revision disagrees with arguments"
-                    )
-                if edge["via_revision"] != args.via_revision:
-                    raise ValueError(
-                        "via index partner revision disagrees with arguments"
-                    )
-                values = {
-                    "index_schema_version": INDEX_SCHEMA_VERSION,
-                    "anchor_source": args.anchor_source,
-                    "anchor_revision": args.anchor_revision,
-                    "anchor_order": edge["anchor_order"],
-                    "anchor_pixel": edge["anchor_pixel"],
-                    "anchor_id": edge["anchor_id"],
-                    "partner_source": args.partner_source,
-                    "partner_revision": args.partner_revision,
-                    "partner_order": order,
-                    "partner_pixel": pixel,
-                    "partner_id": partner_id,
-                    "join_kind": "lineage",
-                    "separation_arcsec": None,
-                    "match_radius_arcsec": None,
-                    "epoch_treatment": "exact_source_id",
-                    "via_source": args.via_source,
-                    "via_revision": args.via_revision,
-                    "via_order": edge["via_order"],
-                    "via_pixel": edge["via_pixel"],
-                    "via_id": partner_id,
-                }
-                for name, value in values.items():
-                    rows[name].append(value)
-            table = pa.table(rows, schema=SCHEMA)
-            writer.write_table(table)
-            count += table.num_rows
-            print(
-                f"[{number}/{len(cells)}] Norder={order} Npix={pixel}: "
-                f"{table.num_rows} lineage | total {count}",
-                flush=True,
-            )
-    finally:
-        writer.close()
-    return count
-
-
 def build(args) -> int:
     if args.radius_arcsec <= 0:
         raise ValueError("radius_arcsec must be positive")
@@ -325,10 +182,6 @@ def build(args) -> int:
         raise ValueError("source revisions must be pinned")
 
     lsdb = cast(Any, importlib.import_module("lsdb"))
-    if args.join_kind == "lineage":
-        return _build_lineage(args, lsdb)
-    if not args.anchor_catalog:
-        raise ValueError("positional joins require anchor-catalog")
     anchor = lsdb.open_catalog(
         args.anchor_catalog,
         columns=[args.anchor_id_column, "ra", "dec"],
@@ -412,10 +265,7 @@ def build(args) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--join-kind", choices=["positional", "lineage"], default="positional"
-    )
-    parser.add_argument("--anchor-catalog")
+    parser.add_argument("--anchor-catalog", required=True)
     parser.add_argument("--anchor-source", required=True)
     parser.add_argument("--anchor-revision", required=True)
     parser.add_argument("--anchor-id-column", default="object_id")
@@ -425,9 +275,6 @@ def main() -> int:
     parser.add_argument("--partner-revision", required=True)
     parser.add_argument("--partner-id-column", default="object_id")
     parser.add_argument("--partner-strip-id", action="store_true")
-    parser.add_argument("--via-index")
-    parser.add_argument("--via-source")
-    parser.add_argument("--via-revision")
     parser.add_argument("--radius-arcsec", type=float, default=1.0)
     parser.add_argument("--epoch-treatment", default="icrs_j2000_static")
     selection = parser.add_mutually_exclusive_group()
