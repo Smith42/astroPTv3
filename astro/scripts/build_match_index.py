@@ -21,9 +21,11 @@ Pinned North × galaxies-with-hats train example::
       --partner-id-column dr8_id \
       --out galaxies_train.parquet
 
-The output stores source names, revisions, both HATS cells/ids, separation,
-radius, epoch treatment, and schema version. A directory of same-schema spoke
-parquets is one cumulative index consumable by ``load_source_graph``.
+Positional builds are one dask graph over the crossmatch partitions, computed
+on ``--workers`` threads. The output stores source names, revisions, both HATS
+cells/ids, separation, radius, epoch treatment, and schema version. A directory
+of same-schema spoke parquets is one cumulative index consumable by
+``load_source_graph``.
 """
 
 from __future__ import annotations
@@ -36,14 +38,14 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+import dask
+import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from hats.pixel_math.healpix_shim import radec2pix
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 INDEX_SCHEMA_VERSION = 2
-HEALPIX_ORDER = 12
 # lsdb suffixes the right side; the left keeps its own column names
 PARTNER_SUFFIX = "_spoke"
 DISTANCE_COLUMN = "_dist_arcsec"
@@ -71,6 +73,11 @@ SCHEMA = pa.schema(
         ("via_id", pa.string()),
     ]
 )
+
+
+# arrow-backed dtypes so an all-null via_* column stays int8/int64 instead of
+# degrading to float64 and mismatching the dask meta
+EMPTY_ROWS = SCHEMA.empty_table().to_pandas(types_mapper=pd.ArrowDtype)
 
 
 def as_int(value: Any) -> int:
@@ -112,58 +119,55 @@ def partition_cells(catalog) -> set[tuple[int, int]]:
         raise ValueError("catalog has invalid HEALPix partitions") from error
 
 
-def containing_partition(
-    order: int, pixel: int, cells: set[tuple[int, int]]
-) -> tuple[int, int]:
-    """Find the published partition containing a finer HEALPix cell."""
-    order, pixel = as_int(order), as_int(pixel)
-    while order >= 0:
-        if (order, pixel) in cells:
-            return order, pixel
-        order -= 1
-        pixel >>= 2
-    raise KeyError("no catalog partition contains the HEALPix cell")
+def alignment_cells(anchor, partner) -> dict:
+    """Crossmatch partition -> (anchor cell, partner cell), from lsdb itself.
+
+    ``align_catalogs`` is the helper ``crossmatch`` calls to lay out its own
+    partitions — margin tree and MOC filtering included — so its mapping is
+    the definition of which cell of each side fed each partition. Deriving it
+    from row coordinates instead only invents ways to disagree with lsdb.
+    """
+    from lsdb.dask.merge_catalog_functions import align_catalogs
+
+    mapping = align_catalogs(anchor, partner).pixel_mapping
+    cells: dict = {}
+    for row in mapping.itertuples(index=False):
+        aligned = (as_int(row.aligned_Norder), as_int(row.aligned_Npix))
+        sides = (
+            (as_int(row.primary_Norder), as_int(row.primary_Npix)),
+            (as_int(row.join_Norder), as_int(row.join_Npix)),
+        )
+        if cells.setdefault(aligned, sides) != sides:
+            raise ValueError(f"crossmatch partition {aligned} maps to two cells")
+    return cells
 
 
-def in_cell(order: int, pixel: int, cell: tuple[int, int], cells: set) -> bool:
-    """Is this crossmatch partition inside the given anchor partition?"""
-    try:
-        return containing_partition(order, pixel, cells) == cell
-    except KeyError:
-        return False
+def _rows(pairs, pixel, args, cells):
+    """One crossmatch partition -> pointer rows. Runs as a dask task.
 
-
-def _cells_of(frame, suffix: str, published: set) -> list[tuple[int, int]]:
-    """Published partition of every row, from its own coordinates."""
-    pixels = cast(Any, radec2pix)(
-        HEALPIX_ORDER,
-        frame[f"ra{suffix}"].to_numpy(dtype="float64"),
-        frame[f"dec{suffix}"].to_numpy(dtype="float64"),
-    )
-    return [containing_partition(HEALPIX_ORDER, as_int(p), published) for p in pixels]
-
-
-def _rows(pairs, args, anchor_cells, partner_cells):
+    ``pixel`` is the crossmatch partition, handed over by lsdb's own
+    ``map_partitions(include_pixel=True)``.
+    """
     rows = {name: [] for name in SCHEMA.names}
-    if len(pairs) == 0:
-        return rows
+    key = (as_int(pixel.order), as_int(pixel.pixel))
+    if len(pairs) == 0 or key not in cells:
+        return EMPTY_ROWS
     if DISTANCE_COLUMN not in pairs:
         raise ValueError(f"crossmatch result has no {DISTANCE_COLUMN} column")
-    anchors = _cells_of(pairs, "", anchor_cells)
-    partners = _cells_of(pairs, PARTNER_SUFFIX, partner_cells)
+    anchor_cell, partner_cell = cells[key]
     for position in range(len(pairs)):
         row = pairs.iloc[position]
         values = {
             "index_schema_version": INDEX_SCHEMA_VERSION,
             "anchor_source": args.anchor_source,
             "anchor_revision": args.anchor_revision,
-            "anchor_order": anchors[position][0],
-            "anchor_pixel": anchors[position][1],
+            "anchor_order": anchor_cell[0],
+            "anchor_pixel": anchor_cell[1],
             "anchor_id": normalize_id(row[args.anchor_id_column], args.anchor_strip_id),
             "partner_source": args.partner_source,
             "partner_revision": args.partner_revision,
-            "partner_order": partners[position][0],
-            "partner_pixel": partners[position][1],
+            "partner_order": partner_cell[0],
+            "partner_pixel": partner_cell[1],
             "partner_id": normalize_id(
                 row[f"{args.partner_id_column}{PARTNER_SUFFIX}"], args.partner_strip_id
             ),
@@ -179,7 +183,9 @@ def _rows(pairs, args, anchor_cells, partner_cells):
         }
         for name, value in values.items():
             rows[name].append(value)
-    return rows
+    # via pyarrow so empty and full partitions agree on dtypes, and both agree
+    # with the dask meta — otherwise dask rejects the partition
+    return pa.table(rows, schema=SCHEMA).to_pandas(types_mapper=pd.ArrowDtype)
 
 
 def parse_cell(value: str) -> tuple[int, int]:
@@ -331,9 +337,6 @@ def build(args) -> int:
         args.partner_catalog,
         columns=[args.partner_id_column, "ra", "dec"],
     )
-    anchor_cells = partition_cells(anchor)
-    partner_cells = partition_cells(partner)
-
     # the MMU collections carry a 10-arcsec default margin that lsdb attaches
     # here; a spoke without one (galaxies-with-hats) silently loses pairs whose
     # partner sits across a partition edge, so say which one this build got
@@ -348,6 +351,23 @@ def build(args) -> int:
         flush=True,
     )
 
+    cells = alignment_cells(anchor, partner)
+    # bound a smoke build by narrowing the anchor with lsdb's own spatial
+    # filter — slicing the crossmatch's dask partitions afterwards instead
+    # produces a graph with missing dependencies. Pick the cells from the
+    # alignment, since anchor cells in HEALPix order need not meet the spoke
+    # at all and lsdb refuses a non-overlapping pair outright.
+    overlapping = list(dict.fromkeys(anchor_cell for anchor_cell, _ in cells.values()))
+    if args.cell is not None:
+        if args.cell not in overlapping:
+            raise ValueError(f"anchor cell {args.cell} does not meet the spoke")
+        overlapping = [args.cell]
+    elif args.limit_partitions is not None:
+        overlapping = overlapping[: args.limit_partitions]
+    if len(overlapping) < len(cells):
+        anchor = anchor.pixel_search(overlapping, fine=False)
+        cells = alignment_cells(anchor, partner)
+
     matched = anchor.crossmatch(
         partner,
         radius_arcsec=args.radius_arcsec,
@@ -357,36 +377,37 @@ def build(args) -> int:
         suffix_method="all_columns",
     )
     pixels = matched.get_ordered_healpix_pixels()
-    if args.cell is not None:
-        if args.cell not in anchor_cells:
-            raise ValueError(f"anchor catalog has no partition {args.cell}")
-        pixels = [
-            p for p in pixels if in_cell(p.order, p.pixel, args.cell, anchor_cells)
-        ]
-    elif args.limit_partitions is not None:
-        pixels = pixels[: args.limit_partitions]
+    unknown = [p for p in pixels if (p.order, p.pixel) not in cells]
+    if unknown:
+        raise ValueError(
+            f"{len(unknown)} crossmatch partitions are absent from the pixel "
+            f"alignment (first: {unknown[0]})"
+        )
+
+    # lsdb's own map_partitions hands each task its HealpixPixel, and each task
+    # is one HTTP-bound read, so dask's thread pool is the whole parallelism
+    # story. The result is pointers — the DESI index is ~0.7M rows — so it is
+    # collected and written once rather than streamed out in parts.
+    rows = matched.map_partitions(
+        _rows, args, cells, meta=EMPTY_ROWS, include_pixel=True
+    )
+    print(
+        f"{args.partner_source}: {len(pixels)} crossmatch partitions "
+        f"-> {args.out} on {args.workers} threads",
+        flush=True,
+    )
+    started = time.time()
+    with dask.config.set(scheduler="threads", num_workers=args.workers):
+        frame = rows.compute()
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    writer = pq.ParquetWriter(args.out, SCHEMA)
-    count = 0
-    started = time.time()
-    try:
-        for number, pixel in enumerate(pixels, 1):
-            pairs = matched.get_partition(pixel.order, pixel.pixel).compute()
-            table = pa.table(
-                _rows(pairs, args, anchor_cells, partner_cells), schema=SCHEMA
-            )
-            writer.write_table(table)
-            count += table.num_rows
-            elapsed = time.time() - started
-            print(
-                f"[{number}/{len(pixels)}] Norder={pixel.order} Npix={pixel.pixel}: "
-                f"{table.num_rows} matched | total {count} ({elapsed:.0f}s)",
-                flush=True,
-            )
-    finally:
-        writer.close()
-    return count
+    table = pa.Table.from_pandas(frame, schema=SCHEMA, preserve_index=False)
+    pq.write_table(table, args.out)
+    print(
+        f"{args.partner_source}: {table.num_rows} matches "
+        f"in {time.time() - started:.0f}s"
+    )
+    return table.num_rows
 
 
 def main() -> int:
@@ -412,6 +433,9 @@ def main() -> int:
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--cell", type=parse_cell)
     selection.add_argument("--limit-partitions", type=int)
+    # each task is one small HTTP read, so oversubscribe cores; too many at once
+    # gets SSL read errors back from the hub
+    parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     count = build(args)

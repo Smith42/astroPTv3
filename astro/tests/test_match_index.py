@@ -66,17 +66,32 @@ def test_index_schema_and_row_building():
         radius_arcsec=1.0,
         epoch_treatment="icrs_j2000_static",
     )
-    # the order-12 pixel of (10, 20) is 81360395; walk it up to each side's order
-    anchor_cell, partner_cell = (6, 81360395 >> 12), (5, 81360395 >> 14)
-    rows = builder._rows(pairs, args, {anchor_cell}, {partner_cell})
+    # lsdb's alignment supplies both cells, keyed by crossmatch partition
+    from hats.pixel_math import HealpixPixel
 
-    assert rows["anchor_id"] == ["anchor-1"]
-    assert rows["partner_id"] == ["7"]
-    assert (rows["anchor_order"], rows["anchor_pixel"]) == ([6], [anchor_cell[1]])
-    assert (rows["partner_order"], rows["partner_pixel"]) == ([5], [partner_cell[1]])
-    assert rows["join_kind"] == ["positional"]
-    assert rows["separation_arcsec"] == [0.34]
-    assert rows["via_id"] == [None]
+    anchor_cell, partner_cell = (6, 19863), (5, 4965)
+    pixel = HealpixPixel(8, 79452)
+    cells = {(pixel.order, pixel.pixel): (anchor_cell, partner_cell)}
+    rows = builder._rows(pairs, pixel, args, cells)
+
+    assert rows["anchor_id"].tolist() == ["anchor-1"]
+    assert rows["partner_id"].tolist() == ["7"]
+    assert rows["anchor_order"].tolist() == [6]
+    assert rows["anchor_pixel"].tolist() == [anchor_cell[1]]
+    assert rows["partner_order"].tolist() == [5]
+    assert rows["partner_pixel"].tolist() == [partner_cell[1]]
+    assert rows["join_kind"].tolist() == ["positional"]
+    assert rows["separation_arcsec"].tolist() == pytest.approx([0.34])
+    assert rows["via_id"].isna().tolist() == [True]
+
+    # an empty partition, and the (0, 0) probe lsdb builds meta with, must both
+    # match the real output's dtypes or dask rejects the partition
+    for empty in (
+        builder._rows(pairs.iloc[:0], pixel, args, cells),
+        builder._rows(pairs, HealpixPixel(0, 0), args, cells),
+    ):
+        assert list(empty.columns) == list(builder.EMPTY_ROWS.columns)
+        assert empty.dtypes.equals(rows.dtypes)
 
 
 def test_via_edges_keep_one_anchor_per_spectrum(tmp_path):
