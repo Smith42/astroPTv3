@@ -31,11 +31,6 @@ def test_index_schema_and_row_building():
         "separation_arcsec",
         "match_radius_arcsec",
         "epoch_treatment",
-        "via_source",
-        "via_revision",
-        "via_order",
-        "via_pixel",
-        "via_id",
     ]
 
     import argparse
@@ -82,7 +77,6 @@ def test_index_schema_and_row_building():
     assert rows["partner_pixel"].tolist() == [partner_cell[1]]
     assert rows["join_kind"].tolist() == ["positional"]
     assert rows["separation_arcsec"].tolist() == pytest.approx([0.34])
-    assert rows["via_id"].isna().tolist() == [True]
 
     # an empty partition, and the (0, 0) probe lsdb builds meta with, must both
     # match the real output's dtypes or dask rejects the partition
@@ -92,45 +86,6 @@ def test_index_schema_and_row_building():
     ):
         assert list(empty.columns) == list(builder.EMPTY_ROWS.columns)
         assert empty.dtypes.equals(rows.dtypes)
-
-
-def test_via_edges_keep_one_anchor_per_spectrum(tmp_path):
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    common = {
-        "index_schema_version": 2,
-        "anchor_source": "legacy_north",
-        "anchor_revision": "north-sha",
-        "anchor_order": 6,
-        "anchor_pixel": 7,
-        "partner_source": "desi",
-        "partner_revision": "desi-sha",
-        "partner_order": 8,
-        "partner_pixel": 9,
-        "partner_id": "spectrum-1",
-        "join_kind": "positional",
-        "separation_arcsec": 0.2,
-        "match_radius_arcsec": 1.0,
-        "epoch_treatment": "icrs_j2000_static",
-        "via_source": None,
-        "via_revision": None,
-        "via_order": None,
-        "via_pixel": None,
-        "via_id": None,
-    }
-    path = tmp_path / "desi.parquet"
-    pq.write_table(
-        pa.Table.from_pylist(
-            [{**common, "anchor_id": "anchor-2"}, {**common, "anchor_id": "anchor-1"}],
-            schema=builder.SCHEMA,
-        ),
-        path,
-    )
-
-    edges = builder._via_edges(path, "desi", "desi-sha")
-    assert list(edges) == ["spectrum-1"]
-    assert edges["spectrum-1"]["anchor_id"] == "anchor-1"
 
 
 def test_v2_spoke_directory_loads_as_one_source_graph(tmp_path):
@@ -156,11 +111,6 @@ def test_v2_spoke_directory_loads_as_one_source_graph(tmp_path):
         "match_radius_arcsec": 1.0,
         "epoch_treatment": "icrs_j2000_static",
         "join_kind": "positional",
-        "via_source": None,
-        "via_revision": None,
-        "via_order": None,
-        "via_pixel": None,
-        "via_id": None,
     }
     for source, partner_id in (("desi", "spectrum-1"), ("galaxies", "galaxy-1")):
         row = {**common, "partner_source": source, "partner_id": partner_id}
@@ -177,17 +127,117 @@ def test_v2_spoke_directory_loads_as_one_source_graph(tmp_path):
     }
     assert graph.partner_cells == {(6, 7): {"desi": {(8, 9)}, "galaxies": {(8, 9)}}}
     assert source_assembly_for_index(str(directory)) == SOURCE_GRAPH_ASSEMBLY
-    with pytest.raises(ValueError, match="revision"):
-        builder._via_edges(directory, "desi", "wrong-sha")
-    assert builder._via_edges(directory, "desi", "partner-sha") == {
-        "spectrum-1": {
-            "anchor_source": "legacy_north",
-            "anchor_revision": "north-sha",
-            "anchor_order": 6,
+
+    # every spoke is positional now, so any other join kind is rejected
+    bad = {
+        **common,
+        "partner_source": "desi",
+        "partner_id": "x",
+        "join_kind": "lineage",
+    }
+    pq.write_table(
+        pa.Table.from_pylist([bad], schema=builder.SCHEMA), directory / "bad.parquet"
+    )
+    with pytest.raises(ValueError, match="unknown join kind"):
+        load_source_graph(directory)
+
+
+def test_wide_index_matches_the_edge_list(tmp_path):
+    """The one-row-per-anchor pivot must load to the identical graph."""
+    import importlib.util
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from astropt3.data.match_index import load_source_graph
+
+    spec = importlib.util.spec_from_file_location(
+        "merge_match_index",
+        Path(__file__).resolve().parents[1] / "scripts/merge_match_index.py",
+    )
+    assert spec and spec.loader
+    merger = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(merger)
+
+    common = {
+        "index_schema_version": 2,
+        "anchor_source": "legacy_north",
+        "anchor_revision": "north-sha",
+        "anchor_order": 6,
+        "match_radius_arcsec": 1.0,
+        "epoch_treatment": "icrs_j2000_static",
+        "join_kind": "positional",
+        "separation_arcsec": 0.2,
+        "partner_order": 8,
+        "partner_pixel": 9,
+    }
+    edges = [
+        # anchor-1 has both spokes, anchor-2 only desi, anchor-3 only hsc
+        {
+            **common,
             "anchor_pixel": 7,
             "anchor_id": "anchor-1",
-            "via_revision": "partner-sha",
-            "via_order": 8,
-            "via_pixel": 9,
-        }
-    }
+            "partner_source": "desi",
+            "partner_revision": "d",
+            "partner_id": "s1",
+        },
+        {
+            **common,
+            "anchor_pixel": 7,
+            "anchor_id": "anchor-1",
+            "partner_source": "hsc",
+            "partner_revision": "h",
+            "partner_id": "i1",
+        },
+        {
+            **common,
+            "anchor_pixel": 7,
+            "anchor_id": "anchor-2",
+            "partner_source": "desi",
+            "partner_revision": "d",
+            "partner_id": "s2",
+        },
+        {
+            **common,
+            "anchor_pixel": 9,
+            "anchor_id": "anchor-3",
+            "partner_source": "hsc",
+            "partner_revision": "h",
+            "partner_id": "i3",
+        },
+    ]
+    spokes = tmp_path / "spokes"
+    spokes.mkdir()
+    for source in ("desi", "hsc"):
+        rows = [e for e in edges if e["partner_source"] == source]
+        pq.write_table(
+            pa.Table.from_pylist(rows, schema=builder.SCHEMA),
+            spokes / f"{source}.parquet",
+        )
+
+    wide = merger.pivot(pq.read_table(spokes))
+    wide_dir = tmp_path / "merged"
+    wide_dir.mkdir()
+    pq.write_table(wide, wide_dir / "match_index.parquet")
+
+    assert wide.num_rows == 3  # one row per anchor, not per edge
+    columns = wide.to_pydict()
+    assert columns["desi_id"] == ["s1", "s2", None]
+    assert columns["hsc_id"] == ["i1", None, "i3"]  # absent spoke is null
+
+    edge_graph = load_source_graph(spokes)
+    wide_graph = load_source_graph(wide_dir)
+    assert wide_graph.schema_version == 3
+    assert wide_graph.matches == edge_graph.matches
+    assert wide_graph.partner_cells == edge_graph.partner_cells
+    assert wide_graph.partner_revisions == edge_graph.partner_revisions
+    assert wide_graph.anchor_revision == edge_graph.anchor_revision
+
+    # a spoke that disagrees with itself must not be silently merged away
+    conflict = {**edges[0], "partner_id": "s-other"}
+    pq.write_table(
+        pa.Table.from_pylist(edges + [conflict], schema=builder.SCHEMA),
+        spokes / "desi.parquet",
+    )
+    with pytest.raises(ValueError, match="two 'desi' matches"):
+        merger.pivot(pq.read_table(spokes))
