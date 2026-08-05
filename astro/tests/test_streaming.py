@@ -1,15 +1,22 @@
 """Crossmatch-only MMU stream: decode, ownership, splitting, and resume."""
 
+import json
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import pytest
 
 from astropt3.data.streaming import (
+    _partition_owner,
+    _source_graph_examples,
+    attach_source,
     decode_record,
     owned_by_rank,
     shuffled,
+    source_only_record,
     split_files,
+    split_of_cell,
 )
 from astropt3.data.synthetic import make_record
 from fake_mmu import fake_open_stream
@@ -68,7 +75,168 @@ def test_decode_rejects_an_empty_row():
         decode_record({"object_id": "x", "ra": 0.0, "dec": 0.0, "_healpix_29": 0})
 
 
+def test_source_adapters_keep_sdss_and_hsc_distinct():
+    anchor = decode_record(make_record(1, image_only_fraction=1.0))
+    spectrum_row = make_record(2, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+    spectrum_row.update({"Z_ERR": 0.01, "ZWARNING": 0})
+    attach_source(anchor, "sdss", spectrum_row)
+    assert list(anchor["sdss_spectrum"]["flux"].shape) == [7781]
+    assert anchor["sdss_Z_ERR"] == 0.01
+    assert anchor["sdss_ZWARNING"] is False
+    assert "spectrum" not in anchor
+
+    hsc_row = make_record(3, image_only_fraction=1.0)
+    hsc_row["image"] = {
+        "flux": [[[0.0] * 160 for _ in range(160)] for _ in range(5)],
+        "band": ["hsc-g", "hsc-r", "hsc-i", "hsc-z", "hsc-y"],
+    }
+    standalone = source_only_record("hsc", hsc_row)
+    assert standalone["object_id"].startswith("hsc:")
+    assert list(standalone["hsc_image"]["flux"].shape) == [5, 160, 160]
+    assert "image" not in standalone
+
+
+def test_source_graph_assembles_all_spokes_and_emits_unmatched(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    def write(name, rows):
+        path = tmp_path / f"{name}.parquet"
+        pq.write_table(pa.Table.from_pylist(rows), path)
+        return str(path)
+
+    def image(bands, side):
+        return {
+            "flux": np.zeros((len(bands), side, side), dtype=np.float32).tolist(),
+            "band": bands,
+        }
+
+    spectrum = {
+        "flux": [1.0, 2.0],
+        "lambda": [4000.0, 4001.0],
+        "ivar": [1.0, 1.0],
+        "mask": [False, False],
+    }
+    anchors = write(
+        "anchors",
+        [
+            {
+                "object_id": object_id,
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "image": image(["des-g", "des-r", "des-z"], 152),
+            }
+            for i, object_id in enumerate(("a1", "a2"))
+        ],
+    )
+    rows = {
+        "desi": [
+            {
+                "object_id": value,
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "spectrum": spectrum,
+            }
+            for i, value in enumerate(("d1", "d2"))
+        ],
+        "sdss": [
+            {
+                "object_id": value.encode(),
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "spectrum": spectrum,
+            }
+            for i, value in enumerate(("s1", "s2"))
+        ],
+        "hsc": [
+            {
+                "object_id": value,
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "image": image(["hsc-g", "hsc-r", "hsc-i", "hsc-z", "hsc-y"], 160),
+            }
+            for i, value in enumerate(("h1", "h2"))
+        ],
+        "galaxies": [
+            {
+                "dr8_id": value,
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "smooth-or-featured_smooth_fraction": 0.7,
+            }
+            for i, value in enumerate(("g1", "g2"))
+        ],
+        "provabgs": [
+            {
+                "object_id": str(value),
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "LOG_MSTAR": 10.0,
+                "TSNR2_BGS": 100.0,
+            }
+            for i, value in enumerate((11, 12))
+        ],
+    }
+    paths = {source: write(source, source_rows) for source, source_rows in rows.items()}
+    matches = {
+        "a1": {
+            "desi": "d1",
+            "galaxies": "g1",
+            "hsc": "h1",
+            "provabgs": "11",
+            "sdss": "s1",
+        }
+    }
+    partition_specs = {
+        source: [{"path": path, "order": 6, "pixel": i}]
+        for i, (source, path) in enumerate(paths.items())
+    }
+    records = list(
+        _source_graph_examples(
+            [anchors],
+            [json.dumps(matches)],
+            [json.dumps(partition_specs)],
+            [{source: [path] for source, path in paths.items()}],
+            {source: [partner_id] for source, partner_id in matches["a1"].items()},
+        )
+    )
+    paired = next(record for record in records if record["object_id"] == "a1")
+    assert {"image", "spectrum", "sdss_spectrum", "hsc_image"} <= paired.keys()
+    assert paired["gwh_smooth-or-featured_smooth_fraction"] == 0.7
+    assert paired["provabgs_LOG_MSTAR"] == 10.0
+    assert {
+        record["object_id"] for record in records if ":" in record["object_id"]
+    } == {
+        "desi:d2",
+        "hsc:h2",
+        "sdss:s2",
+    }
+
+
 # -- split + shuffle ---------------------------------------------------------
+
+
+def test_common_split_uses_canonical_parent_cells():
+    for pixel in range(16):
+        assert split_of_cell((6, pixel << 4)) == split_of_cell((4, pixel))
+
+
+def test_partner_owner_is_deterministic_and_requires_a_same_split_reference():
+    references = [(6, 3), (6, 1), (6, 2)]
+    assert _partition_owner("path", references, [(6, 1), (6, 2)]) in {
+        (6, 1),
+        (6, 2),
+    }
+    assert _partition_owner("path", list(reversed(references)), [(6, 1), (6, 2)]) == (
+        _partition_owner("path", references, [(6, 1), (6, 2)])
+    )
+    assert _partition_owner("path", references, [(6, 9)]) is None
 
 
 def test_val_reserves_the_first_partitions_disjoint_from_train():

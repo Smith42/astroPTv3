@@ -130,7 +130,9 @@ class ObjectSequencer:
         lam = torch.as_tensor(spec["lambda"], dtype=torch.float32)
         mask = torch.as_tensor(spec["mask"], dtype=torch.bool)
         flux = torch.where(mask, torch.zeros_like(flux), flux)
-        flux = spectral_normalize(flux, lam, divisor=self.spectra_norm_divisor)
+        flux = spectral_normalize(
+            flux, lam, divisor=self.spectra_norm_divisor, source=mod.source or ""
+        )
         patches, lam_mean = patchify_spectrum(flux, lam, mod.patch_size)
         if self.standardize:
             patches = per_patch_standardize(patches)
@@ -154,7 +156,9 @@ class ObjectSequencer:
             try:
                 values.append(float(raw_value))
             except (TypeError, ValueError) as error:
-                raise ValueError(f"modality {name!r} has a non-numeric value") from error
+                raise ValueError(
+                    f"modality {name!r} has a non-numeric value"
+                ) from error
         if not all(math.isfinite(value) for value in values):
             return None
         if name == "Z" and bool(record.get("ZWARN") or False):

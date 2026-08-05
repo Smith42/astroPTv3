@@ -1,6 +1,5 @@
 import torch
 
-from astropt3.data.packing import PackedCollator
 from astropt3.data.synthetic import record_stream
 from astropt3.modeling_astropt3 import left_shift_mask
 from astropt3.tokenization import BOS_ID, PAD_ID, modality_token_ids

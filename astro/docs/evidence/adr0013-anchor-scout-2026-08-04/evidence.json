@@ -1,0 +1,3223 @@
+{
+  "anchors": {
+    "north": {
+      "cells": [
+        {
+          "absolute_galactic_latitude_deg": 35.75296420054017,
+          "anchor_rows": 2133,
+          "attachment_density_rows_per_deg2": 92.93529201019406,
+          "footprint_bin": 0,
+          "matches": 51,
+          "order": 6,
+          "partition_bytes": 558621487,
+          "peak_rss_gib": 0.6973114013671875,
+          "physical_bytes": 604212898,
+          "pixel": 6466,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 319,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 78
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "542638f724d78b2ed07f5d2e935202b970af997315816ada1fd0f25a78257e7f",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 45591411,
+              "partner_partitions": [
+                [
+                  4,
+                  404
+                ]
+              ],
+              "reciprocal_matches": 51
+            }
+          },
+          "stratum": "d0-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 51.47441369203629,
+          "anchor_rows": 2369,
+          "attachment_density_rows_per_deg2": 78.63755477785652,
+          "footprint_bin": 0,
+          "matches": 55,
+          "order": 6,
+          "partition_bytes": 620187809,
+          "peak_rss_gib": 0.9062385559082031,
+          "physical_bytes": 679275126,
+          "pixel": 11262,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 373,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 66
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "11a30f3e20250980237588917b0ab52bc6044e3955c93e288624c474e989cfb0",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 59087317,
+              "partner_partitions": [
+                [
+                  4,
+                  703
+                ]
+              ],
+              "reciprocal_matches": 55
+            }
+          },
+          "stratum": "d0-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 56.88651675720916,
+          "anchor_rows": 2028,
+          "attachment_density_rows_per_deg2": 4.765912410779182,
+          "footprint_bin": 0,
+          "matches": 3,
+          "order": 6,
+          "partition_bytes": 531256729,
+          "peak_rss_gib": 0.9783401489257812,
+          "physical_bytes": 562695315,
+          "pixel": 5949,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 298,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 4
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "18cd32c346e56305dd43706873425f11c83684c78dacd6a32fe8ea5b00405083",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 31438586,
+              "partner_partitions": [
+                [
+                  4,
+                  371
+                ]
+              ],
+              "reciprocal_matches": 3
+            }
+          },
+          "stratum": "d0-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 68.36652323089115,
+          "anchor_rows": 8137,
+          "attachment_density_rows_per_deg2": 56.5952098780028,
+          "footprint_bin": 0,
+          "matches": 146,
+          "order": 5,
+          "partition_bytes": 2128853286,
+          "peak_rss_gib": 1.1153488159179688,
+          "physical_bytes": 2152224710,
+          "pixel": 2663,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 1399,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 190
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "03e703fd38f0fc43528a69e18aecb206768f816910d5e5b7d1967a07c8de1ee1",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 23371424,
+              "partner_partitions": [
+                [
+                  4,
+                  665
+                ]
+              ],
+              "reciprocal_matches": 146
+            }
+          },
+          "stratum": "d0-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 48.433372334334045,
+          "anchor_rows": 2136,
+          "attachment_density_rows_per_deg2": 107.23302924253161,
+          "footprint_bin": 0,
+          "matches": 66,
+          "order": 6,
+          "partition_bytes": 558864920,
+          "peak_rss_gib": 1.1153488159179688,
+          "physical_bytes": 592365842,
+          "pixel": 5783,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 320,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 90
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "bc4a9775007bd099f29c8508382fff374e8afdb67f37e39c590f8c3c74f4ca1a",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 33500922,
+              "partner_partitions": [
+                [
+                  4,
+                  361
+                ]
+              ],
+              "reciprocal_matches": 66
+            }
+          },
+          "stratum": "d1-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 39.88286771433007,
+          "anchor_rows": 2430,
+          "attachment_density_rows_per_deg2": 117.95633216678478,
+          "footprint_bin": 0,
+          "matches": 65,
+          "order": 6,
+          "partition_bytes": 636860017,
+          "peak_rss_gib": 1.1153488159179688,
+          "physical_bytes": 694241090,
+          "pixel": 7363,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 392,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 99
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "6c85e07086fc794ffe1793bda68196d53b9fce7cc63582c162554064bfe1416b",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 57381073,
+              "partner_partitions": [
+                [
+                  4,
+                  460
+                ]
+              ],
+              "reciprocal_matches": 65
+            }
+          },
+          "stratum": "d1-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 62.57312852653377,
+          "anchor_rows": 2012,
+          "attachment_density_rows_per_deg2": 145.36032852876508,
+          "footprint_bin": 0,
+          "matches": 60,
+          "order": 6,
+          "partition_bytes": 523350525,
+          "peak_rss_gib": 1.1153488159179688,
+          "physical_bytes": 586350920,
+          "pixel": 5240,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 402,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 122
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "08c4eca24de246204528f90266a0b9e36e21fc775afc799392e3af2e57a6e25f",
+              "one_way_rejected": 2,
+              "partner_partition_bytes": 63000395,
+              "partner_partitions": [
+                [
+                  4,
+                  327
+                ]
+              ],
+              "reciprocal_matches": 60
+            }
+          },
+          "stratum": "d1-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 57.87618450499924,
+          "anchor_rows": 2792,
+          "attachment_density_rows_per_deg2": 198.97684315003087,
+          "footprint_bin": 0,
+          "matches": 147,
+          "order": 6,
+          "partition_bytes": 730574790,
+          "peak_rss_gib": 1.1319389343261719,
+          "physical_bytes": 826255810,
+          "pixel": 5375,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 621,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 167
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "0c7d932d07555ccdbca2cd41059c8799b5e9ec7d97ff6c1e7ddfb08051a12a11",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 95681020,
+              "partner_partitions": [
+                [
+                  4,
+                  335
+                ]
+              ],
+              "reciprocal_matches": 147
+            }
+          },
+          "stratum": "d1-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 48.327172451694,
+          "anchor_rows": 2237,
+          "attachment_density_rows_per_deg2": 38.12729928623346,
+          "footprint_bin": 1,
+          "matches": 26,
+          "order": 6,
+          "partition_bytes": 585584991,
+          "peak_rss_gib": 1.2149314880371094,
+          "physical_bytes": 623352736,
+          "pixel": 9936,
+          "source_footprint_rows": {
+            "desi": 2,
+            "galaxies": 425,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 30
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "0e3bff806685ca4fc03405c7235068b21840f71829fca2fb03844265d3f8b053",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 37767745,
+              "partner_partitions": [
+                [
+                  4,
+                  621
+                ]
+              ],
+              "reciprocal_matches": 26
+            }
+          },
+          "stratum": "d0-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 44.52197920497205,
+          "anchor_rows": 2698,
+          "attachment_density_rows_per_deg2": 59.57390513473978,
+          "footprint_bin": 1,
+          "matches": 29,
+          "order": 6,
+          "partition_bytes": 706122357,
+          "peak_rss_gib": 1.301300048828125,
+          "physical_bytes": 741989001,
+          "pixel": 9812,
+          "source_footprint_rows": {
+            "desi": 22,
+            "galaxies": 514,
+            "hsc": 0,
+            "provabgs": 5,
+            "sdss": 28
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "0241716ecfd7f6d37f1aa18bc1e56684eeb98b6732d322ef82f2682e400b5cf1",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 2132611,
+              "partner_partitions": [
+                [
+                  8,
+                  157007
+                ]
+              ],
+              "reciprocal_matches": 6
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "0042ee4d18205962f8fc40e8f7d935e75baa0f40cc283b13020f9bd57cbdacf1",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 33734033,
+              "partner_partitions": [
+                [
+                  4,
+                  613
+                ]
+              ],
+              "reciprocal_matches": 23
+            }
+          },
+          "stratum": "d0-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 67.88914041150693,
+          "anchor_rows": 2006,
+          "attachment_density_rows_per_deg2": 77.44607667516172,
+          "footprint_bin": 1,
+          "matches": 24,
+          "order": 6,
+          "partition_bytes": 525591440,
+          "peak_rss_gib": 1.3585433959960938,
+          "physical_bytes": 573423027,
+          "pixel": 10524,
+          "source_footprint_rows": {
+            "desi": 51,
+            "galaxies": 306,
+            "hsc": 0,
+            "provabgs": 8,
+            "sdss": 14
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "9658464bedbb1cc26954dd9ccc59fcc02d0961868547ac304125baade61212ad",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 4274661,
+              "partner_partitions": [
+                [
+                  7,
+                  42096
+                ]
+              ],
+              "reciprocal_matches": 12
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "32aa9e7b8ada4935a7adca09e30ef17d0ca64ca82a8e1d7f3b3cd13ff80aa60e",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 43556926,
+              "partner_partitions": [
+                [
+                  4,
+                  657
+                ]
+              ],
+              "reciprocal_matches": 12
+            }
+          },
+          "stratum": "d0-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 57.98619276663342,
+          "anchor_rows": 2494,
+          "attachment_density_rows_per_deg2": 34.552864978149074,
+          "footprint_bin": 0,
+          "matches": 24,
+          "order": 6,
+          "partition_bytes": 653511435,
+          "peak_rss_gib": 1.4060325622558594,
+          "physical_bytes": 695256434,
+          "pixel": 11808,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 437,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 29
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "986ce9bc053e2bfd06eef1690664361b449a88d9a7dde5b2bfe404492df5cff1",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 41744999,
+              "partner_partitions": [
+                [
+                  4,
+                  738
+                ]
+              ],
+              "reciprocal_matches": 24
+            }
+          },
+          "stratum": "d0-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 39.87243209219072,
+          "anchor_rows": 2072,
+          "attachment_density_rows_per_deg2": 856.6727558375582,
+          "footprint_bin": 1,
+          "matches": 215,
+          "order": 6,
+          "partition_bytes": 543124637,
+          "peak_rss_gib": 1.4060325622558594,
+          "physical_bytes": 596382518,
+          "pixel": 9431,
+          "source_footprint_rows": {
+            "desi": 629,
+            "galaxies": 351,
+            "hsc": 0,
+            "provabgs": 110,
+            "sdss": 90
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "aa923b36cfba3bf28cb864a5a9e0028cad6f70081f6b900e7b38fa7544e1bf45",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 38108998,
+              "partner_partitions": [
+                [
+                  6,
+                  9431
+                ]
+              ],
+              "reciprocal_matches": 152
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "0b49a4cb345cfff4d2f3bd818d14fca55b1f6c2e66bc663c1aaa61f74f281e86",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 15148883,
+              "partner_partitions": [
+                [
+                  4,
+                  589
+                ]
+              ],
+              "reciprocal_matches": 63
+            }
+          },
+          "stratum": "d1-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 50.52355403146962,
+          "anchor_rows": 2384,
+          "attachment_density_rows_per_deg2": 4009.3238155679874,
+          "footprint_bin": 1,
+          "matches": 884,
+          "order": 6,
+          "partition_bytes": 623578221,
+          "peak_rss_gib": 1.4306068420410156,
+          "physical_bytes": 960668558,
+          "pixel": 9835,
+          "source_footprint_rows": {
+            "desi": 3352,
+            "galaxies": 366,
+            "hsc": 0,
+            "provabgs": 725,
+            "sdss": 13
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "f5333785e5894a7a59694a9dea6ec1129158f65b1b4ff214680af3c7004d4ad3",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 299010898,
+              "partner_partitions": [
+                [
+                  5,
+                  2458
+                ]
+              ],
+              "reciprocal_matches": 880
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "810f71db803c6a84ca7bfcf1e40fbd09e628b0d71533395a5031240db6dace43",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 38079439,
+              "partner_partitions": [
+                [
+                  4,
+                  614
+                ]
+              ],
+              "reciprocal_matches": 4
+            }
+          },
+          "stratum": "d1-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 59.302040430063855,
+          "anchor_rows": 2113,
+          "attachment_density_rows_per_deg2": 4423.958195305777,
+          "footprint_bin": 1,
+          "matches": 914,
+          "order": 6,
+          "partition_bytes": 553189184,
+          "peak_rss_gib": 1.4619789123535156,
+          "physical_bytes": 826059259,
+          "pixel": 11427,
+          "source_footprint_rows": {
+            "desi": 3655,
+            "galaxies": 334,
+            "hsc": 0,
+            "provabgs": 731,
+            "sdss": 58
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "152d03e8c3e5c57dda367c4b79acce6c299b1ab8fedf80a65a6a51334ae40f2b",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 215159468,
+              "partner_partitions": [
+                [
+                  6,
+                  11427
+                ]
+              ],
+              "reciprocal_matches": 870
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "98fe89341d564d5cf96d3f406c50e5f77bbf096290ef956ca5f9a6c5dc786fdf",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 57710607,
+              "partner_partitions": [
+                [
+                  4,
+                  714
+                ]
+              ],
+              "reciprocal_matches": 44
+            }
+          },
+          "stratum": "d1-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 68.6232715801617,
+          "anchor_rows": 2373,
+          "attachment_density_rows_per_deg2": 5366.41737453736,
+          "footprint_bin": 1,
+          "matches": 1272,
+          "order": 6,
+          "partition_bytes": 621739476,
+          "peak_rss_gib": 1.5164337158203125,
+          "physical_bytes": 922967961,
+          "pixel": 10512,
+          "source_footprint_rows": {
+            "desi": 4390,
+            "galaxies": 467,
+            "hsc": 0,
+            "provabgs": 1004,
+            "sdss": 114
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "962307ad8ffa0a351f241a6de8fc587927931b093d82f014cbd8b3606b85692d",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 257671559,
+              "partner_partitions": [
+                [
+                  6,
+                  10512
+                ]
+              ],
+              "reciprocal_matches": 1175
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "aeaa0488aebc08218a93074b80d785816c8bc49cd7da4fc2b4a61ded35417a51",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 43556926,
+              "partner_partitions": [
+                [
+                  4,
+                  657
+                ]
+              ],
+              "reciprocal_matches": 97
+            }
+          },
+          "stratum": "d1-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 52.6987746854665,
+          "anchor_rows": 2274,
+          "attachment_density_rows_per_deg2": 54.8079927239606,
+          "footprint_bin": 0,
+          "matches": 37,
+          "order": 6,
+          "partition_bytes": 595781016,
+          "peak_rss_gib": 1.5164337158203125,
+          "physical_bytes": 644702960,
+          "pixel": 11920,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 405,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 46
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "b4f95eb605f23083d67bc49abc6baa2acce6f1d3676a3b761c328c678c0a872f",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 48921944,
+              "partner_partitions": [
+                [
+                  4,
+                  745
+                ]
+              ],
+              "reciprocal_matches": 37
+            }
+          },
+          "stratum": "d0-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 22.089033247900982,
+          "anchor_rows": 2385,
+          "attachment_density_rows_per_deg2": 26.212518259285506,
+          "footprint_bin": 0,
+          "matches": 18,
+          "order": 6,
+          "partition_bytes": 624402993,
+          "peak_rss_gib": 1.5264053344726562,
+          "physical_bytes": 689346345,
+          "pixel": 6394,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 367,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 22
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "c4599ef9c6d134f9d29baef3a6d1a36186f76957e9d6599938facdd33bda6a8f",
+              "one_way_rejected": 2,
+              "partner_partition_bytes": 64943352,
+              "partner_partitions": [
+                [
+                  4,
+                  399
+                ]
+              ],
+              "reciprocal_matches": 18
+            }
+          },
+          "stratum": "d0-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 56.0384920999523,
+          "anchor_rows": 2162,
+          "attachment_density_rows_per_deg2": 35.74434308084387,
+          "footprint_bin": 0,
+          "matches": 27,
+          "order": 6,
+          "partition_bytes": 565612152,
+          "peak_rss_gib": 1.5485343933105469,
+          "physical_bytes": 624144058,
+          "pixel": 5301,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 331,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 30
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "fe82462792ddb5844ee725d8e898e567d23340548e9b80a487604e347d18cbcc",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 58531906,
+              "partner_partitions": [
+                [
+                  4,
+                  331
+                ]
+              ],
+              "reciprocal_matches": 27
+            }
+          },
+          "stratum": "d0-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 56.812966686842785,
+          "anchor_rows": 2619,
+          "attachment_density_rows_per_deg2": 5.957390513473978,
+          "footprint_bin": 0,
+          "matches": 4,
+          "order": 6,
+          "partition_bytes": 685857919,
+          "peak_rss_gib": 1.5485343933105469,
+          "physical_bytes": 719030487,
+          "pixel": 11288,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 384,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 5
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "37dcd29ba81df96f2a17f6b30562de0e1e21ea42d50ff75818d04bb4dde330ad",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 33172568,
+              "partner_partitions": [
+                [
+                  4,
+                  705
+                ]
+              ],
+              "reciprocal_matches": 4
+            }
+          },
+          "stratum": "d0-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 49.97321039645726,
+          "anchor_rows": 1926,
+          "attachment_density_rows_per_deg2": 2175.639015520697,
+          "footprint_bin": 0,
+          "matches": 441,
+          "order": 6,
+          "partition_bytes": 504624463,
+          "peak_rss_gib": 1.5485343933105469,
+          "physical_bytes": 679877547,
+          "pixel": 9924,
+          "source_footprint_rows": {
+            "desi": 1826,
+            "galaxies": 275,
+            "hsc": 0,
+            "provabgs": 361,
+            "sdss": 0
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "b77efb85fcb5b1df049b4f7f0c2b7513498c595b8a114051eaf267c0aca8cc06",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 175253084,
+              "partner_partitions": [
+                [
+                  5,
+                  2481
+                ]
+              ],
+              "reciprocal_matches": 441
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            }
+          },
+          "stratum": "d1-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 50.62077116434605,
+          "anchor_rows": 2723,
+          "attachment_density_rows_per_deg2": 106.04155113983681,
+          "footprint_bin": 0,
+          "matches": 57,
+          "order": 6,
+          "partition_bytes": 713010557,
+          "peak_rss_gib": 1.5485343933105469,
+          "physical_bytes": 767457053,
+          "pixel": 11493,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 440,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 89
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "4518fa23121674a256ef185cd9bb4460194aa18c6d213be042f4b7cf20cea687",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 54446496,
+              "partner_partitions": [
+                [
+                  4,
+                  718
+                ]
+              ],
+              "reciprocal_matches": 57
+            }
+          },
+          "stratum": "d1-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 82.08913404908074,
+          "anchor_rows": 2323,
+          "attachment_density_rows_per_deg2": 96.50972631827845,
+          "footprint_bin": 0,
+          "matches": 71,
+          "order": 6,
+          "partition_bytes": 607959668,
+          "peak_rss_gib": 1.5485343933105469,
+          "physical_bytes": 651620807,
+          "pixel": 10423,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 365,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 81
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "6f238cbf65b89f1f73f13200204377850396870035636d5b2d167fce80680ac6",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 43661139,
+              "partner_partitions": [
+                [
+                  4,
+                  651
+                ]
+              ],
+              "reciprocal_matches": 71
+            }
+          },
+          "stratum": "d1-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 73.44477282928823,
+          "anchor_rows": 2504,
+          "attachment_density_rows_per_deg2": 101.27563872905763,
+          "footprint_bin": 0,
+          "matches": 65,
+          "order": 6,
+          "partition_bytes": 655236237,
+          "peak_rss_gib": 1.5485343933105469,
+          "physical_bytes": 701527722,
+          "pixel": 10918,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 358,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 85
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "9716d51889d92d27d9984742bb4f53b0d4382c40ed0142b160fec89152a61910",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 46291485,
+              "partner_partitions": [
+                [
+                  4,
+                  682
+                ]
+              ],
+              "reciprocal_matches": 65
+            }
+          },
+          "stratum": "d1-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 41.67574334368282,
+          "anchor_rows": 2136,
+          "attachment_density_rows_per_deg2": 3.574434308084387,
+          "footprint_bin": 0,
+          "matches": 3,
+          "order": 6,
+          "partition_bytes": 559092633,
+          "peak_rss_gib": 1.5485343933105469,
+          "physical_bytes": 587205332,
+          "pixel": 10023,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 376,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 3
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "2b40056b9eac294e0e9bc42dbbec586fd145fb3883c4f94ac84b4911781e1829",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 28112699,
+              "partner_partitions": [
+                [
+                  4,
+                  626
+                ]
+              ],
+              "reciprocal_matches": 3
+            }
+          },
+          "stratum": "d0-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 46.754717509840134,
+          "anchor_rows": 2603,
+          "attachment_density_rows_per_deg2": 70.29720805899295,
+          "footprint_bin": 1,
+          "matches": 53,
+          "order": 6,
+          "partition_bytes": 682295493,
+          "peak_rss_gib": 1.5485343933105469,
+          "physical_bytes": 717828096,
+          "pixel": 9983,
+          "source_footprint_rows": {
+            "desi": 7,
+            "galaxies": 569,
+            "hsc": 0,
+            "provabgs": 3,
+            "sdss": 52
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "5b5b0dacc68b5f5f186a441e9a0e233fcf858c21fe71ead65b7441ad779772f9",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 711531,
+              "partner_partitions": [
+                [
+                  7,
+                  39935
+                ]
+              ],
+              "reciprocal_matches": 5
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "399e2fbb03d3b00de0494b4e1b7da4d215e93d2b1c0875f8fecabf23d3a54f03",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 34821072,
+              "partner_partitions": [
+                [
+                  4,
+                  623
+                ]
+              ],
+              "reciprocal_matches": 48
+            }
+          },
+          "stratum": "d0-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 58.97532405473946,
+          "anchor_rows": 2350,
+          "attachment_density_rows_per_deg2": 30.97843067006469,
+          "footprint_bin": 0,
+          "matches": 18,
+          "order": 6,
+          "partition_bytes": 615161780,
+          "peak_rss_gib": 1.5485343933105469,
+          "physical_bytes": 647597480,
+          "pixel": 5962,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 320,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 26
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "e83f5464ae9d2681678ac3cd5102922ad202dabfcaff27115875d67daf1e6d95",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 32435700,
+              "partner_partitions": [
+                [
+                  4,
+                  372
+                ]
+              ],
+              "reciprocal_matches": 18
+            }
+          },
+          "stratum": "d0-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 68.33882761765612,
+          "anchor_rows": 2600,
+          "attachment_density_rows_per_deg2": 10.723302924253161,
+          "footprint_bin": 0,
+          "matches": 8,
+          "order": 6,
+          "partition_bytes": 680435378,
+          "peak_rss_gib": 1.5485343933105469,
+          "physical_bytes": 737983128,
+          "pixel": 5402,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 455,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 9
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "7abf0bd02301bff8accbadbb3b2be7ff29814eb6bfeba39c8330fb716268a9a3",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 57547750,
+              "partner_partitions": [
+                [
+                  4,
+                  337
+                ]
+              ],
+              "reciprocal_matches": 8
+            }
+          },
+          "stratum": "d0-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 42.93919121683554,
+          "anchor_rows": 2203,
+          "attachment_density_rows_per_deg2": 774.4607667516173,
+          "footprint_bin": 1,
+          "matches": 163,
+          "order": 6,
+          "partition_bytes": 577534497,
+          "peak_rss_gib": 1.5485343933105469,
+          "physical_bytes": 674764295,
+          "pixel": 10159,
+          "source_footprint_rows": {
+            "desi": 570,
+            "galaxies": 408,
+            "hsc": 80,
+            "provabgs": 122,
+            "sdss": 0
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "6642520f70ebfb532c1eb5e8e83d1b27b0a216452b1f1e6bfe094e9b9faa59d9",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 34621842,
+              "partner_partitions": [
+                [
+                  6,
+                  10159
+                ]
+              ],
+              "reciprocal_matches": 160
+            },
+            "hsc": {
+              "matched_id_hash": "b4147651597d0e697ff465383a86c19a87a214909abbd48d6cb47365404baa13",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 62607956,
+              "partner_partitions": [
+                [
+                  6,
+                  10159
+                ]
+              ],
+              "reciprocal_matches": 3
+            },
+            "sdss": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            }
+          },
+          "stratum": "d1-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 38.30080353524536,
+          "anchor_rows": 2497,
+          "attachment_density_rows_per_deg2": 8048.434583703345,
+          "footprint_bin": 1,
+          "matches": 1456,
+          "order": 6,
+          "partition_bytes": 654626186,
+          "peak_rss_gib": 1.5729827880859375,
+          "physical_bytes": 1065753360,
+          "pixel": 9340,
+          "source_footprint_rows": {
+            "desi": 6749,
+            "galaxies": 499,
+            "hsc": 0,
+            "provabgs": 1186,
+            "sdss": 6
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "432e75fccf87a5c9b8987b54adb82c0c6051570380d3959f5a7df8d05922f940",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 394580685,
+              "partner_partitions": [
+                [
+                  6,
+                  9340
+                ]
+              ],
+              "reciprocal_matches": 1452
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "ca83b0050e45b394d40e2f717c2f1a6347972b422c62249ad403cc13ef3c1fb2",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 16546489,
+              "partner_partitions": [
+                [
+                  4,
+                  583
+                ]
+              ],
+              "reciprocal_matches": 4
+            }
+          },
+          "stratum": "d1-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 60.31355891018441,
+          "anchor_rows": 2232,
+          "attachment_density_rows_per_deg2": 6209.983871245275,
+          "footprint_bin": 1,
+          "matches": 1330,
+          "order": 6,
+          "partition_bytes": 584122733,
+          "peak_rss_gib": 1.5789527893066406,
+          "physical_bytes": 943317685,
+          "pixel": 11424,
+          "source_footprint_rows": {
+            "desi": 5136,
+            "galaxies": 325,
+            "hsc": 0,
+            "provabgs": 1009,
+            "sdss": 76
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "62f7dd6921234faecf2de8d0f534c18d5c08f63ee4f0ed2231b18cede763b3de",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 301484345,
+              "partner_partitions": [
+                [
+                  6,
+                  11424
+                ]
+              ],
+              "reciprocal_matches": 1272
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "eced4609cb3de503bed1d505af3dcb296bf7cfcf7fea2115343b7459c004c690",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 57710607,
+              "partner_partitions": [
+                [
+                  4,
+                  714
+                ]
+              ],
+              "reciprocal_matches": 58
+            }
+          },
+          "stratum": "d1-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 66.31222167339885,
+          "anchor_rows": 2590,
+          "attachment_density_rows_per_deg2": 3718.6031585104574,
+          "footprint_bin": 1,
+          "matches": 952,
+          "order": 6,
+          "partition_bytes": 678047335,
+          "peak_rss_gib": 1.6333770751953125,
+          "physical_bytes": 904455340,
+          "pixel": 9148,
+          "source_footprint_rows": {
+            "desi": 3042,
+            "galaxies": 411,
+            "hsc": 0,
+            "provabgs": 735,
+            "sdss": 79
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "14d881b1e1f7e86f0e14af54b905c004dabad0b5d68203fa83c2618cb2df03f4",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 178849494,
+              "partner_partitions": [
+                [
+                  6,
+                  9148
+                ]
+              ],
+              "reciprocal_matches": 887
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "7af47b8e299f748f5cb2afaadf9cd7e6bdfd1368963a419ec4059b5fb9c83c8e",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 47558511,
+              "partner_partitions": [
+                [
+                  4,
+                  571
+                ]
+              ],
+              "reciprocal_matches": 65
+            }
+          },
+          "stratum": "d1-b1-z1"
+        }
+      ],
+      "cells_sampled": 32,
+      "interval": {
+        "ci95_high": 4.949378171730991e-07,
+        "ci95_low": 2.0590908306997647e-07,
+        "matches_per_byte": 3.5211991018465556e-07,
+        "relative_half_width": 0.41041237053529966
+      },
+      "status": "inconclusive"
+    },
+    "south": {
+      "cells": [
+        {
+          "absolute_galactic_latitude_deg": 46.48998538522364,
+          "anchor_rows": 1451,
+          "attachment_density_rows_per_deg2": 4.765912410779182,
+          "footprint_bin": 0,
+          "matches": 0,
+          "order": 7,
+          "partition_bytes": 793310820,
+          "peak_rss_gib": 1.8737030029296875,
+          "physical_bytes": 793310820,
+          "pixel": 37388,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 78,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 1
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            }
+          },
+          "stratum": "d0-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 54.68006839640135,
+          "anchor_rows": 1734,
+          "attachment_density_rows_per_deg2": 104.85007303714202,
+          "footprint_bin": 0,
+          "matches": 17,
+          "order": 7,
+          "partition_bytes": 939982659,
+          "peak_rss_gib": 2.0106658935546875,
+          "physical_bytes": 966794859,
+          "pixel": 103650,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 79,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 22
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "ce5569a17e62ae9eed5298afec68fa20920749efc5249e869ed9bcd2afc3d5ce",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 26812200,
+              "partner_partitions": [
+                [
+                  4,
+                  1619
+                ]
+              ],
+              "reciprocal_matches": 17
+            }
+          },
+          "stratum": "d0-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 57.42993329003679,
+          "anchor_rows": 1478,
+          "attachment_density_rows_per_deg2": 100.08416062636284,
+          "footprint_bin": 0,
+          "matches": 16,
+          "order": 7,
+          "partition_bytes": 821382177,
+          "peak_rss_gib": 2.0106658935546875,
+          "physical_bytes": 876164392,
+          "pixel": 104201,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 84,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 21
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "b24a2e292801241a3358cddc632e64247b20771c9908958215ebc9364aca1b3f",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 54782215,
+              "partner_partitions": [
+                [
+                  4,
+                  1628
+                ]
+              ],
+              "reciprocal_matches": 16
+            }
+          },
+          "stratum": "d0-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 65.7132568056651,
+          "anchor_rows": 1830,
+          "attachment_density_rows_per_deg2": 71.48868616168774,
+          "footprint_bin": 0,
+          "matches": 11,
+          "order": 7,
+          "partition_bytes": 998130299,
+          "peak_rss_gib": 2.0106658935546875,
+          "physical_bytes": 1060170045,
+          "pixel": 113598,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 90,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 15
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "3240bad3877c0aa941a57a582ebe89a689a9541d7b2f8ef8759be9527fb43bf9",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 62039746,
+              "partner_partitions": [
+                [
+                  4,
+                  1774
+                ]
+              ],
+              "reciprocal_matches": 11
+            }
+          },
+          "stratum": "d0-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 48.73731999950474,
+          "anchor_rows": 1536,
+          "attachment_density_rows_per_deg2": 595.7390513473979,
+          "footprint_bin": 0,
+          "matches": 109,
+          "order": 7,
+          "partition_bytes": 848264866,
+          "peak_rss_gib": 2.0106658935546875,
+          "physical_bytes": 886898279,
+          "pixel": 2,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 126,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 125
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "edfbeffc1977f8cb5e66aa7ddb9e3a34aa306ea65ef856bda74523dc4d7edf30",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 38633413,
+              "partner_partitions": [
+                [
+                  4,
+                  0
+                ]
+              ],
+              "reciprocal_matches": 109
+            }
+          },
+          "stratum": "d1-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 49.54260645655852,
+          "anchor_rows": 1882,
+          "attachment_density_rows_per_deg2": 138.2114599125963,
+          "footprint_bin": 0,
+          "matches": 24,
+          "order": 7,
+          "partition_bytes": 1029112860,
+          "peak_rss_gib": 2.032726287841797,
+          "physical_bytes": 1097331170,
+          "pixel": 17854,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 102,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 29
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "2418bd6b65fcaa76773a5befdd0baa5c7a77173bd4047542a5f955c7908b5c70",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 68218310,
+              "partner_partitions": [
+                [
+                  4,
+                  278
+                ]
+              ],
+              "reciprocal_matches": 24
+            }
+          },
+          "stratum": "d1-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 79.93248169891048,
+          "anchor_rows": 1507,
+          "attachment_density_rows_per_deg2": 190.6364964311673,
+          "footprint_bin": 0,
+          "matches": 34,
+          "order": 7,
+          "partition_bytes": 825985165,
+          "peak_rss_gib": 2.0343055725097656,
+          "physical_bytes": 888817843,
+          "pixel": 111925,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 89,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 40
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "52101dce2ede2c08295bb58b2b2de9bae98e840f296b4b4187f4fb7c74208a15",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 62832678,
+              "partner_partitions": [
+                [
+                  4,
+                  1748
+                ]
+              ],
+              "reciprocal_matches": 34
+            }
+          },
+          "stratum": "d1-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 62.54884486358498,
+          "anchor_rows": 1893,
+          "attachment_density_rows_per_deg2": 419.4002921485681,
+          "footprint_bin": 0,
+          "matches": 56,
+          "order": 7,
+          "partition_bytes": 1030007688,
+          "peak_rss_gib": 2.0868148803710938,
+          "physical_bytes": 1196705822,
+          "pixel": 72042,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 138,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 88
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "1b1cfa675b10698fdc50131d8ca4df650677b0412fad98d264df85dc43ed6323",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 166698134,
+              "partner_partitions": [
+                [
+                  4,
+                  1125
+                ]
+              ],
+              "reciprocal_matches": 56
+            }
+          },
+          "stratum": "d1-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 53.28744524828406,
+          "anchor_rows": 1242,
+          "attachment_density_rows_per_deg2": 42.893211697012646,
+          "footprint_bin": 1,
+          "matches": 6,
+          "order": 7,
+          "partition_bytes": 690115976,
+          "peak_rss_gib": 2.0868148803710938,
+          "physical_bytes": 931632587,
+          "pixel": 103638,
+          "source_footprint_rows": {
+            "desi": 2,
+            "galaxies": 41,
+            "hsc": 0,
+            "provabgs": 1,
+            "sdss": 7
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "1a719a87225d7fbba4f47bfcd0b14e05de5b348f3dd901b76d378cc8adfb0645",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 214704411,
+              "partner_partitions": [
+                [
+                  5,
+                  6477
+                ]
+              ],
+              "reciprocal_matches": 1
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "7282a7d953d7c1c299bdc3961cc13ec6f768bf463170716cab405c656c2976bf",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 26812200,
+              "partner_partitions": [
+                [
+                  4,
+                  1619
+                ]
+              ],
+              "reciprocal_matches": 5
+            }
+          },
+          "stratum": "d0-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 40.89321574708167,
+          "anchor_rows": 1888,
+          "attachment_density_rows_per_deg2": 33.36138687545428,
+          "footprint_bin": 0,
+          "matches": 7,
+          "order": 7,
+          "partition_bytes": 1029217587,
+          "peak_rss_gib": 2.0868148803710938,
+          "physical_bytes": 1064885618,
+          "pixel": 19568,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 82,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 7
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "a441b6bf10c29df094cda577c73916577db84546cc82627916872bb13e4aa9bf",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 35668031,
+              "partner_partitions": [
+                [
+                  4,
+                  305
+                ]
+              ],
+              "reciprocal_matches": 7
+            }
+          },
+          "stratum": "d0-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 56.06601569407382,
+          "anchor_rows": 1284,
+          "attachment_density_rows_per_deg2": 57.19094892935019,
+          "footprint_bin": 1,
+          "matches": 5,
+          "order": 7,
+          "partition_bytes": 712380502,
+          "peak_rss_gib": 2.0868148803710938,
+          "physical_bytes": 1042783009,
+          "pixel": 104001,
+          "source_footprint_rows": {
+            "desi": 10,
+            "galaxies": 34,
+            "hsc": 0,
+            "provabgs": 4,
+            "sdss": 2
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "b78472d2c2b1e24e45daa83d763754961bf85e41afae99c8fc652aec9e9ecf39",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 330402507,
+              "partner_partitions": [
+                [
+                  5,
+                  6500
+                ]
+              ],
+              "reciprocal_matches": 5
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            }
+          },
+          "stratum": "d0-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 56.09039081287688,
+          "anchor_rows": 1819,
+          "attachment_density_rows_per_deg2": 100.08416062636284,
+          "footprint_bin": 1,
+          "matches": 19,
+          "order": 7,
+          "partition_bytes": 1000352392,
+          "peak_rss_gib": 2.1136131286621094,
+          "physical_bytes": 1070752334,
+          "pixel": 103934,
+          "source_footprint_rows": {
+            "desi": 1,
+            "galaxies": 121,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 20
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "e511b848f6e2bbea9e474db50092f843b5f890ecf13ea2c867ed8648198690a8",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 70399942,
+              "partner_partitions": [
+                [
+                  4,
+                  1623
+                ]
+              ],
+              "reciprocal_matches": 19
+            }
+          },
+          "stratum": "d0-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 41.871282102947085,
+          "anchor_rows": 1600,
+          "attachment_density_rows_per_deg2": 18753.865336416085,
+          "footprint_bin": 1,
+          "matches": 1142,
+          "order": 7,
+          "partition_bytes": 859922949,
+          "peak_rss_gib": 2.164257049560547,
+          "physical_bytes": 3371384626,
+          "pixel": 109379,
+          "source_footprint_rows": {
+            "desi": 1019,
+            "galaxies": 79,
+            "hsc": 2889,
+            "provabgs": 239,
+            "sdss": 27
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "d4a3a86b359481dec5aa783cbab47175906acb6f9524a0cff9367e22c4b18164",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 249296051,
+              "partner_partitions": [
+                [
+                  6,
+                  27344
+                ]
+              ],
+              "reciprocal_matches": 328
+            },
+            "hsc": {
+              "matched_id_hash": "6a91ad8d0c9056bb7d4b485db63d692b0bfcc7477e5723a2b9c45e33966637f2",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 2201575912,
+              "partner_partitions": [
+                [
+                  7,
+                  109379
+                ]
+              ],
+              "reciprocal_matches": 795
+            },
+            "sdss": {
+              "matched_id_hash": "6a63bdd9d1bd5fb49ec913d99af9614187b48d3813b1616ee894080dcdb4ad4a",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 60589714,
+              "partner_partitions": [
+                [
+                  4,
+                  1709
+                ]
+              ],
+              "reciprocal_matches": 19
+            }
+          },
+          "stratum": "d1-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 51.640496679414476,
+          "anchor_rows": 1922,
+          "attachment_density_rows_per_deg2": 7239.420951973579,
+          "footprint_bin": 1,
+          "matches": 496,
+          "order": 7,
+          "partition_bytes": 1044481459,
+          "peak_rss_gib": 2.2187423706054688,
+          "physical_bytes": 1451198054,
+          "pixel": 103778,
+          "source_footprint_rows": {
+            "desi": 1496,
+            "galaxies": 99,
+            "hsc": 0,
+            "provabgs": 283,
+            "sdss": 23
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "740be4209b9a5f616a9d24bb5c2bffdbd61f84b1da33f5260be4e4068b1fe662",
+              "one_way_rejected": 2,
+              "partner_partition_bytes": 345626207,
+              "partner_partitions": [
+                [
+                  6,
+                  25944
+                ]
+              ],
+              "reciprocal_matches": 480
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "dd2c8f6b210911d5c6a31cdc4597721c48d8d26077b8c1086801d1ad61a4ceca",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 61090388,
+              "partner_partitions": [
+                [
+                  4,
+                  1621
+                ]
+              ],
+              "reciprocal_matches": 16
+            }
+          },
+          "stratum": "d1-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 61.601994634298435,
+          "anchor_rows": 1609,
+          "attachment_density_rows_per_deg2": 2564.0608769992004,
+          "footprint_bin": 1,
+          "matches": 210,
+          "order": 7,
+          "partition_bytes": 882488788,
+          "peak_rss_gib": 2.2362594604492188,
+          "physical_bytes": 1084503969,
+          "pixel": 104347,
+          "source_footprint_rows": {
+            "desi": 519,
+            "galaxies": 86,
+            "hsc": 0,
+            "provabgs": 130,
+            "sdss": 19
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "a956ac13f09f3a2b8354cc7b7a59802739bf5a0f02ea0fe96c6e890fa1899389",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 142878697,
+              "partner_partitions": [
+                [
+                  5,
+                  6521
+                ]
+              ],
+              "reciprocal_matches": 197
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "d144082be8aa6ab8f02b66b09596142e4c8f7bda071d2dc9fc296283ca5be69a",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 59136484,
+              "partner_partitions": [
+                [
+                  4,
+                  1630
+                ]
+              ],
+              "reciprocal_matches": 13
+            }
+          },
+          "stratum": "d1-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 62.107161156513634,
+          "anchor_rows": 1692,
+          "attachment_density_rows_per_deg2": 500.4208031318142,
+          "footprint_bin": 1,
+          "matches": 17,
+          "order": 7,
+          "partition_bytes": 914988397,
+          "peak_rss_gib": 2.2773704528808594,
+          "physical_bytes": 1060534601,
+          "pixel": 105111,
+          "source_footprint_rows": {
+            "desi": 89,
+            "galaxies": 106,
+            "hsc": 0,
+            "provabgs": 29,
+            "sdss": 16
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "a7666855d1e29c67dab108a91c663b3008361a09251e0de29789f69d1f847a08",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 81765732,
+              "partner_partitions": [
+                [
+                  6,
+                  26277
+                ]
+              ],
+              "reciprocal_matches": 2
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "7e951330cdd6eb55db26ac6ebada4c0ebf62167e6e98cece4634ebc3bfd7463a",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 63780472,
+              "partner_partitions": [
+                [
+                  4,
+                  1642
+                ]
+              ],
+              "reciprocal_matches": 15
+            }
+          },
+          "stratum": "d1-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 52.180009185724664,
+          "anchor_rows": 1599,
+          "attachment_density_rows_per_deg2": 28.595474464675096,
+          "footprint_bin": 0,
+          "matches": 6,
+          "order": 7,
+          "partition_bytes": 882718420,
+          "peak_rss_gib": 2.28765869140625,
+          "physical_bytes": 917064925,
+          "pixel": 17912,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 67,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 6
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "39a6d02fc8a0008b4cac885a9ceda17b590c17f7e86129e5b3f1a1c5f10d0155",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 34346505,
+              "partner_partitions": [
+                [
+                  4,
+                  279
+                ]
+              ],
+              "reciprocal_matches": 6
+            }
+          },
+          "stratum": "d0-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 26.77997425840044,
+          "anchor_rows": 1762,
+          "attachment_density_rows_per_deg2": 28.595474464675096,
+          "footprint_bin": 0,
+          "matches": 4,
+          "order": 7,
+          "partition_bytes": 962464278,
+          "peak_rss_gib": 2.310516357421875,
+          "physical_bytes": 1006371266,
+          "pixel": 16946,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 39,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 6
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "0c3012c28cbd5dcbd5774dd4af6cf9c1a19c99c606ae09335707dfcea21192c3",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 43906988,
+              "partner_partitions": [
+                [
+                  4,
+                  264
+                ]
+              ],
+              "reciprocal_matches": 4
+            }
+          },
+          "stratum": "d0-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 70.969104899555,
+          "anchor_rows": 1469,
+          "attachment_density_rows_per_deg2": 100.08416062636284,
+          "footprint_bin": 0,
+          "matches": 18,
+          "order": 7,
+          "partition_bytes": 806401164,
+          "peak_rss_gib": 2.362720489501953,
+          "physical_bytes": 858434985,
+          "pixel": 69001,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 83,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 21
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "5742d5ef5ec4e960b04a89db8e381913795c3cda8f8ea47f1e3521e83ae7c5f2",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 52033821,
+              "partner_partitions": [
+                [
+                  4,
+                  1078
+                ]
+              ],
+              "reciprocal_matches": 18
+            }
+          },
+          "stratum": "d0-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 78.08195900771265,
+          "anchor_rows": 1711,
+          "attachment_density_rows_per_deg2": 100.08416062636284,
+          "footprint_bin": 0,
+          "matches": 16,
+          "order": 7,
+          "partition_bytes": 921598947,
+          "peak_rss_gib": 2.3973159790039062,
+          "physical_bytes": 984431625,
+          "pixel": 111892,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 82,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 21
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "dd57d50923defa8b4a1424ba17932cc2e03d94cdb6c558254aff33e4ca8aa2d5",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 62832678,
+              "partner_partitions": [
+                [
+                  4,
+                  1748
+                ]
+              ],
+              "reciprocal_matches": 16
+            }
+          },
+          "stratum": "d0-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 27.942787241581275,
+          "anchor_rows": 1255,
+          "attachment_density_rows_per_deg2": 133.44554750181712,
+          "footprint_bin": 0,
+          "matches": 16,
+          "order": 7,
+          "partition_bytes": 695881110,
+          "peak_rss_gib": 2.405071258544922,
+          "physical_bytes": 752214403,
+          "pixel": 18851,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 71,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 28
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "a350f5103a26a05c2a44608216f86baea0f360cf299323aa4ce2f0aa9b276e08",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 56333293,
+              "partner_partitions": [
+                [
+                  4,
+                  294
+                ]
+              ],
+              "reciprocal_matches": 16
+            }
+          },
+          "stratum": "d1-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 23.213799587137625,
+          "anchor_rows": 2193,
+          "attachment_density_rows_per_deg2": 214.46605848506323,
+          "footprint_bin": 0,
+          "matches": 32,
+          "order": 7,
+          "partition_bytes": 1177262567,
+          "peak_rss_gib": 2.4489974975585938,
+          "physical_bytes": 1272597322,
+          "pixel": 88028,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 172,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 45
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "fc53242eb5547a2009827aa841c8ba253d178e95a25d965ac0bf17b48e49cf76",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 95334755,
+              "partner_partitions": [
+                [
+                  4,
+                  1375
+                ]
+              ],
+              "reciprocal_matches": 32
+            }
+          },
+          "stratum": "d1-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 63.11607981572087,
+          "anchor_rows": 1431,
+          "attachment_density_rows_per_deg2": 471.8253286671391,
+          "footprint_bin": 0,
+          "matches": 43,
+          "order": 7,
+          "partition_bytes": 785188581,
+          "peak_rss_gib": 2.4616470336914062,
+          "physical_bytes": 951886715,
+          "pixel": 72011,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 66,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 99
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "178288271972710354668f86574cf711f5d70b543636977d7683d722810a135a",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 166698134,
+              "partner_partitions": [
+                [
+                  4,
+                  1125
+                ]
+              ],
+              "reciprocal_matches": 43
+            }
+          },
+          "stratum": "d1-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 68.3202692165012,
+          "anchor_rows": 1820,
+          "attachment_density_rows_per_deg2": 123.91372268025876,
+          "footprint_bin": 0,
+          "matches": 21,
+          "order": 7,
+          "partition_bytes": 996733078,
+          "peak_rss_gib": 2.4738006591796875,
+          "physical_bytes": 1049041481,
+          "pixel": 105881,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 124,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 26
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "900ab185adcf61704d159ef96ed48aaa7a2dd325b3b98434dce99ec7a77ae1e5",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 52308403,
+              "partner_partitions": [
+                [
+                  4,
+                  1654
+                ]
+              ],
+              "reciprocal_matches": 21
+            }
+          },
+          "stratum": "d1-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 55.19479589724093,
+          "anchor_rows": 1596,
+          "attachment_density_rows_per_deg2": 38.12729928623346,
+          "footprint_bin": 1,
+          "matches": 6,
+          "order": 7,
+          "partition_bytes": 874095426,
+          "peak_rss_gib": 2.5125083923339844,
+          "physical_bytes": 1277918842,
+          "pixel": 103657,
+          "source_footprint_rows": {
+            "desi": 2,
+            "galaxies": 55,
+            "hsc": 0,
+            "provabgs": 1,
+            "sdss": 6
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "8d6e4a16e2ec488160a0a3746e292cadb297261fd3e3d067d3548e31e29ed598",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 377011216,
+              "partner_partitions": [
+                [
+                  5,
+                  6478
+                ]
+              ],
+              "reciprocal_matches": 1
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "7249913925aef63cd8059b7f3a85f4ab6887ec5b7223cfd8103aab2d475d9a8e",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 26812200,
+              "partner_partitions": [
+                [
+                  4,
+                  1619
+                ]
+              ],
+              "reciprocal_matches": 5
+            }
+          },
+          "stratum": "d0-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 30.078548550236558,
+          "anchor_rows": 1795,
+          "attachment_density_rows_per_deg2": 85.78642339402529,
+          "footprint_bin": 0,
+          "matches": 15,
+          "order": 7,
+          "partition_bytes": 980211847,
+          "peak_rss_gib": 2.5174179077148438,
+          "physical_bytes": 1028960659,
+          "pixel": 16433,
+          "source_footprint_rows": {
+            "desi": 0,
+            "galaxies": 172,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 18
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "80a13f039a9e4cf08ca9c594bdd1db49ec649d10108fe61bdb7c116bfe8349ef",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 48748812,
+              "partner_partitions": [
+                [
+                  4,
+                  256
+                ]
+              ],
+              "reciprocal_matches": 15
+            }
+          },
+          "stratum": "d0-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 59.133036684023885,
+          "anchor_rows": 1630,
+          "attachment_density_rows_per_deg2": 90.55233580480447,
+          "footprint_bin": 1,
+          "matches": 11,
+          "order": 7,
+          "partition_bytes": 898997432,
+          "peak_rss_gib": 2.523406982421875,
+          "physical_bytes": 956107959,
+          "pixel": 107866,
+          "source_footprint_rows": {
+            "desi": 2,
+            "galaxies": 75,
+            "hsc": 0,
+            "provabgs": 1,
+            "sdss": 17
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "222e2bc23fd1361af03b17359292febb5427e76103ff0aab358cab2354ee52fb",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 57110527,
+              "partner_partitions": [
+                [
+                  4,
+                  1685
+                ]
+              ],
+              "reciprocal_matches": 11
+            }
+          },
+          "stratum": "d0-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 57.11161950694988,
+          "anchor_rows": 1796,
+          "attachment_density_rows_per_deg2": 109.6159854479212,
+          "footprint_bin": 1,
+          "matches": 15,
+          "order": 7,
+          "partition_bytes": 980447981,
+          "peak_rss_gib": 2.5591506958007812,
+          "physical_bytes": 1439407746,
+          "pixel": 104258,
+          "source_footprint_rows": {
+            "desi": 12,
+            "galaxies": 103,
+            "hsc": 0,
+            "provabgs": 7,
+            "sdss": 11
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "e611b0efb31a67a002ec562691b54999453f650afb9122aaa23fa368eeec88d3",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 400836693,
+              "partner_partitions": [
+                [
+                  5,
+                  6516
+                ]
+              ],
+              "reciprocal_matches": 7
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "4b52228ba1b2bd792733412bd6d26e31a32e20d8fdd184ad9e1151eb891a7989",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 58123072,
+              "partner_partitions": [
+                [
+                  4,
+                  1629
+                ]
+              ],
+              "reciprocal_matches": 8
+            }
+          },
+          "stratum": "d0-b1-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 43.82645836269421,
+          "anchor_rows": 1424,
+          "attachment_density_rows_per_deg2": 3541.0729212089327,
+          "footprint_bin": 1,
+          "matches": 195,
+          "order": 7,
+          "partition_bytes": 787640646,
+          "peak_rss_gib": 2.6240806579589844,
+          "physical_bytes": 4070621150,
+          "pixel": 109040,
+          "source_footprint_rows": {
+            "desi": 77,
+            "galaxies": 68,
+            "hsc": 639,
+            "provabgs": 16,
+            "sdss": 27
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "f2a4ca5d256edbca1582bbd9330f8e15fcf726c66426ac71ab3fbd87f253650d",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 119388385,
+              "partner_partitions": [
+                [
+                  5,
+                  6815
+                ]
+              ],
+              "reciprocal_matches": 25
+            },
+            "hsc": {
+              "matched_id_hash": "8de6279ec674dfebfbadcb0ad49dd53873943273c44232f7ef59c728caf64d6f",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 3092733482,
+              "partner_partitions": [
+                [
+                  6,
+                  27260
+                ]
+              ],
+              "reciprocal_matches": 158
+            },
+            "sdss": {
+              "matched_id_hash": "4ac22967f022938e0a98a05c2422e0091e4de66d0cb032e8f3f31b9ed2c4092c",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 70858637,
+              "partner_partitions": [
+                [
+                  4,
+                  1703
+                ]
+              ],
+              "reciprocal_matches": 12
+            }
+          },
+          "stratum": "d1-b0-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 54.29319694168533,
+          "anchor_rows": 1793,
+          "attachment_density_rows_per_deg2": 7811.3304412670805,
+          "footprint_bin": 1,
+          "matches": 525,
+          "order": 7,
+          "partition_bytes": 975743403,
+          "peak_rss_gib": 2.6498985290527344,
+          "physical_bytes": 1393401286,
+          "pixel": 103819,
+          "source_footprint_rows": {
+            "desi": 1607,
+            "galaxies": 104,
+            "hsc": 0,
+            "provabgs": 0,
+            "sdss": 32
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "d46cc642ac86f09230db34c55468b5da8c4d20003c4c16f7a5407d72f4da0ca6",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 359432857,
+              "partner_partitions": [
+                [
+                  6,
+                  25954
+                ]
+              ],
+              "reciprocal_matches": 506
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "b77471d8c1275b37c287297f72f2d7719f54a4600513ae8853eaf4ef88e17cd2",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 58225026,
+              "partner_partitions": [
+                [
+                  4,
+                  1622
+                ]
+              ],
+              "reciprocal_matches": 19
+            }
+          },
+          "stratum": "d1-b0-z1"
+        },
+        {
+          "absolute_galactic_latitude_deg": 88.42003090409028,
+          "anchor_rows": 1570,
+          "attachment_density_rows_per_deg2": 3731.7094176401,
+          "footprint_bin": 1,
+          "matches": 330,
+          "order": 7,
+          "partition_bytes": 863004778,
+          "peak_rss_gib": 2.6498985290527344,
+          "physical_bytes": 1018504765,
+          "pixel": 112504,
+          "source_footprint_rows": {
+            "desi": 766,
+            "galaxies": 75,
+            "hsc": 0,
+            "provabgs": 111,
+            "sdss": 17
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "a917325623d316ae462dcd800abb10b80a458c5fc88996735e4c00b5bea383a8",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 99969964,
+              "partner_partitions": [
+                [
+                  6,
+                  28126
+                ]
+              ],
+              "reciprocal_matches": 317
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "0d71822361dbc4e6ac047de149b7962877cfb691cad36d503912b827937780de",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 55530023,
+              "partner_partitions": [
+                [
+                  4,
+                  1757
+                ]
+              ],
+              "reciprocal_matches": 13
+            }
+          },
+          "stratum": "d1-b1-z0"
+        },
+        {
+          "absolute_galactic_latitude_deg": 86.14284678379805,
+          "anchor_rows": 1692,
+          "attachment_density_rows_per_deg2": 343.14569357610117,
+          "footprint_bin": 1,
+          "matches": 45,
+          "order": 7,
+          "partition_bytes": 926847748,
+          "peak_rss_gib": 2.679058074951172,
+          "physical_bytes": 1348379302,
+          "pixel": 41620,
+          "source_footprint_rows": {
+            "desi": 53,
+            "galaxies": 95,
+            "hsc": 0,
+            "provabgs": 16,
+            "sdss": 19
+          },
+          "spokes": {
+            "desi": {
+              "matched_id_hash": "b880191db532274a28af82fb9a25dbfd7932bc764ac6db5fb07bdf1e30905b55",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 353543661,
+              "partner_partitions": [
+                [
+                  5,
+                  2601
+                ]
+              ],
+              "reciprocal_matches": 28
+            },
+            "hsc": {
+              "matched_id_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "one_way_rejected": 0,
+              "partner_partition_bytes": 0,
+              "partner_partitions": [],
+              "reciprocal_matches": 0
+            },
+            "sdss": {
+              "matched_id_hash": "2f9b7788a73ec9700c47c3bf488e9f984c5e93cb653307f61113db27a9483681",
+              "one_way_rejected": 1,
+              "partner_partition_bytes": 67987893,
+              "partner_partitions": [
+                [
+                  4,
+                  650
+                ]
+              ],
+              "reciprocal_matches": 17
+            }
+          },
+          "stratum": "d1-b1-z1"
+        }
+      ],
+      "cells_sampled": 32,
+      "interval": {
+        "ci95_high": 1.3018408737520118e-07,
+        "ci95_low": 4.178049672847795e-08,
+        "matches_per_byte": 8.409946304120769e-08,
+        "relative_half_width": 0.5255895070543231
+      },
+      "status": "inconclusive"
+    }
+  },
+  "created_utc": "2026-08-05T00:10:26.709432+00:00",
+  "lineage_gate": {
+    "north": "Published North rows retain only an opaque integer object_id; no Legacy brickid/objid lineage columns are present.",
+    "south": "Published South object_id is DR10 BRICKNAME-OBJID while galaxies-with-hats carries DR8 BRICKID/OBJID; a documented cross-release lineage mapping is still required."
+  },
+  "metric_scope": "prototype reciprocal positional-spoke matches per physical catalog byte; final non-padding target-token/actual-byte gate remains pending source adapters",
+  "plan_sha256": "a7c80c7718a9a04e5fdfc461e11cb147a626acde4bbdd4ad208ef9d20559ad23",
+  "schema_version": "adr0013-anchor-scout-v1"
+}

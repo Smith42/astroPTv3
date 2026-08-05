@@ -20,6 +20,7 @@ ponytail: a diagnostic, not a gate — nothing imports it and no test runs it.
 
 import argparse
 import gc
+import importlib
 import itertools
 import os
 import sys
@@ -32,15 +33,21 @@ MIB = 1024 * 1024
 
 def rss_mib() -> float:
     """Peak-free current RSS (statm is cheap and exact enough here)."""
-    with open("/proc/self/statm") as handle:
-        return int(handle.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / MIB
+    try:
+        with open("/proc/self/statm") as handle:
+            pages = int(handle.read().split()[1])
+    except (OSError, ValueError, IndexError) as error:
+        raise RuntimeError("cannot read process RSS from /proc") from error
+    return pages * os.sysconf("SC_PAGE_SIZE") / MIB
 
 
 def probe_rebuilds(rebuilds: int, draws: int) -> None:
     """Open/abandon the real datasets machinery over local parquet, N times."""
-    from fake_mmu import _fixtures, fake_open_stream
+    fake_mmu = importlib.import_module("fake_mmu")
+    fixtures = fake_mmu._fixtures
+    fake_open_stream = fake_mmu.fake_open_stream
 
-    _fixtures()  # build once, outside the measured loop
+    fixtures()  # build once, outside the measured loop
     for collect in (False, True):
         stream = None
         gc.collect()

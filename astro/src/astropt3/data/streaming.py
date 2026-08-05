@@ -15,18 +15,51 @@ deterministically permuted per epoch.
 
 from __future__ import annotations
 
+import ast
 import importlib
 import json
 import math
 import os
+import zlib
 from typing import Any, cast
 
 import numpy as np
 
+from .match_index import load_source_graph
+from .scalar_registry import GWH_FRACTION_FIELDS
+
 IMAGES_CATALOG = "hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north"
 SPECTRA_CATALOG = "hf://datasets/UniverseTBD/mmu_desi_edr_sv3"
+SOURCE_CATALOGS = {
+    "desi": SPECTRA_CATALOG,
+    "sdss": "hf://datasets/UniverseTBD/mmu_sdss_sdss",
+    "provabgs": "hf://datasets/UniverseTBD/mmu_desi_provabgs",
+    "hsc": "hf://datasets/UniverseTBD/mmu_hsc_pdr3_dud_22.5",
+    "galaxies": "hf://datasets/Smith42/galaxies-with-hats",
+    "galaxies_train": "hf://datasets/Smith42/galaxies-with-hats",
+    "galaxies_validation": "hf://datasets/Smith42/galaxies-with-hats",
+    "galaxies_test": "hf://datasets/Smith42/galaxies-with-hats",
+}
+SOURCE_SUBDIRS = {
+    "galaxies": "train/train",
+    "galaxies_train": "train/train",
+    "galaxies_validation": "validation/validation",
+    "galaxies_test": "test/test",
+}
+SOURCE_ID_COLUMNS = {
+    "desi": "object_id",
+    "sdss": "object_id",
+    "provabgs": "object_id",
+    "hsc": "object_id",
+    "galaxies": "dr8_id",
+    "galaxies_train": "dr8_id",
+    "galaxies_validation": "dr8_id",
+    "galaxies_test": "dr8_id",
+}
 CROSSMATCH_RADIUS_ARCSEC = 1.0
 IMAGE_SHAPE = (3, 152, 152)
+HSC_IMAGE_SHAPE = (5, 160, 160)
+UNMATCHED_SOURCES = {"desi", "sdss", "hsc"}
 
 SYNTHETIC_ROOT = "synthetic"
 MMU_ROOT = "mmu"
@@ -35,6 +68,7 @@ MMU_ROOT = "mmu"
 # overflow now leads the cell instead of trailing it), v3 deals partitions to
 # DP ranks instead of truncating and node-splitting them.
 SOURCE_ASSEMBLY = "crossmatch_only_v3"
+SOURCE_GRAPH_ASSEMBLY = "legacy_north_source_graph_v1"
 # ~74.6 KiB per DESI spectrum row (measured, scripts/probe_stream_rss.py), so
 # this is ~3.5k rows held per worker. Sized against the 68.7 GiB slurm cgroup
 # at 8 workers x 2 ranks; raise it only with that arithmetic redone.
@@ -44,9 +78,38 @@ UNMATCHED_BUFFER_BYTES = 256 * 1024 * 1024
 # spatially disjoint. Stable global ownership assigns each unmatched spectrum
 # partition to exactly one of those cells, preventing cross-split duplication.
 VAL_PARTITIONS = 8
+SPLIT_ORDER = 4
+SPLIT_BUCKETS = 20
 MATCH_INDEX_ENV = "ASTROPT3_MATCH_INDEX"
 
 _IMAGE_SCALARS = ("ebv", "flux_g", "flux_r", "flux_z", "z_spec")
+_SOURCE_COLUMNS = {
+    "desi": ["object_id", "ra", "dec", "_healpix_29", "spectrum", "Z", "ZERR", "ZWARN"],
+    "sdss": [
+        "object_id",
+        "ra",
+        "dec",
+        "_healpix_29",
+        "spectrum",
+        "Z",
+        "Z_ERR",
+        "ZWARNING",
+    ],
+    "hsc": ["object_id", "ra", "dec", "_healpix_29", "image"],
+    "provabgs": [
+        "object_id",
+        "ra",
+        "dec",
+        "_healpix_29",
+        "LOG_MSTAR",
+        "Z_HP",
+        "Z_MW",
+        "TAGE_MW",
+        "AVG_SFR",
+        "TSNR2_BGS",
+    ],
+}
+_ANCHOR_COLUMNS = ["object_id", "ra", "dec", "_healpix_29", "image", *_IMAGE_SCALARS]
 
 
 # -- decode: hub row -> record dict ------------------------------------------
@@ -59,11 +122,11 @@ def _stack_ragged(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
-def _image_flux(value) -> np.ndarray:
-    """Coerce nested lists / object arrays of band images to (3, 152, 152)."""
+def _image_flux(value, expected_shape=IMAGE_SHAPE) -> np.ndarray:
+    """Coerce nested lists / object arrays of band images to a dense cube."""
     arr = _stack_ragged(np.asarray(value)).astype(np.float32, copy=False)
-    if arr.shape != IMAGE_SHAPE:
-        raise ValueError(f"image flux has shape {arr.shape}, expected {IMAGE_SHAPE}")
+    if arr.shape != expected_shape:
+        raise ValueError(f"image flux has shape {arr.shape}, expected {expected_shape}")
     return arr
 
 
@@ -120,6 +183,86 @@ def _attach_image(record: dict, row) -> None:
             record[key] = _as_float(row[key])
 
 
+def attach_source(record: dict, source: str, row) -> None:
+    """Attach one source-distinct partner row to an anchor record."""
+    if source == "desi":
+        _attach_spectrum(record, row)
+        return
+    if source == "sdss":
+        spectrum = _spectrum_part(row)
+        valid = spectrum["lambda"] > 0
+        if not valid.any():
+            raise ValueError("SDSS spectrum has no positive wavelengths")
+        record["sdss_spectrum"] = {
+            key: values[valid] for key, values in spectrum.items()
+        }
+        if (
+            not bool(row.get("ZWARNING"))
+            and _finite(row.get("Z"))
+            and _as_float(row["Z"]) >= 0
+        ):
+            record["sdss_Z"] = _as_float(row["Z"])
+        if _finite(row.get("Z_ERR")):
+            record["sdss_Z_ERR"] = _as_float(row["Z_ERR"])
+        if row.get("ZWARNING") is not None:
+            record["sdss_ZWARNING"] = bool(row["ZWARNING"])
+        return
+    if source == "hsc":
+        image = row.get("image")
+        if image is not None:
+            record["hsc_image"] = {
+                "flux": _image_flux(image["flux"], HSC_IMAGE_SHAPE),
+                "band": [str(b) for b in image["band"]],
+            }
+        return
+    if source == "provabgs":
+        if not (_finite(row.get("TSNR2_BGS")) and _as_float(row["TSNR2_BGS"]) > 0):
+            return
+        predicates = {
+            "LOG_MSTAR": lambda value: 0 < value < 15,
+            "Z_HP": lambda value: 0 <= value < 2,
+            "Z_MW": lambda value: 0 <= value < 0.1,
+            "TAGE_MW": lambda value: 0 <= value <= 14,
+            "AVG_SFR": lambda value: 0 <= value < 1e4,
+        }
+        for key, predicate in predicates.items():
+            if _finite(row.get(key)) and predicate(_as_float(row[key])):
+                record[f"provabgs_{key}"] = _as_float(row[key])
+        return
+    if source == "galaxies" or source.startswith("galaxies_"):
+        for key in GWH_FRACTION_FIELDS:
+            if _finite(row.get(key)) and 0 <= _as_float(row[key]) <= 1:
+                record[f"gwh_{key}"] = _as_float(row[key])
+        return
+    raise ValueError(f"unknown source adapter {source!r}")
+
+
+def _source_id(source: str, row) -> str:
+    value = row[SOURCE_ID_COLUMNS[source]]
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    elif source == "sdss" and isinstance(value, str) and value.startswith("b'"):
+        try:
+            decoded = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            decoded = value
+        if isinstance(decoded, bytes):
+            value = decoded.decode("utf-8")
+    return str(value).strip()
+
+
+def source_only_record(source: str, row) -> dict:
+    source_id = _source_id(source, row)
+    record = {
+        "object_id": f"{source}:{source_id}",
+        "ra": row["ra"],
+        "dec": row["dec"],
+        "_healpix_29": row["_healpix_29"],
+    }
+    attach_source(record, source, row)
+    return record
+
+
 def decode_record(row) -> dict:
     """Convert one raw union-schema row into an ``ObjectSequencer`` record."""
     record = _base(row)
@@ -165,6 +308,16 @@ def split_files(files: list, split: str, val_partitions: int = VAL_PARTITIONS) -
     return files[:reserved] if split == "val" else files[reserved:]
 
 
+def split_of_cell(cell: tuple[int, int]) -> str:
+    """Apply the common spatial split at a fixed nested HEALPix order."""
+    order, pixel = cell
+    if order < SPLIT_ORDER:
+        raise ValueError(f"HEALPix order {order} is below split order {SPLIT_ORDER}")
+    parent = pixel >> (2 * (order - SPLIT_ORDER))
+    bucket = zlib.crc32(str(parent).encode()) % SPLIT_BUCKETS
+    return "val" if bucket == 0 else "train"
+
+
 def shuffled(files: list, seed: int, epoch: int) -> list:
     """Return a deterministic per-epoch partition permutation."""
     order = np.random.default_rng([seed, epoch]).permutation(len(files))
@@ -193,26 +346,43 @@ def resolve_match_index(match_index: str | None = None) -> str | None:
     return match_index or os.environ.get(MATCH_INDEX_ENV) or None
 
 
-def load_match_index(path: str):
-    """Load image→spectrum matches and referenced spectrum cells by image cell."""
-    import pyarrow.parquet as pq
+def source_assembly_for_index(match_index: str | None) -> str:
+    """Return the resume-state tag implied by a resolved pointer index."""
+    from pathlib import Path
 
-    table = pq.read_table(path).to_pydict()
-    matches: dict[tuple, dict] = {}
-    spectra_of: dict[tuple, set] = {}
-    for i in range(len(table["image_id"])):
-        image_cell = (
-            _as_int(table["image_order"][i]),
-            _as_int(table["image_pixel"][i]),
+    resolved = resolve_match_index(match_index)
+    if resolved is None or (
+        not resolved.startswith("hf://") and not Path(resolved).exists()
+    ):
+        return SOURCE_ASSEMBLY
+    graph = load_source_graph(resolved)
+    return (
+        SOURCE_GRAPH_ASSEMBLY
+        if graph.schema_version == 2 and set(graph.partner_revisions) != {"desi"}
+        else SOURCE_ASSEMBLY
+    )
+
+
+def load_match_index(path: str):
+    """Compatibility view of a DESI-only index for the v3 stream."""
+    graph = load_source_graph(path)
+    unsupported = set(graph.partner_revisions) - {"desi"}
+    if unsupported:
+        raise ValueError(
+            f"crossmatch_only_v3 cannot stream sources {sorted(unsupported)}"
         )
-        spectrum_cell = (
-            _as_int(table["spectrum_order"][i]),
-            _as_int(table["spectrum_pixel"][i]),
-        )
-        matches.setdefault(image_cell, {})[table["image_id"][i]] = table["spectrum_id"][
-            i
-        ]
-        spectra_of.setdefault(image_cell, set()).add(spectrum_cell)
+    matches = {
+        cell: {
+            anchor_id: partners["desi"]
+            for anchor_id, partners in anchors.items()
+            if "desi" in partners
+        }
+        for cell, anchors in graph.matches.items()
+    }
+    spectra_of = {
+        cell: sources.get("desi", set())
+        for cell, sources in graph.partner_cells.items()
+    }
     return matches, spectra_of
 
 
@@ -239,10 +409,10 @@ def union_features(image_file: str, spectrum_file: str):
     return Features({**cast(dict, image), **cast(dict, spectrum)})
 
 
-def _rows(parquet_file):
+def _rows(parquet_file, columns=None):
     """Yield rows without materializing a row group as Python objects."""
     for i in range(parquet_file.num_row_groups):
-        table = parquet_file.read_row_group(i)
+        table = parquet_file.read_row_group(i, columns=columns)
         for j in range(table.num_rows):
             yield table.slice(j, 1).to_pylist()[0]
 
@@ -376,9 +546,217 @@ def crossmatch_dataset(
     )
 
 
+def _source_graph_examples(
+    image_paths,
+    match_json,
+    source_partitions_json,
+    owned_source_paths,
+    matched_source_ids,
+):
+    """Yield one deterministic source-graph cell without materializing it."""
+    import fsspec
+    import pyarrow.parquet as pq
+
+    globally_matched = {
+        source: set(map(str, ids)) for source, ids in matched_source_ids.items()
+    }
+    for image_path, raw_matches, raw_partitions, owned in zip(
+        image_paths, match_json, source_partitions_json, owned_source_paths
+    ):
+        try:
+            wanted = json.loads(raw_matches)
+            partitions = json.loads(raw_partitions)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise ValueError("invalid source-graph partition JSON") from error
+
+        needed = {
+            source: {
+                str(source_ids[source])
+                for source_ids in wanted.values()
+                if source in source_ids
+            }
+            for source in partitions
+        }
+        partner_rows: dict[str, dict[str, dict]] = {}
+        for source in sorted(partitions):
+            matched: dict[str, dict] = {}
+            partner_rows[source] = matched
+            owned_paths = set(owned.get(source, []))
+            for spec in partitions[source]:
+                path = spec["path"]
+                with fsspec.open(path, "rb") as file:
+                    parquet = pq.ParquetFile(file)
+                    columns = (
+                        ["dr8_id", "ra", "dec", "_healpix_29", *GWH_FRACTION_FIELDS]
+                        if source == "galaxies" or source.startswith("galaxies_")
+                        else _SOURCE_COLUMNS[source]
+                    )
+                    for row in _rows(parquet, columns):
+                        source_id = _source_id(source, row)
+                        if source_id in needed[source]:
+                            if source_id in matched:
+                                raise ValueError(
+                                    f"duplicate {source} id {source_id!r} in fetched partitions"
+                                )
+                            matched[source_id] = row
+                        elif (
+                            source in UNMATCHED_SOURCES
+                            and path in owned_paths
+                            and source_id not in globally_matched[source]
+                        ):
+                            yield source_only_record(source, row)
+
+        with fsspec.open(image_path, "rb") as file:
+            parquet = pq.ParquetFile(file)
+            for row in _rows(parquet, _ANCHOR_COLUMNS):
+                anchor_id = str(row["object_id"])
+                record = _base(row)
+                _attach_image(record, row)
+                for source, partner_id in sorted(wanted.get(anchor_id, {}).items()):
+                    partner = partner_rows.get(source, {}).get(str(partner_id))
+                    if partner is None:
+                        raise ValueError(
+                            f"match index points to missing {source} id {partner_id!r}"
+                        )
+                    attach_source(record, source, partner)
+                yield record
+
+
+def source_graph_dataset(
+    image_paths,
+    match_json,
+    source_partitions_json,
+    owned_source_paths,
+    matched_source_ids,
+):
+    from datasets import IterableDataset
+
+    return IterableDataset.from_generator(
+        _source_graph_examples,
+        gen_kwargs={
+            "image_paths": image_paths,
+            "match_json": match_json,
+            "source_partitions_json": source_partitions_json,
+            "owned_source_paths": owned_source_paths,
+            "matched_source_ids": matched_source_ids,
+        },
+    )
+
+
+def _source_catalog(source: str, revision: str) -> str:
+    try:
+        catalog = f"{SOURCE_CATALOGS[source]}@{revision}"
+    except KeyError as error:
+        raise ValueError(f"no catalog registered for source {source!r}") from error
+    subdir = SOURCE_SUBDIRS.get(source)
+    return f"{catalog}/{subdir}" if subdir else catalog
+
+
+def _partition_owner(path: str, referencing: list, in_split: list):
+    candidates = sorted(cell for cell in referencing if cell in in_split)
+    if not candidates:
+        return None
+    return candidates[zlib.crc32(path.encode()) % len(candidates)]
+
+
+def _source_graph_dataset(match_index, split, seed, epoch, shard, num_shards):
+    graph = load_source_graph(match_index)
+    image_catalog = f"{IMAGES_CATALOG}@{graph.anchor_revision}"
+    _, image_by_cell = catalog_files(image_catalog)
+
+    source_cells: dict[str, dict] = {}
+    for source, revision in graph.partner_revisions.items():
+        _, source_cells[source] = catalog_files(_source_catalog(source, revision))
+
+    all_cells = sorted(graph.matches)
+    missing = [cell for cell in all_cells if cell not in image_by_cell]
+    if missing:
+        raise ValueError(
+            f"match index references {len(missing)} anchor partitions absent from "
+            f"{image_catalog} (first: {missing[0]})"
+        )
+    in_split = [cell for cell in all_cells if split_of_cell(cell) == split]
+
+    references: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    partition_specs: dict[tuple[int, int], dict[str, list[dict]]] = {}
+    for cell in all_cells:
+        per_source: dict[str, list[dict]] = {}
+        for source, partner_cells in graph.partner_cells[cell].items():
+            specs = []
+            for partner_cell in sorted(partner_cells):
+                try:
+                    path = source_cells[source][partner_cell]
+                except KeyError as error:
+                    raise ValueError(
+                        f"index references missing {source} partition {partner_cell}"
+                    ) from error
+                specs.append(
+                    {"path": path, "order": partner_cell[0], "pixel": partner_cell[1]}
+                )
+                references.setdefault((source, path), []).append(cell)
+            per_source[source] = specs
+        partition_specs[cell] = per_source
+
+    owners: dict[tuple[str, str], tuple[int, int]] = {}
+    for key, cells_referencing in references.items():
+        source, path = key
+        if source not in UNMATCHED_SOURCES:
+            continue
+        partner_spec = next(
+            spec
+            for cell in cells_referencing
+            for spec in partition_specs[cell][source]
+            if spec["path"] == path
+        )
+        if split_of_cell((partner_spec["order"], partner_spec["pixel"])) != split:
+            continue
+        owner = _partition_owner(path, cells_referencing, in_split)
+        if owner is not None:
+            owners[key] = owner
+
+    for (source, path), owner in owners.items():
+        specs = partition_specs[owner].setdefault(source, [])
+        if not any(spec["path"] == path for spec in specs):
+            source_cell = next(
+                cell for cell, value in source_cells[source].items() if value == path
+            )
+            specs.append(
+                {"path": path, "order": source_cell[0], "pixel": source_cell[1]}
+            )
+
+    cells = owned_by_rank(shuffled(in_split, seed, epoch), shard, num_shards)
+    matched_ids = {
+        source: sorted(
+            {
+                str(source_ids[source])
+                for cell_matches in graph.matches.values()
+                for source_ids in cell_matches.values()
+                if source in source_ids
+            }
+        )
+        for source in graph.partner_revisions
+    }
+    return source_graph_dataset(
+        image_paths=[image_by_cell[cell] for cell in cells],
+        match_json=[json.dumps(graph.matches[cell]) for cell in cells],
+        source_partitions_json=[json.dumps(partition_specs[cell]) for cell in cells],
+        owned_source_paths=[
+            {
+                source: [
+                    spec["path"]
+                    for spec in specs
+                    if owners.get((source, spec["path"])) == cell
+                ]
+                for source, specs in partition_specs[cell].items()
+            }
+            for cell in cells
+        ],
+        matched_source_ids=matched_ids,
+    )
+
+
 def _spectrum_owners(spectra_paths_by_cell: dict) -> dict:
     """Assign each spectrum partition to one stable image cell globally."""
-    import zlib
 
     references: dict[str, list[tuple]] = {}
     for cell in sorted(spectra_paths_by_cell):
@@ -391,8 +769,19 @@ def _spectrum_owners(spectra_paths_by_cell: dict) -> dict:
 
 
 def _crossmatch_dataset(match_index, split, seed, epoch, shard, num_shards):
-    image_files, image_by_cell = catalog_files(IMAGES_CATALOG)
-    spectrum_files, spectrum_by_cell = catalog_files(SPECTRA_CATALOG)
+    graph = load_source_graph(match_index)
+    unsupported = set(graph.partner_revisions) - {"desi"}
+    if unsupported:
+        raise ValueError(
+            f"crossmatch_only_v3 cannot stream sources {sorted(unsupported)}"
+        )
+    image_catalog = IMAGES_CATALOG
+    spectrum_catalog = SPECTRA_CATALOG
+    if graph.schema_version == 2:
+        image_catalog += f"@{graph.anchor_revision}"
+        spectrum_catalog += f"@{graph.partner_revisions['desi']}"
+    image_files, image_by_cell = catalog_files(image_catalog)
+    spectrum_files, spectrum_by_cell = catalog_files(spectrum_catalog)
     matches, spectra_of = load_match_index(match_index)
 
     all_cells = sorted(matches)
@@ -400,7 +789,7 @@ def _crossmatch_dataset(match_index, split, seed, epoch, shard, num_shards):
     if missing:
         raise ValueError(
             f"match index references {len(missing)} image partitions absent from "
-            f"{IMAGES_CATALOG} (first: {missing[0]}); rebuild the index"
+            f"{image_catalog} (first: {missing[0]}); rebuild the index"
         )
 
     paths_by_cell = {
@@ -445,10 +834,22 @@ def open_stream(
 
     # The DP split is the partition deal in owned_by_rank, not
     # split_dataset_by_node — see its docstring for why.
-    stream = _crossmatch_dataset(match_index, split, seed, epoch, shard, num_shards)
+    graph = load_source_graph(match_index)
+    multi_source = graph.schema_version == 2 and set(graph.partner_revisions) != {
+        "desi"
+    }
+    if multi_source:
+        stream = _source_graph_dataset(
+            match_index, split, seed, epoch, shard, num_shards
+        )
+        assembly = SOURCE_GRAPH_ASSEMBLY
+    else:
+        stream = _crossmatch_dataset(match_index, split, seed, epoch, shard, num_shards)
+        assembly = SOURCE_ASSEMBLY
+        stream = stream.map(decode_record)
     print(
-        f"[data] open_stream {SOURCE_ASSEMBLY} split={split} epoch={epoch} "
+        f"[data] open_stream {assembly} split={split} epoch={epoch} "
         f"shard={shard}/{num_shards} n_shards={stream.n_shards}",
         flush=True,
     )
-    return stream.map(decode_record)
+    return stream

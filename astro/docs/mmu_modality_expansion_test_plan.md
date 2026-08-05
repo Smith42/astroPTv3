@@ -8,8 +8,8 @@ learning evidence.
 
 ## A. Index and provenance
 
-- [ ] Positional joins are only DESI/SDSS/HSC → selected Legacy.
-- [ ] Lineage joins are only galaxies-with-hats→Legacy and PROVABGS→DESI.
+- [ ] Positional joins are only DESI/SDSS/HSC/galaxies-with-hats → selected Legacy.
+- [ ] The only lineage join is PROVABGS→DESI.
 - [ ] No attachment-to-attachment spatial index is accepted.
 - [ ] Positional matches satisfy the configured reciprocal/cardinality rule.
 - [ ] Index rows store both ids/cells, separation, radius, epoch treatment,
@@ -95,7 +95,7 @@ For each case:
 
 ### galaxies-with-hats
 
-- [ ] Lineage join only; no positional fallback.
+- [ ] Reciprocal 1-arcsec positional join; no cross-release string-id join.
 - [ ] Every accepted numeric field has registry/test coverage.
 - [ ] Failed row quality omits only the affected field.
 - [ ] No unmatched galaxies-with-hats stream is emitted.

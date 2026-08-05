@@ -53,6 +53,17 @@ def test_non_default_divisor_changes_output_and_roundtrips():
     assert torch.allclose(back, flux, atol=1e-9)
 
 
+def test_sdss_log_grid_roundtrips_and_rejects_wrong_steps():
+    lam = 10 ** (torch.log10(torch.tensor(3800.0)) + 1e-4 * torch.arange(3800))
+    flux = torch.randn(len(lam), dtype=torch.float64)
+    tokens = spectral_normalize(flux, lam, source="sdss")
+    assert torch.allclose(spectral_inverse(tokens, lam, source="sdss"), flux, atol=1e-9)
+    with pytest.raises(NotImplementedError, match="SDSS"):
+        spectral_normalize(flux, lam + torch.linspace(0, 10, len(lam)), source="sdss")
+    with pytest.raises(NotImplementedError, match="unknown spectrum source"):
+        spectral_normalize(flux, lam, source="unknown")
+
+
 def test_unknown_grid_raises():
     flux = torch.randn(100)
     with pytest.raises(NotImplementedError, match="DESI"):
@@ -84,7 +95,11 @@ def test_sequencer_uses_config_divisor(tiny_config):
 
     record = make_record(3, image_only_fraction=0.0, spectrum_only_fraction=1.0)
     moved_config = AstroPT3Config(
-        **{**tiny_config.to_dict(), "tokeniser": "jetformer", "spectra_norm_divisor": 3.16}
+        **{
+            **tiny_config.to_dict(),
+            "tokeniser": "jetformer",
+            "spectra_norm_divisor": 3.16,
+        }
     )
     seq = ObjectSequencer(moved_config).build(record)
     flux = torch.as_tensor(record["spectrum"]["flux"])

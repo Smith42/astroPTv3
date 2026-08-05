@@ -67,7 +67,11 @@ from ..configuration_astropt3 import AstroPT3Config
 from .band_registry import _DIV_FACTOR
 from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
 from .packing import ObjectSequencer, PackedCollator
-from .streaming import MMU_ROOT, SOURCE_ASSEMBLY, SYNTHETIC_ROOT
+from .streaming import (
+    MMU_ROOT,
+    SYNTHETIC_ROOT,
+    source_assembly_for_index,
+)
 from .synthetic import make_record
 
 STATE_FILE_TEMPLATE = "dp_{rank}.pt"
@@ -195,6 +199,11 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             )
         # The MMU branch has one assembly and requires its precomputed index.
         self.match_index = match_index
+        self._source_assembly_tag = (
+            source_assembly_for_index(match_index)
+            if self.data_root == MMU_ROOT
+            else SYNTHETIC_ROOT
+        )
         self.synthetic_image_only_fraction = synthetic_image_only_fraction
         self.synthetic_spectrum_only_fraction = synthetic_spectrum_only_fraction
         self.rank = rank
@@ -215,7 +224,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
 
     @property
     def _source_assembly(self) -> str:
-        return SOURCE_ASSEMBLY if self.data_root == MMU_ROOT else SYNTHETIC_ROOT
+        return self._source_assembly_tag
 
     def state_dict(self) -> dict | None:
         """Stream position at the start of the current partial row.
@@ -344,7 +353,6 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
 
         count = state["records"] if state else 0
         start_epoch = state["epoch"] if state else 0
-        stream_state = state.get("stream_state") if state else None
         self._epoch = start_epoch
         self._stream = None
 

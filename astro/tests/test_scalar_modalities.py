@@ -11,11 +11,23 @@ from astropt3.modalities import gmm_nll
 
 def test_scalar_registry_roundtrip_and_unknown_raises():
     x = torch.tensor([0.0, 0.03, 0.7, 1.5, 42.0])
-    for name in ("Z", "ebv", "photometry"):
+    for name in (
+        "Z",
+        "sdss_Z",
+        "provabgs_Z_HP",
+        "provabgs_LOG_MSTAR",
+        "provabgs_Z_MW",
+        "provabgs_TAGE_MW",
+        "provabgs_AVG_SFR",
+        "gwh_smooth-or-featured_smooth_fraction",
+        "ebv",
+        "photometry",
+    ):
         rt = scalar_inverse(name, scalar_normalize(name, x))
         assert torch.allclose(rt, x, atol=1e-5), name
-    with pytest.raises(NotImplementedError):
-        scalar_normalize("sSFR", x)
+    for unknown in ("sSFR", "gwh_undocumented_fraction"):
+        with pytest.raises(NotImplementedError):
+            scalar_normalize(unknown, x)
 
 
 def test_scalar_spans_and_gating(sequencer, full_record):
@@ -39,11 +51,18 @@ def test_scalar_spans_and_gating(sequencer, full_record):
     }
 
 
-def test_scalar_loss_matches_manual_gmm_nll(tiny_model, sequencer, collator, full_record):
+def test_scalar_loss_matches_manual_gmm_nll(
+    tiny_model, sequencer, collator, full_record
+):
     """Scalar losses are gmm_nll on the raw normalized value, no logdet."""
-    batch = collator([sequencer.build(full_record, modality_order=[
-        "images", "spectra", "Z", "ebv", "photometry"
-    ])])
+    batch = collator(
+        [
+            sequencer.build(
+                full_record,
+                modality_order=["images", "spectra", "Z", "ebv", "photometry"],
+            )
+        ]
+    )
     with torch.no_grad():
         out = tiny_model(**batch)
         from astropt3.modeling_astropt3 import left_shift_mask
@@ -82,7 +101,10 @@ def test_unconditional_generation_covers_scalars(tiny_config):
     model = AstroPT3Model(config).eval()
     template = ObjectSequencer(config).build(make_record(3, image_only_fraction=0.0))
     sampled = generate(
-        model, template, set(template.masks), n=1,
+        model,
+        template,
+        set(template.masks),
+        n=1,
         generator=torch.Generator().manual_seed(0),
     )
     assert {"Z", "ebv", "photometry"} <= set(sampled)

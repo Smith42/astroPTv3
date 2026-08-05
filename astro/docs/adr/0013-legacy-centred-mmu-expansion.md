@@ -6,13 +6,20 @@
 - **References:** [ADR 0006](0006-stream-mmu-upstream.md),
   [ADR 0008](0008-scalar-modalities.md),
   [ADR 0011](0011-skim-crossmatch-scans.md), and PR #31
-- **Implementation progress (2026-08-04):** the shared modality metadata,
-  config-carried token allocation, registry-driven packing, backward-compatible
-  family objective, HF/nanotron parity surface, and family logging are
-  implemented. Existing ids 0–16 and historical loss behavior remain frozen;
-  new ADR 0013 configs explicitly select `loss_aggregation: family`. Anchor
-  scouting/selection, stream topology, and source spokes remain pending, so no
-  `SOURCE_ASSEMBLY` bump has occurred.
+- **Implementation progress (2026-08-05):** the shared modality metadata,
+  config-carried token allocation, registry-driven packing, family objective,
+  and HF/Nanotron parity surface are implemented. Existing ids 0–16 remain
+  frozen; the 47-modality source-graph config appends through id 144 and selects
+  `loss_aggregation: family`. The [prototype anchor scout](../evidence/adr0013-anchor-scout-2026-08-04/README.md)
+  capped inconclusive for both anchors; the project owner selected North first
+  while retaining South as the expected second anchor and amended
+  galaxies-with-hats to a reciprocal positional join. The pointer-only schema-v2
+  graph, source adapters, common spatial split, fetched-only unmatched policy,
+  transforms, and all four ordered spokes now pass bounded CPU/live smoke
+  evidence in [the source-spoke record](../evidence/adr0013-source-spokes-2026-08-05/README.md).
+  Record order is tagged `legacy_north_source_graph_v1`; training-machine GPU,
+  parity, resume/no-replay, and learning-evidence gates remain open, so this ADR
+  remains Proposed.
 
 ## Question
 
@@ -22,11 +29,12 @@ spatial splits/resume, or letting many scalar targets dominate the objective?
 
 ## Decision
 
-Adopt a **Legacy-centred rooted star**.
+Adopt a **Legacy-centred rooted star per anchor**.
 
-Choose exactly one of Legacy Survey North or South as the expensive scan anchor.
-DESI, SDSS, and HSC spatially and reciprocally match only to that anchor.
-`galaxies-with-hats` joins Legacy through its genuine Legacy identifiers;
+Choose one of Legacy Survey North or South for the first implementation. Expect
+ultimately to include both nearly disjoint anchors unless measured marginal
+coverage shows that the second adds little. DESI, SDSS, HSC, and
+galaxies-with-hats spatially and reciprocally match only to their Legacy anchor.
 PROVABGS joins DESI through genuine DESI identifiers. Do not build
 attachment-to-attachment spatial indexes and do not require complete N-way
 matches.
@@ -62,9 +70,10 @@ metrics, bootstrap method, source composition, object/packing lengths, RSS,
 partition locality, and DP/worker capacity.
 
 Unknown transforms, unsafe memory, invalid partition locality or worker
-capacity, and split leakage disqualify a candidate. Otherwise the project
-owner chooses the anchor and records the evidence and rationale; no automatic
-tie-break applies.
+capacity, and split leakage disqualify a candidate. Otherwise the project owner
+chooses the first anchor and records the evidence and rationale; no automatic
+tie-break applies. After that prototype, the owner separately accepts or rejects
+the second anchor from its marginal coverage and bounded-cost evidence.
 
 ## Modality identity and vocabulary
 
@@ -127,7 +136,7 @@ scans solely to increase unmatched coverage.
 
 Use one common HEALPix train/validation split:
 
-- matched connected components inherit the Legacy anchor's split;
+- matched connected components inherit their Legacy anchor's split;
 - unmatched rows use their own coordinates;
 - for each `(split, partner_partition)`, hash the stable partition path over
   the sorted referencing anchor cells in that split to select one owner;
@@ -142,7 +151,7 @@ and exact resume.
 
 Match indexes store both source ids and cells, separation, match radius, epoch
 treatment, source revisions, and index-schema revision. Cross-survey string ids
-are never join keys except for the genuine lineage joins named above.
+are never join keys except for the genuine PROVABGS→DESI lineage join.
 
 Yield, characterized selection effects, provenance concerns, and bounded
 throughput costs are advisory. The project owner may accept them only through
@@ -192,8 +201,8 @@ A production-scale pretraining run is not required.
 - Index count grows linearly with positional spokes rather than pairwise.
 - Useful non-Legacy partner rows already present on the wire are retained
   without standalone scans.
-- Objects outside the selected Legacy footprint are represented only when
-  encountered through fetched-only partner reads.
+- Objects outside the selected Legacy footprint or footprints are represented
+  only when encountered through fetched-only partner reads.
 - Vocabulary, modality heads, configs, stream ordering, and both HF/nanotron
   loss implementations change; old stream states are incompatible.
 - Many scalar heads increase model and delimiter overhead, but their collective

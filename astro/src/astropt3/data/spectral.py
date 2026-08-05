@@ -12,9 +12,9 @@ grid that is a *format constant* — 3600–9824 Å in 7781 bins of exactly 0.8 
 inverts even for unconditionally sampled spectra, with no per-object side
 information. The AB reference is 1 nMgy = 10⁻⁹·3631 Jy; ``f_ν = f_λ·λ²/c``.
 
-Non-DESI spectra (future surveys) need their own unit/grid entries the way
-``band_registry`` needs band entries; unknown grids raise rather than
-silently pass through.
+SDSS spectra use the same f_λ units on variable-length log10-wavelength grids
+with a fixed 10⁻⁴ dex step. Source identity selects the grid contract; unknown
+sources or grids raise rather than silently pass through.
 """
 
 from __future__ import annotations
@@ -53,8 +53,36 @@ def _check_desi_grid(lam: torch.Tensor) -> None:
         )
 
 
+def _check_sdss_grid(lam: torch.Tensor) -> None:
+    if lam.ndim != 1 or len(lam) < 2 or not torch.isfinite(lam).all():
+        raise NotImplementedError("SDSS wavelength grid must be a finite 1-D array")
+    log_step = torch.diff(torch.log10(lam.double()))
+    if (
+        lam[0] < 3500
+        or lam[-1] > 11000
+        or not torch.all(log_step > 0)
+        or not torch.allclose(log_step, torch.full_like(log_step, 1e-4), atol=2e-7)
+    ):
+        raise NotImplementedError(
+            "SDSS wavelength grid must be increasing, 3500-11000 A, "
+            "with a 1e-4 dex log10 step"
+        )
+
+
+def _check_grid(source: str, lam: torch.Tensor) -> None:
+    if source == "desi":
+        _check_desi_grid(lam)
+    elif source == "sdss":
+        _check_sdss_grid(lam)
+    else:
+        raise NotImplementedError(f"unknown spectrum source {source!r}")
+
+
 def spectral_normalize(
-    flux: torch.Tensor, lam: torch.Tensor, divisor: float = _DIV_FACTOR
+    flux: torch.Tensor,
+    lam: torch.Tensor,
+    divisor: float = _DIV_FACTOR,
+    source: str = "desi",
 ) -> torch.Tensor:
     """DESI f_λ → ``arcsinh(f_ν/divisor)``: flux in knee units of 10 nMgy.
 
@@ -64,19 +92,22 @@ def spectral_normalize(
     data and inverse stay in the regime the model was trained on. Mask-zeroed
     pixels stay 0 (``arcsinh(0) = 0``).
     """
-    _check_desi_grid(lam)
+    _check_grid(source, lam)
     fnu = flux * lam.to(flux.dtype) ** 2 * FNU_NMGY_PER_FLAM
     return torch.arcsinh(fnu / divisor)
 
 
 def spectral_inverse(
-    tokens: torch.Tensor, lam: torch.Tensor, divisor: float = _DIV_FACTOR
+    tokens: torch.Tensor,
+    lam: torch.Tensor,
+    divisor: float = _DIV_FACTOR,
+    source: str = "desi",
 ) -> torch.Tensor:
     """Invert :func:`spectral_normalize` back to DESI f_λ units.
 
     Exact (no clamp on this modality); ``divisor`` must match the forward
     pass (the checkpoint's ``config.spectra_norm_divisor``).
     """
-    _check_desi_grid(lam)
+    _check_grid(source, lam)
     fnu = torch.sinh(tokens) * divisor
     return fnu / (lam.to(tokens.dtype) ** 2 * FNU_NMGY_PER_FLAM)

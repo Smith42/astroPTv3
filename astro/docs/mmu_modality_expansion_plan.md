@@ -15,8 +15,8 @@ streamer, and source-assembly machinery.
 Update `scripts/build_match_index.py` to support declarative spoke
 specifications:
 
-- positional joins: DESI/SDSS/HSC → selected Legacy;
-- lineage joins: galaxies-with-hats → Legacy, PROVABGS → DESI;
+- positional joins: DESI/SDSS/HSC/galaxies-with-hats → selected Legacy;
+- lineage joins: PROVABGS → DESI;
 - the complete ADR index schema;
 - adaptive stratified North/South scouting;
 - pointer-only outputs, never local corpus materialization.
@@ -97,7 +97,8 @@ uv run python -m astropt3.train_smoke \
 
 1. Inventory finite numeric science fields and document each source-specific
    row predicate, units, provenance, transform/inverse, and missingness.
-2. Build only the genuine Legacy lineage-id join; no positional fallback.
+2. Build a reciprocal 1-arcsec positional join to Legacy; DR8 galaxies ids and
+   the DR9/DR10 anchor ids are release-specific and cannot form a lineage key.
 3. Add one source-prefixed scalar modality per accepted field in
    `data/scalar_registry.py`, modality configs, synthetic fixtures, and tests.
 4. Add a new cumulative run config; never edit historical run configs.
