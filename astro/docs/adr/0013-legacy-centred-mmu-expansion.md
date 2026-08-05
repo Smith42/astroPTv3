@@ -12,8 +12,9 @@
   frozen; the 47-modality source-graph config appends through id 144 and selects
   `loss_aggregation: family`. The [prototype anchor scout](../evidence/adr0013-anchor-scout-2026-08-04/README.md)
   capped inconclusive for both anchors; the project owner selected North first
-  while retaining South as the expected second anchor and amended
-  galaxies-with-hats to a reciprocal positional join. The pointer-only schema-v2
+  while retaining South as the expected second anchor. Every positional spoke is
+  built with LSDB's default `crossmatch` rather than a hand-rolled reciprocal
+  matcher (owner decision, 2026-08-05). The pointer-only schema-v2
   graph, source adapters, common spatial split, fetched-only unmatched policy,
   transforms, and all four ordered spokes now pass bounded CPU/live smoke
   evidence in [the source-spoke record](../evidence/adr0013-source-spokes-2026-08-05/README.md).
@@ -34,7 +35,11 @@ Adopt a **Legacy-centred rooted star per anchor**.
 Choose one of Legacy Survey North or South for the first implementation. Expect
 ultimately to include both nearly disjoint anchors unless measured marginal
 coverage shows that the second adds little. DESI, SDSS, HSC, and
-galaxies-with-hats spatially and reciprocally match only to their Legacy anchor.
+galaxies-with-hats match spatially only to their Legacy anchor, through LSDB's
+default crossmatch (KdTree, one neighbour, 1 arcsec) — amended 2026-08-05 from
+the reciprocal rule to the library default. The MMU collections supply the
+10-arcsec margin that makes those joins exact at partition edges;
+galaxies-with-hats publishes none, so its edge loss is measured, not assumed.
 PROVABGS joins DESI through genuine DESI identifiers. Do not build
 attachment-to-attachment spatial indexes and do not require complete N-way
 matches.

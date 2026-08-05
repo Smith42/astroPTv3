@@ -1,9 +1,13 @@
-"""Build one reciprocal, pointer-only ADR 0013 positional-spoke index.
+"""Build one pointer-only ADR 0013 spoke index off the single Legacy anchor.
 
-LSDB is confined to this offline builder. Each anchor partition is matched with
-its HEALPix neighbourhood, so catalogs without a published HATS margin (notably
-galaxies-with-hats) remain exact at partition edges without a full scan or
-pixel materialization.
+LSDB is confined to this offline builder, and the positional join is LSDB's
+own default: ``anchor.crossmatch(spoke)`` — KdTree, one neighbour, 1 arcsec.
+One anchor, one spoke per run; spokes never match each other.
+
+The MMU catalogs are HATS collections with a 10-arcsec ``default_margin``,
+which lsdb attaches on open, so those joins are exact at partition edges.
+galaxies-with-hats publishes no margin and is lossy there; each build prints
+which of the two it got.
 
 Pinned North × galaxies-with-hats train example::
 
@@ -32,18 +36,17 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
-import astropy.units as u
-import cdshealpix
-import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-from astropy.coordinates import SkyCoord
 from hats.pixel_math.healpix_shim import radec2pix
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 INDEX_SCHEMA_VERSION = 2
 HEALPIX_ORDER = 12
+# lsdb suffixes the right side; the left keeps its own column names
+PARTNER_SUFFIX = "_spoke"
+DISTANCE_COLUMN = "_dist_arcsec"
 SCHEMA = pa.schema(
     [
         ("index_schema_version", pa.int16()),
@@ -122,94 +125,50 @@ def containing_partition(
     raise KeyError("no catalog partition contains the HEALPix cell")
 
 
-def _neighbourhood(order: int, pixel: int) -> list[tuple[int, int]]:
-    neighbours = cdshealpix.neighbours(np.asarray([pixel], dtype=np.uint64), order)[0]
-    return [(order, as_int(value)) for value in neighbours]
-
-
-def _central_indices(frame, order: int, pixel: int) -> np.ndarray:
-    pixels = cast(Any, radec2pix)(
-        order,
-        frame["ra"].to_numpy(dtype="float64"),
-        frame["dec"].to_numpy(dtype="float64"),
-    )
-    return np.flatnonzero(pixels == pixel)
-
-
-def reciprocal_indices(
-    anchor_ra,
-    anchor_dec,
-    partner_ra,
-    partner_dec,
-    central_indices,
-    radius_arcsec: float,
-) -> list[tuple[int, int, float]]:
-    """Return mutual nearest neighbours for central anchors within radius."""
-    if len(central_indices) == 0 or len(partner_ra) == 0:
-        return []
-    anchors = cast(
-        Any,
-        SkyCoord(ra=np.asarray(anchor_ra) * u.deg, dec=np.asarray(anchor_dec) * u.deg),
-    )
-    partners = cast(
-        Any,
-        SkyCoord(
-            ra=np.asarray(partner_ra) * u.deg,
-            dec=np.asarray(partner_dec) * u.deg,
-        ),
-    )
-    central = anchors[central_indices]
-    partner_of, separation, _ = central.match_to_catalog_sky(partners)
-    anchor_of, _, _ = partners.match_to_catalog_sky(anchors)
-    accepted = []
-    for offset, partner_index in enumerate(partner_of):
-        anchor_index = as_int(central_indices[offset])
-        partner_index = as_int(partner_index)
-        distance = as_float(separation[offset].arcsec)
-        if anchor_of[partner_index] == anchor_index and distance <= radius_arcsec:
-            accepted.append((anchor_index, partner_index, distance))
-    return accepted
-
-
-def _partition_frame(catalog, order: int, pixel: int):
+def in_cell(order: int, pixel: int, cell: tuple[int, int], cells: set) -> bool:
+    """Is this crossmatch partition inside the given anchor partition?"""
     try:
-        return catalog.pixel_search(_neighbourhood(order, pixel), fine=False).compute()
-    except ValueError:
-        return None
+        return containing_partition(order, pixel, cells) == cell
+    except KeyError:
+        return False
 
 
-def _rows(anchor, partner, accepted, args, anchor_cell, partner_cells):
-    rows = {name: [] for name in SCHEMA.names}
-    if not accepted:
-        return rows
-    partner_pixels = cast(Any, radec2pix)(
+def _cells_of(frame, suffix: str, published: set) -> list[tuple[int, int]]:
+    """Published partition of every row, from its own coordinates."""
+    pixels = cast(Any, radec2pix)(
         HEALPIX_ORDER,
-        partner["ra"].to_numpy(dtype="float64"),
-        partner["dec"].to_numpy(dtype="float64"),
+        frame[f"ra{suffix}"].to_numpy(dtype="float64"),
+        frame[f"dec{suffix}"].to_numpy(dtype="float64"),
     )
-    for anchor_index, partner_index, separation in accepted:
-        partner_cell = containing_partition(
-            HEALPIX_ORDER, as_int(partner_pixels[partner_index]), partner_cells
-        )
+    return [containing_partition(HEALPIX_ORDER, as_int(p), published) for p in pixels]
+
+
+def _rows(pairs, args, anchor_cells, partner_cells):
+    rows = {name: [] for name in SCHEMA.names}
+    if len(pairs) == 0:
+        return rows
+    if DISTANCE_COLUMN not in pairs:
+        raise ValueError(f"crossmatch result has no {DISTANCE_COLUMN} column")
+    anchors = _cells_of(pairs, "", anchor_cells)
+    partners = _cells_of(pairs, PARTNER_SUFFIX, partner_cells)
+    for position in range(len(pairs)):
+        row = pairs.iloc[position]
         values = {
             "index_schema_version": INDEX_SCHEMA_VERSION,
             "anchor_source": args.anchor_source,
             "anchor_revision": args.anchor_revision,
-            "anchor_order": anchor_cell[0],
-            "anchor_pixel": anchor_cell[1],
-            "anchor_id": normalize_id(
-                anchor.iloc[anchor_index][args.anchor_id_column], args.anchor_strip_id
-            ),
+            "anchor_order": anchors[position][0],
+            "anchor_pixel": anchors[position][1],
+            "anchor_id": normalize_id(row[args.anchor_id_column], args.anchor_strip_id),
             "partner_source": args.partner_source,
             "partner_revision": args.partner_revision,
-            "partner_order": partner_cell[0],
-            "partner_pixel": partner_cell[1],
+            "partner_order": partners[position][0],
+            "partner_pixel": partners[position][1],
             "partner_id": normalize_id(
-                partner.iloc[partner_index][args.partner_id_column],
-                args.partner_strip_id,
+                row[f"{args.partner_id_column}{PARTNER_SUFFIX}"], args.partner_strip_id
             ),
             "join_kind": "positional",
-            "separation_arcsec": separation,
+            "separation_arcsec": as_float(row[DISTANCE_COLUMN]),
             "match_radius_arcsec": args.radius_arcsec,
             "epoch_treatment": args.epoch_treatment,
             "via_source": None,
@@ -254,9 +213,11 @@ def _via_edges(path: str | Path, via_source: str, via_revision: str):
                 "via_pixel": as_int(table["partner_pixel"][index]),
             }
             key = str(partner_id)
-            if key in edges and edges[key] != edge:
-                raise ValueError(f"via source id {key!r} maps to multiple anchor edges")
-            edges[key] = edge
+            # lsdb's default join is one-directional, so one spectrum can be the
+            # nearest neighbour of two anchors; keep the lowest anchor id so the
+            # lineage spoke stays one-to-one and the build is reproducible
+            if key not in edges or edge["anchor_id"] < edges[key]["anchor_id"]:
+                edges[key] = edge
         if not edges:
             raise ValueError(f"via index has no {via_source!r} edges")
         return edges
@@ -372,50 +333,55 @@ def build(args) -> int:
     )
     anchor_cells = partition_cells(anchor)
     partner_cells = partition_cells(partner)
-    cells = sorted(anchor_cells)
+
+    # the MMU collections carry a 10-arcsec default margin that lsdb attaches
+    # here; a spoke without one (galaxies-with-hats) silently loses pairs whose
+    # partner sits across a partition edge, so say which one this build got
+    margin = getattr(partner, "margin", None)
+    print(
+        f"{args.partner_source}: margin cache "
+        + (
+            f"{margin.hc_structure.catalog_info.margin_threshold} arcsec"
+            if margin is not None
+            else "MISSING — matches are lossy at partition edges"
+        ),
+        flush=True,
+    )
+
+    matched = anchor.crossmatch(
+        partner,
+        radius_arcsec=args.radius_arcsec,
+        suffixes=("", PARTNER_SUFFIX),
+        # pinned: lsdb's default flips to "overlapping_columns" in a future
+        # release, and the suffix is what identifies the spoke side here
+        suffix_method="all_columns",
+    )
+    pixels = matched.get_ordered_healpix_pixels()
     if args.cell is not None:
         if args.cell not in anchor_cells:
             raise ValueError(f"anchor catalog has no partition {args.cell}")
-        cells = [args.cell]
+        pixels = [
+            p for p in pixels if in_cell(p.order, p.pixel, args.cell, anchor_cells)
+        ]
     elif args.limit_partitions is not None:
-        cells = cells[: args.limit_partitions]
+        pixels = pixels[: args.limit_partitions]
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     writer = pq.ParquetWriter(args.out, SCHEMA)
     count = 0
     started = time.time()
     try:
-        for number, (order, pixel) in enumerate(cells, 1):
-            anchor_frame = _partition_frame(anchor, order, pixel)
-            partner_frame = _partition_frame(partner, order, pixel)
-            if anchor_frame is None or partner_frame is None:
-                accepted = []
-                rows = {name: [] for name in SCHEMA.names}
-            else:
-                central = _central_indices(anchor_frame, order, pixel)
-                accepted = reciprocal_indices(
-                    anchor_frame["ra"],
-                    anchor_frame["dec"],
-                    partner_frame["ra"],
-                    partner_frame["dec"],
-                    central,
-                    args.radius_arcsec,
-                )
-                rows = _rows(
-                    anchor_frame,
-                    partner_frame,
-                    accepted,
-                    args,
-                    (order, pixel),
-                    partner_cells,
-                )
-            table = pa.table(rows, schema=SCHEMA)
+        for number, pixel in enumerate(pixels, 1):
+            pairs = matched.get_partition(pixel.order, pixel.pixel).compute()
+            table = pa.table(
+                _rows(pairs, args, anchor_cells, partner_cells), schema=SCHEMA
+            )
             writer.write_table(table)
-            count += len(accepted)
+            count += table.num_rows
             elapsed = time.time() - started
             print(
-                f"[{number}/{len(cells)}] Norder={order} Npix={pixel}: "
-                f"{len(accepted)} reciprocal | total {count} ({elapsed:.0f}s)",
+                f"[{number}/{len(pixels)}] Norder={pixel.order} Npix={pixel.pixel}: "
+                f"{table.num_rows} matched | total {count} ({elapsed:.0f}s)",
                 flush=True,
             )
     finally:

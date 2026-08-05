@@ -11,7 +11,9 @@ learning evidence.
 - [ ] Positional joins are only DESI/SDSS/HSC/galaxies-with-hats → selected Legacy.
 - [ ] The only lineage join is PROVABGS→DESI.
 - [ ] No attachment-to-attachment spatial index is accepted.
-- [ ] Positional matches satisfy the configured reciprocal/cardinality rule.
+- [ ] Positional matches come from LSDB's default `crossmatch` (KdTree, one
+      neighbour, 1 arcsec); many-to-one on the spoke side is expected, and the
+      corpus-scale duplicate rate is measured before acceptance.
 - [ ] Index rows store both ids/cells, separation, radius, epoch treatment,
       source revisions, and index-schema revision.
 - [ ] Duplicate source ids and many-to-one outcomes are reported and handled
