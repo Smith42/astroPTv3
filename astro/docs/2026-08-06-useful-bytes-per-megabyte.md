@@ -4,6 +4,208 @@
 decisions. Written 2026-08-06 after the ADR 0013 three-spoke GPU runs showed
 the corpus is transfer-bound rather than compute-bound.
 
+> **AMENDED 2026-08-06 (later the same day).** Everything below the next
+> section was measured on the **three-spoke** index (149,491 anchors, 181
+> cells). The five-spoke index finished building at 04:47 and changed the
+> corpus by 14.6x, which invalidates several conclusions — most importantly
+> the headline `spectrum.ivar` recommendation. Read "Corrections after the
+> five-spoke corpus" first; it says which claims survive.
+
+---
+
+# Corrections after the five-spoke corpus (2026-08-06, later)
+
+The SDSS and galaxies-with-hats spokes landed overnight. The merged index is
+`astroPTv3_index/north-v2-merged-5spoke/match_index.parquet`.
+
+| | three-spoke (this doc) | five-spoke (now) |
+| --- | ---: | ---: |
+| anchors | 149,491 | **2,182,875** |
+| cells | 181 | **5,488** |
+| edges | 265,481 | 2,494,712 |
+
+Spoke coverage, as a share of anchors: `galaxies_train` **94.1%**, `sdss`
+8.0%, `desi` **6.3%**, `provabgs` 5.1%, `hsc` 0.7%. Spokes per anchor:
+`{1: 1,913,654, 2: 230,786, 3: 34,286, 4: 4,117, 5: 32}`.
+
+## 1. The `spectrum.ivar` projection is demoted, not wrong
+
+The 40% measurement (60.7 -> 36.4 MB, counted through
+`HfFileSystemFile._fetch_range`) still stands **per spectrum read**. What
+changed is how much of the corpus it touches.
+
+On the three-spoke index, 137,906 of 149,491 anchors (**92.2%**) carried a
+DESI match, so nearly every anchor forced a read into a DESI partition. On
+the five-spoke index DESI is **6.3%** of anchors. The saving is now roughly
+40% of the spectrum bytes of 6% of rows, against a byte budget the document
+itself measures as 92.3% `image.flux`.
+
+**It is still free and still correct — it is no longer "the recommendation".**
+The image crop (option 2) is now the only lever of consequence.
+
+## 2. `galaxies_train` is why throughput improved, and it is a column-projection story
+
+`_SOURCE_COLUMNS` projects per spoke. `desi`/`sdss` read the `spectrum`
+array and `hsc` reads `image`, but the galaxies branch reads only
+`dr8_id, ra, dec, _healpix_29` plus the 34 `gwh_*` float fractions — **all
+scalars, no arrays**. So the 94% of anchors that are galaxies-only cost
+essentially their anchor image and nothing more, where previously nearly
+every anchor dragged in a single-row-group DESI partition of up to 520 MB.
+
+Corroborated by the fetch stream of a live five-spoke run:
+`mmu_ssl_legacysurvey_north` 587 references, `galaxies-with-hats` 414,
+`mmu_sdss_sdss` 48, `mmu_desi_edr_sv3` **6**, `mmu_desi_provabgs` **3**.
+DESI has essentially left the byte budget.
+
+A second mechanism follows from the cell count: `_spectrum_owners` assigns
+each DESI spectrum partition to exactly one owning cell by crc32 over the
+path. Spreading that over 5,488 cells instead of 181 means **~97% of cells
+now own no unmatched DESI partitions at all**, where before every cell owned
+~1/181 of DESI and paid for it at its boundary.
+
+## 3. Appendix C's 39% re-download figure needs re-measuring
+
+The `434 refs / 266 distinct` count and every LRU/block-size table in
+Appendix C were computed against the 181-cell index. At 5,488 cells the
+spatial-locality picture is different and the numbers should not be quoted.
+
+Two attempts to re-measure it today from a live run's HTTP log **both
+failed**, and the failures are worth recording so nobody repeats them:
+
+- counting HTTP requests per partition measures **range requests**, not
+  downloads — one 774 MB partition is ~14 row-group GETs, which inflates
+  "redundancy" to a meaningless 26x;
+- counting *contiguous runs* of requests per partition is defeated by
+  concurrency: 16 loader processes share one log, so one worker's request
+  splits another's run. The log carries `DP=` tags but no worker id.
+
+The original 39% was measured properly with byte accounting through
+`HfFileSystemFile._fetch_range`. **That instrument, not the training log, is
+the one to use.**
+
+## 4. Block-shuffled cell order: built, inconclusive, reverted
+
+Implemented as a block permutation in `shuffled()` and run at 8 workers. One
+design constraint the appendix understates: `shuffled()` runs **before**
+`owned_by_rank`, which deals cells round-robin to `dp * num_loading_workers`
+consumers. A block of size `B` therefore contributes `B/consumers` cells to
+each consumer, and at `B == consumers` each consumer gets exactly one cell
+per block — the locality is stripped straight back out. Appendix C's
+suggested blocks of **8-16 are smaller than the 16 consumers of a dp=2 x 8
+worker run** and would have bought nothing. A usable block is ~256.
+
+Measured over the first 36 steps against a matched baseline: identical
+median (0.69 vs 0.68 s), identical slow-step count (6/35), mean worse but
+entirely from two startup stalls. **No signal either way** — reverted
+unmerged in favour of the replay work below, not because it was refuted.
+
+## 5. "What does not work" is too kind to the prefetch, and wrong about workers
+
+Two corrections to that table.
+
+**The prefetch is worse than "no better than baseline" — at 8 workers it is
+fatal.** Restored from the stash and run on the five-spoke corpus, it reached
+step 7 and then one rank's loader produced nothing for 20 minutes; NCCL's
+collective watchdog killed the job. Re-run at 2 workers with the same code it
+ran fine past that point, which distinguishes bandwidth contention from a
+deadlock: the prefetch adds a *second* concurrent large read per loader
+process (~32 in flight instead of 16), and a cell read stretches past the
+timeout. It does not create bandwidth; at a worker count that already
+saturates the pipe there is no idle bandwidth to prefetch into.
+
+**Worker count is a large lever, and the table's phrasing obscures it.** All
+three rows of that comparison were run at `num_loading_workers: 8`; the
+"within noise" finding is about baseline vs prefetch vs readahead, *not*
+about worker count. The run table in the handoff shows 1 worker at 24 s/step
+against ~2.9 s/step at 8. Confirmed today from the wrong direction: dropping
+to 2 workers on the five-spoke corpus gave **19.95 s/step against the
+8-worker baseline's 9.02 s/step**, because a worker's cell fetch amortises
+over `num_workers` steps of the loader rotation — at 2 workers a ~100 s fetch
+is spread over 2 steps instead of 8.
+
+## 6. Replay (idea D) is built and measured — it works
+
+Implemented as `ar_replicas` in `nanotron_loader.py`. The ADR 0008 span order
+is already a pure function of `(object_id, epoch)`, so re-emitting a record
+under a suffixed id **is** the reseed: no new RNG, nothing extra to
+checkpoint, and resume stays exact because the stream position is still a
+record index.
+
+The appendix's three open questions are answered:
+
+- **exactly-once audit:** replica 0 keeps the original `object_id`, replicas
+  get `#n`. Every logged line stays unique, so the no-replay audit still
+  catches accidental duplication while permitting deliberate replay. Verified
+  live: every worker logs exactly 50% replicas at `ar_replicas: 2` and zero
+  duplicate lines.
+- **resume:** `count` still increments once per record, so replicas are
+  re-derived on resume rather than saved.
+- **overfitting budget:** at fixed `train_steps` this is a non-issue, and the
+  arithmetic is the opposite of what was feared. `seq_len` fills with the same
+  number of *objects* regardless of replicas, so unique records per step falls
+  proportionally. Measured on a live run at 952 objects/step:
+
+  | `ar_replicas` | records/step | epochs over 20k steps | total exposures/object |
+  | ---: | ---: | ---: | ---: |
+  | 1 | 952 | 8.7 | **8.7** |
+  | 2 | 476 | 4.4 | **8.7** |
+  | 4 | 238 | 2.2 | **8.7** |
+
+  Total repetition is **unchanged**; only the arrangement differs. Raising
+  replicas moves *toward* the data-constrained-scaling comfort zone (fewer
+  epochs), not away from it. The real risk is within-batch correlation —
+  replicas land in the same or adjacent packed rows, so effective batch size
+  falls with replicas even though wall-clock cost does not. Document masking
+  means the copies cannot attend to each other, so it is purely a
+  gradient-diversity effect. A shuffle buffer would decorrelate them.
+
+Throughput, five-spoke, 8 workers, dp=2, over the identical first 117 steps:
+
+| arm | median | mean | slow steps | % of wall in stalls |
+| --- | ---: | ---: | ---: | ---: |
+| `ar_replicas: 1` | 0.68 s | **7.80 s** | 21/116 | 93% |
+| `ar_replicas: 2` | 0.70 s | **2.51 s** | 11/116 | 69% |
+
+**~3x faster per step**, with slow steps roughly halved — half as many
+distinct records per step means half as many cell boundaries crossed. It also
+broke up the rigid stall periodicity described in the next item.
+
+## 7. New observation: stalls arrive on the loader rotation, not at random
+
+On the `ar_replicas: 1` five-spoke baseline, every stall over 60 s from step
+80 onward landed at exactly `step % 8 == 6` with gaps of exactly 8, at
+`num_loading_workers: 8`. The DataLoader round-robins its workers, so each
+worker's cell-boundary fetch blocks its own turn in the rotation and nothing
+amortises it: a worker spends ~100 s fetching to serve ~8 steps x 0.68 s of
+work.
+
+This is the mechanism behind the concurrency negative result. Adding workers
+cannot help, because each added worker adds its own serialised fetch to the
+same rotation.
+
+## 8. Corpus-scale side effects
+
+- **The partition ceiling is gone.** `num_loading_workers <= floor(cells/dp)`
+  bound the pilot recipes at 165 train cells (dp=64 -> 2 workers). At 5,488
+  cells it no longer binds, and the deferred "shard by row group instead of
+  by cell" loader change is not worth building.
+- **`VAL_PARTITIONS = 8`** now reserves 0.15% of cells rather than 4.4%.
+  Fine for throughput runs with `limit_val_batches: 0`; wants raising before
+  any run whose val loss is load-bearing.
+- **Appendix D's composition variance is not resolved by the new corpus.**
+  HSC is now 0.7% of anchors and its matches are still confined to a small
+  part of the footprint, so the 0.1% -> 16.4% swing risk stands.
+
+## What is still true
+
+Unaffected by the corpus change: the image-crop measurement (92.3% of an
+anchor row group is `image.flux`, 60% discarded by the 96x96 crop), the
+periphery-is-not-empty-sky result in Appendix B, the Parquet mechanism
+survey in Appendix A (one row group per DESI partition, no page index, PLAIN
+float encoding), and the argument in Appendix D for keeping unmatched rows.
+
+---
+
 ## Selected for follow-up (owner, 2026-08-06)
 
 Of everything below, the project owner picked **two** to carry forward. They
@@ -131,6 +333,11 @@ src/astropt3/` returns nothing outside `synthetic.py` fixtures. We download
 
 ### 1. Project out `spectrum.ivar` — 41% of every spectrum byte, no modelling change
 
+> **DEMOTED — see correction 1.** Measured on a corpus where 92.2% of anchors
+> had a DESI match. On the five-spoke corpus DESI is 6.3% of anchors, so this
+> now saves 40% of the spectrum bytes of 6% of rows. Still free, no longer the
+> headline.
+
 `_SOURCE_COLUMNS["desi"]` asks for the whole `spectrum` struct, so pyarrow
 fetches all four child columns. Parquet stores nested fields as separate
 column chunks, so requesting `spectrum.flux`, `spectrum.lambda`,
@@ -210,6 +417,11 @@ the row group. **Do not bother** — this is the kind of optimisation that
 looks productive and buys nothing.
 
 ## What does not work — measured today, do not repeat
+
+> **AMENDED — see correction 5.** The prefetch is not merely neutral: at
+> `num_loading_workers: 8` on the five-spoke corpus it hangs a rank for 20
+> minutes and NCCL kills the run. And all three rows below are 8-worker runs,
+> so "within noise" says nothing about worker count, which is a large lever.
 
 Three concurrency changes, compared over an identical window (steps 11-142,
 startup excluded, same corpus position):
@@ -461,7 +673,7 @@ Risk: correlated samples within a batch, and for an exact-likelihood
 objective, near-duplicate content invites memorisation. Needs an
 epoch-seeded view choice so a given object is not repeated identically.
 
-### D. Replay while stalled — free steps out of the boundary stall  **[SELECTED 2026-08-06]**
+### D. Replay while stalled — free steps out of the boundary stall  **[BUILT 2026-08-06 — see correction 6]**
 
 The GPU is idle for minutes at each cell boundary while 1.18 GB arrives. The
 previous cell's decoded objects are still in memory. Replaying them with a
@@ -503,6 +715,12 @@ rather than more prefetching.
 ---
 
 # Appendix C: we re-download 39% of partner bytes, and it is the cell order's fault
+
+> **NUMBERS SUPERSEDED — see correction 3.** Every count and table here is
+> against the 181-cell three-spoke index; the corpus is now 5,488 cells and
+> these need re-measuring with `_fetch_range` byte accounting. Also see
+> correction 4: the suggested 8-16 cell blocks are SMALLER than the 16
+> consumers of a dp=2 x 8-worker run and would buy nothing.
 
 Measured on the current three-spoke index. This is not about using fetched
 bytes better — it is about not fetching the same bytes twice.
@@ -599,6 +817,9 @@ reduces the bytes rather than rearranging when they arrive.
 is whether to keep them, not whether to add them.
 
 ## Realized composition, from the no-replay audit logs
+
+> Three-spoke figures. On the five-spoke corpus HSC is 0.7% of anchors; the
+> variance concern below stands. See correction 8.
 
 | run | anchor records | DESI-only | HSC-only |
 | --- | ---: | ---: | ---: |
