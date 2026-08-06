@@ -83,9 +83,8 @@ Done. Point a run at it with:
   export ASTROPT3_MATCH_INDEX=$MERGED
 
 Two consequences of adding spokes:
-  - the 3-spoke configs omit the SDSS and galaxies modalities (vocab 64);
-    derive a 5-spoke config from astropt3-70m-jetformer-source-graph-check.yaml
-    (all 47 modalities, vocab 145) instead;
+  - derive new runs from astropt3-70m-jetformer-north-5spoke-replay4.yaml
+    (all 47 modalities, vocab 145);
   - more sources changes record ORDER, so stream states saved against the
     3-spoke index are rejected on resume. Weights still load.
 EOF

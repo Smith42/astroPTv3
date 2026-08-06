@@ -135,7 +135,9 @@ def test_complete_source_graph_config_sequences_every_accepted_target(tmp_path):
 def test_nanotron_source_graph_config_has_the_same_token_map():
     config, _ = load_model_config(CONFIGS / "test-tiny-source-graph.yaml")
     path = (
-        CONFIGS.parent / "nanotron" / "astropt3-70m-jetformer-source-graph-check.yaml"
+        CONFIGS.parent
+        / "nanotron"
+        / "astropt3-70m-jetformer-north-5spoke-replay4.yaml"
     )
     nanotron = yaml.safe_load(path.read_text())["model"]["model_config"]
     assert [mod["name"] for mod in nanotron["modalities"]] == [

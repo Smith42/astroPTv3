@@ -16,8 +16,9 @@ This is the prototype-selection scout requested before source adapters exist. It
 | PROVABGS | `a50ea5c2baacfea8d88c48baf78bd9c507c2f525` |
 | galaxies-with-hats | `c0188b776c4ce6312a805a04cbc25c891a075933` |
 
-- Plan: [`plan.json`](plan.json), SHA-256 `a7c80c7718a9a04e5fdfc461e11cb147a626acde4bbdd4ad208ef9d20559ad23`
-- Raw per-cell evidence: [`evidence.json`](evidence.json), SHA-256 `324c1cb66efe8f14237c1298b1b2e8867075bd42d4ad104413de7a828aac9459`
+- Plan `plan.json` (SHA-256 `a7c80c77…59ad23`) and raw per-cell evidence
+  `evidence.json` (SHA-256 `324c1cb6…8aac9459`) (deleted 2026-08-06; in git history); the scout that
+  produced them, `scripts/scout_legacy_anchor.py`, was deleted with them.
 - Registry/transform hash is recorded in the plan.
 - Sample seed `130013`; bootstrap seed `130014`; 10,000 replicates.
 - Eight within-anchor median strata: positional-spoke density × absolute Galactic latitude × anchor partition bytes. One-spoke/multi-spoke footprint is alternated within each stratum. Cells are ordered by SHA-256 and sampled in batches of four.

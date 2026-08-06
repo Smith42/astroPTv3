@@ -7,12 +7,12 @@
 # the throughput/download test for that headroom.
 #
 # Usage, from the REPO ROOT:
-#   bash astro/scripts/launch_mmu_deltaai.sh                # pairs+scalars run
-#   bash astro/scripts/launch_mmu_deltaai.sh astropt3-70m-jetformer-mmu-nopairs
+#   bash astro/scripts/launch_mmu_deltaai.sh                # canonical five-spoke run
+#   bash astro/scripts/launch_mmu_deltaai.sh <config-basename>
 #   WORKERS=8 bash astro/scripts/launch_mmu_deltaai.sh      # override per-rank loaders
 set -euo pipefail
 
-RUN=${1:-astropt3-70m-jetformer-mmu}
+RUN=${1:-astropt3-70m-jetformer-north-5spoke-replay4}
 WORKERS=${WORKERS:-12} # per-rank loading workers; DP=2 -> 24 total on 32 cores
 
 REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)

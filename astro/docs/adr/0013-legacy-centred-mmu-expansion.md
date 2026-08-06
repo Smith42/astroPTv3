@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Supersedes:** the sequencing and topology recommendations in
-  [`mmu_modality_expansion_plan.md`](../mmu_modality_expansion_plan.md)
+  `mmu_modality_expansion_plan.md` (deleted 2026-08-06; in git history)
 - **References:** [ADR 0006](0006-stream-mmu-upstream.md),
   [ADR 0008](0008-scalar-modalities.md),
   [ADR 0011](0011-skim-crossmatch-scans.md), and PR #31

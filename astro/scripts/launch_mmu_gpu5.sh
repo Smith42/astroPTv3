@@ -4,12 +4,12 @@
 # checkpoints + train.log land in ../astroPTv3_checkpoints/<run>.
 #
 # Usage, from the REPO ROOT:
-#   bash astro/scripts/launch_mmu_gpu5.sh                # pairs+scalars run
-#   bash astro/scripts/launch_mmu_gpu5.sh astropt3-70m-jetformer-crossmatch-only
+#   bash astro/scripts/launch_mmu_gpu5.sh                # canonical five-spoke run
+#   bash astro/scripts/launch_mmu_gpu5.sh <config-basename>
 #   NPROC=1 bash astro/scripts/launch_mmu_gpu5.sh <run>   # single-GPU box
 set -euo pipefail
 
-RUN=${1:-astropt3-70m-jetformer-mmu}
+RUN=${1:-astropt3-70m-jetformer-north-5spoke-replay4}
 
 REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$REPO_ROOT"

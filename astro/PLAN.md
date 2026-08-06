@@ -93,7 +93,8 @@ astroPTv3/
 │   │   ├── modalities.py            # ModalityConfig/Registry, Encoder, Decoder, PositionEmbedder
 │   │   ├── tokenization.py          # patchify/unpatchify, normalization, SPECIAL_TOKENS (frozen)
 │   │   ├── data/
-│   │   │   ├── mmu.py               # MMUIterableDataset (parquet streaming, rank/worker sharding)
+│   │   │   ├── streaming.py         # live MMU stream off the hub (ADR 0006/0011/0013)
+│   │   │   ├── match_index.py       # precomputed crossmatch index the stream reads
 │   │   │   ├── packing.py           # ObjectSequencer + PackedCollator (shared by HF & nanotron paths)
 │   │   │   ├── nanotron_loader.py   # adapter: PackedCollator batches → nanotron micro-batch dicts
 │   │   │   ├── synthetic.py         # network-free fixtures matching the verified MMU schemas
@@ -103,10 +104,9 @@ astroPTv3/
 │   │   └── eval/{val_loss.py,linear_probe.py}
 │   ├── configs/
 │   │   ├── nanotron/astropt3-{70m,160m,410m,1b,1p4b,2p8b,6p9b,12b}.yaml   # full nanotron configs
-│   │   ├── model/…yaml (HF-side mirrors + test-tiny)
-│   │   └── data/pilot_images_spectra.yaml
+│   │   └── model/…yaml (HF-side mirrors + test-tiny)
 │   ├── scripts/
-│   │   ├── prepare_pilot_data.py    # lsdb crossmatch → parquet shards (login node, [data] env)
+│   │   ├── build_match_index.py     # offline lsdb crossmatch → match index (login node, [data] env)
 │   │   ├── count_params.py          # asserts each size within 10% of nominal
 │   │   ├── launch_slurm.sbatch      # torchrun → nanotron run_train.py, multi-node
 │   │   └── run_probe_sweep.py       # async linear probes over converted HF checkpoints
@@ -282,9 +282,10 @@ size; 50-step CPU smoke on synthetic: loss < 0.7× initial.
 
 ### Phase 2 — Pilot data prep + streaming dataset
 
-`prepare_pilot_data.py`, `data/mmu.py`,
-`configs/data/pilot_images_spectra.yaml` (the original `compute_norm_stats.py`
-calibration step was later retired for physical normalization).
+`prepare_pilot_data.py`, `data/mmu.py`, `configs/data/pilot_images_spectra.yaml`
+(all three since deleted — ADR 0006 replaced the local reshard with the live
+stream; the original `compute_norm_stats.py` calibration step was retired for
+physical normalization).
 **Verify**: crossmatch logs matched/unmatched counts (expect ~0.5–1M matched,
 ~13M image-only); decoded-object sanity print (patch stats ~N(0,1) after
 stretch, λ range 3600–9824Å); dataloader-only throughput ≥2× training

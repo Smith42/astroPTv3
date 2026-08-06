@@ -5,8 +5,8 @@
 - **References:**
   - [ADR 0006](0006-stream-mmu-upstream.md)
   - [ADR 0011](0011-skim-crossmatch-scans.md)
-  - `docs/2026-07-21-streaming-throughput-audit.md`
-  - `docs/2026-07-21-streaming-shakeout-handoff.md`
+  - [ADR 0014](0014-byte-efficiency-of-the-streamed-corpus.md) — the
+    byte-economics measurements this gate asked for
   - `src/astropt3/data/streaming.py`
   - `src/astropt3/data/nanotron_loader.py`
 
@@ -186,6 +186,6 @@ current image/spectrum/scalar path first.
 
 ## Follow-up
 
-Execute `docs/mmu_streaming_throughput_plan.md`. If no post-skim gate reaches
-the 10% end-to-end threshold, keep the existing loader and document the
-measured ceiling.
+**Closed by [ADR 0014](0014-byte-efficiency-of-the-streamed-corpus.md)
+(2026-08-06):** the throughput plan was executed, the corpus is transfer-bound,
+and the measured ceiling plus the surviving levers are recorded there.

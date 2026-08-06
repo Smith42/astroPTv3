@@ -17,7 +17,7 @@ The byte gate instruments `HfFileSystemFile._fetch_range` and sums returned payl
 
 ## Source contracts exercised
 
-- **galaxies-with-hats:** projected only IDs, coordinates, and the 34 accepted Galaxy Zoo fraction columns; a live matched row produced 10 finite scalar spans. See [`galaxies_with_hats_scalar_inventory.md`](../../research/galaxies_with_hats_scalar_inventory.md).
+- **galaxies-with-hats:** projected only IDs, coordinates, and the 34 accepted Galaxy Zoo fraction columns; a live matched row produced 10 finite scalar spans. See `research/galaxies_with_hats_scalar_inventory.md` (deleted 2026-08-06; in git history).
 - **SDSS:** a live padded row trimmed non-positive wavelength padding to 3,855 bins, passed the `1e-4` dex grid check, and landed at normalized median absolute value 0.313. A fetched-only unmatched row produced distinct `sdss_spectra` and `sdss_Z` spans.
 - **PROVABGS:** the lineage path produced the five accepted inferred/distillation targets (`LOG_MSTAR`, `Z_HP`, `Z_MW`, `TAGE_MW`, `AVG_SFR`) and no unmatched rows.
 - **HSC:** the pinned row was five bands in `hsc-g/r/i/z/y` order with shape `5×160×160`; the source-distinct 96-pixel crop produced 144 tokens of width 320. The published row has no image ivar/mask fields, so none are fabricated.

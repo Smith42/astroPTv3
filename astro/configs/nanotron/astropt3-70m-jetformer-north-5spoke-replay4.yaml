@@ -1,9 +1,10 @@
-# AR span-order replay x4, CLUMPED (no shuffle buffer): each downloaded record
+# Canonical five-spoke North run (ADR 0013 source graph: 2,182,875 anchors,
+# 5,488 cells). AR span-order replay x4 (ADR 0014): each downloaded record is
 # emitted four times back-to-back under different ADR 0008 span orders.
 # ~238 unique records/step vs 952 at x1; total exposures over 20k steps are
-# 8.7 either way, only the clumping differs. Baseline arm is
-# astropt3-70m-jetformer-north-5spoke-long — same corpus/config/workers,
-# 9.02 s/step mean, 17% slow steps.
+# 8.7 either way, only the clumping differs. The arms this was chosen against
+# (no-replay baseline, replay2, prefetch, block-shuffle, and the three-spoke
+# runs) were deleted 2026-08-06 — configs in git history, results in ADR 0014.
 # First long run on the complete five-spoke ADR 0013 North source graph
 # (2,182,875 anchors, 5,488 cells, built 2026-08-06 04:47). dp=2 over both
 # A100s. 20000 steps; the pythia schedule plus checkpoint_interval 1000 means
