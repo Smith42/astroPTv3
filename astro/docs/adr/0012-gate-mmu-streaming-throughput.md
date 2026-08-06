@@ -5,7 +5,7 @@
 - **References:**
   - [ADR 0006](0006-stream-mmu-upstream.md)
   - [ADR 0011](0011-skim-crossmatch-scans.md)
-  - [ADR 0014](0014-byte-efficiency-of-the-streamed-corpus.md) — the
+  - [ADR 0014](0014-byte-efficiency-and-mfu-programme.md) — the
     byte-economics measurements this gate asked for
   - `src/astropt3/data/streaming.py`
   - `src/astropt3/data/nanotron_loader.py`
@@ -186,6 +186,6 @@ current image/spectrum/scalar path first.
 
 ## Follow-up
 
-**Closed by [ADR 0014](0014-byte-efficiency-of-the-streamed-corpus.md)
+**Closed by [ADR 0014](0014-byte-efficiency-and-mfu-programme.md)
 (2026-08-06):** the throughput plan was executed, the corpus is transfer-bound,
 and the measured ceiling plus the surviving levers are recorded there.
