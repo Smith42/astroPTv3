@@ -130,7 +130,9 @@ def test_run_configs_fit_the_crossmatch_partition_ceiling():
     # 173 cells in the published index minus streaming.VAL_PARTITIONS. Offline
     # constant on purpose; recompute with load_match_index() after a rebuild.
     ceiling = 173 - streaming.VAL_PARTITIONS
-    configs = sorted((Path(__file__).parents[1] / "configs" / "nanotron").glob("*.yaml"))
+    configs = sorted(
+        (Path(__file__).parents[1] / "configs" / "nanotron").glob("*.yaml")
+    )
     assert configs, "no nanotron run configs found"
     for path in configs:
         config = yaml.safe_load(path.read_text())
@@ -203,3 +205,61 @@ def test_transient_error_rebuilds_and_reclaims(tiny_config, monkeypatch):
     assert len(batches) == 4  # recovered and kept producing valid batches
     for flat in batches:
         assert flat["input_ids"].shape == (MBS, SEQ_LEN)
+
+
+def _span_order(sequencer, record, object_id):
+    """Modality names in the order their spans appear in the sequence."""
+    obj = sequencer.build({**record, "object_id": object_id}, epoch=0)
+    starts = {
+        name: int(mask.float().argmax())
+        for name, mask in obj.masks.items()
+        if mask.any()
+    }
+    return [name for name, _ in sorted(starts.items(), key=lambda kv: kv[1])]
+
+
+def test_ar_replicas_reemit_each_record_under_a_different_span_order(
+    tiny_config, tmp_path
+):
+    """Replay buys tokens without buying bytes — but only if the order changes.
+
+    The corpus is transfer-bound, so re-emitting a record already in memory is
+    nearly free. It is worth nothing if the replica repeats the same
+    autoregressive factorisation, and it is unsafe if it breaks the
+    exactly-once object_id_log audit. Both are checked here.
+    """
+    from astropt3.data.packing import ObjectSequencer
+    from astropt3.data.synthetic import make_record
+
+    log = tmp_path / "objects.log"
+    stream = PackedMicroBatches(
+        tiny_config, MBS, SEQ_LEN, object_id_log=log, ar_replicas=2
+    )
+    list(islice(iter(stream), 3))
+    ids = Path(f"{log}.dp0").read_text().split()
+    assert ids, "nothing logged"
+    assert len(ids) == len(set(ids))  # audit stays one line per emitted sequence
+    replicas = [i for i in ids if i.endswith("#1")]
+    assert replicas, "ar_replicas=2 emitted no replicas"
+    assert all(i.removesuffix("#1") in ids for i in replicas)  # paired with base
+
+    # ar_replicas=1 must be byte-for-byte the historical behaviour
+    plain = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=1)
+    baseline = PackedMicroBatches(tiny_config, MBS, SEQ_LEN)
+    a, b = next(iter(plain)), next(iter(baseline))
+    assert torch.equal(a["input_ids"], b["input_ids"])
+
+    # the mechanism: the span order is a pure function of (object_id, epoch),
+    # so suffixing the id reseeds the ADR 0008 shuffle
+    sequencer = ObjectSequencer(tiny_config)
+    differed = sum(
+        _span_order(sequencer, make_record(i), f"o{i}")
+        != _span_order(sequencer, make_record(i), f"o{i}#1")
+        for i in range(20)
+    )
+    assert differed, "replica ids produced identical span orders in 20 records"
+
+
+def test_ar_replicas_rejects_a_nonsense_count(tiny_config):
+    with pytest.raises(ValueError, match="ar_replicas must be >= 1"):
+        PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=0)

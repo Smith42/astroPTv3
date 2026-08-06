@@ -183,6 +183,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         split: str = "train",
         object_id_log: str | Path | None = None,
         stateful: bool = True,
+        ar_replicas: int = 1,
     ):
         super().__init__()
         self.config = config
@@ -211,6 +212,9 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self.seed = seed
         self.split = split
         self.object_id_log = None if object_id_log is None else str(object_id_log)
+        if ar_replicas < 1:
+            raise ValueError(f"ar_replicas must be >= 1, got {ar_replicas}")
+        self.ar_replicas = ar_replicas
         self._stateful = stateful
         self._resume_state: dict | None = None  # applied on next __iter__
         self._ckpt_state: dict | None = None  # updated at every yield
@@ -444,32 +448,57 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 # live epoch feeds the modality-order parity (ADR 0005
                 # amendment); pure function of (object_id, epoch), so the
                 # resumed stream rebuilds identical sequences
-                obj = self.sequencer.build(record, epoch=self._epoch)
-                if len(obj) > self.seq_len:
-                    raise ValueError(
-                        f"object of length {len(obj)} exceeds seq_len {self.seq_len}"
+                #
+                # ar_replicas > 1 re-emits the SAME downloaded record under a
+                # different ADR 0008 span order. The corpus is transfer-bound
+                # (~94% of wall waits for bytes), so extra factorisations of a
+                # record already in memory are close to free, and every
+                # conditional among its spans gets trained rather than one
+                # sample of them. The span order is a pure function of
+                # (object_id, epoch), so suffixing the id IS the reseed — no
+                # extra RNG state to checkpoint. Replica 0 keeps the original
+                # id, so object_id_log stays one unique line per emitted
+                # sequence and the no-replay audit still catches accidental
+                # duplication.
+                base_id = str(record.get("object_id", ""))
+                objects = []
+                for replica in range(self.ar_replicas):
+                    record["object_id"] = (
+                        base_id if replica == 0 else f"{base_id}#{replica}"
                     )
-                if used + len(obj) > self.seq_len:
-                    rows.append(row)
-                    row, used = [], 0
-                    row_start = prev_state  # the new row starts at this record
-                    if len(rows) == self.micro_batch_size:
-                        batch = self.collator([o for r in rows for o in r])
-                        expected_shape = (self.micro_batch_size, self.seq_len)
-                        if batch["input_ids"].shape != expected_shape:
-                            raise AssertionError(
-                                f"greedy repack mismatch: {batch['input_ids'].shape} != "
-                                f"{expected_shape}"
-                            )
-                        if stateful:
-                            self._ckpt_state = row_start
-                        if log is not None:
-                            log.writelines(f"{o.object_id}\n" for r in rows for o in r)
-                            log.flush()
-                        rows = []
-                        yield flatten_packed_batch(batch, self.config, self.seq_len)
-                row.append(obj)
-                used += len(obj)
+                    objects.append(self.sequencer.build(record, epoch=self._epoch))
+                record["object_id"] = base_id
+                for obj in objects:
+                    if len(obj) > self.seq_len:
+                        raise ValueError(
+                            f"object of length {len(obj)} exceeds seq_len {self.seq_len}"
+                        )
+                    if used + len(obj) > self.seq_len:
+                        rows.append(row)
+                        row, used = [], 0
+                        # the new row starts at this record; with replicas the
+                        # whole record is re-emitted on resume, which is why
+                        # replicas must be a pure function of it
+                        row_start = prev_state
+                        if len(rows) == self.micro_batch_size:
+                            batch = self.collator([o for r in rows for o in r])
+                            expected_shape = (self.micro_batch_size, self.seq_len)
+                            if batch["input_ids"].shape != expected_shape:
+                                raise AssertionError(
+                                    f"greedy repack mismatch: "
+                                    f"{batch['input_ids'].shape} != {expected_shape}"
+                                )
+                            if stateful:
+                                self._ckpt_state = row_start
+                            if log is not None:
+                                log.writelines(
+                                    f"{o.object_id}\n" for r in rows for o in r
+                                )
+                                log.flush()
+                            rows = []
+                            yield flatten_packed_batch(batch, self.config, self.seq_len)
+                    row.append(obj)
+                    used += len(obj)
                 count += 1
                 if stateful:
                     prev_state = self._snapshot(count)
@@ -553,6 +582,7 @@ def build_astropt3_dataloader(
         seed=seed,
         object_id_log=getattr(dataset_args, "object_id_log", None),
         stateful=num_workers == 0,
+        ar_replicas=getattr(dataset_args, "ar_replicas", 1) or 1,
     )
     try:
         from torchdata.stateful_dataloader import StatefulDataLoader as loader_cls
