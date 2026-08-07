@@ -21,10 +21,10 @@ with AstroPT-style continuous-token regression (NAIRR260009).
 cd astro
 uv sync --extra dev          # CPU-safe: model, packing, tests
 uv sync --extra data         # + lsdb (match-index build only; not needed to train)
-uv sync --extra train        # + nanotron/flash-attn (training machine only)
+uv sync --extra train        # + nanotron/flash-attn (any GPU box, this one included)
 ```
 
-## Develop / verify (no GPU, no network)
+## Develop / verify (CPU, no network)
 
 ```bash
 uv run pytest                          # unit tests (gpu-marked tests excluded)
@@ -114,5 +114,5 @@ python astro/scripts/run_probe_sweep.py \
     # (astropt3.eval.linear_probe) -> one line in probe_results.jsonl
 ```
 
-GPU-marked tests (training machine / reserved GPU):
+GPU-marked tests (any reserved GPU, this box included):
 `pytest -m gpu tests/test_nanotron_gpu.py tests/test_phase4_gpu.py`.

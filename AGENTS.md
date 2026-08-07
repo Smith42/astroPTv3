@@ -11,7 +11,9 @@ Multimodal Universe. The repo is a fork of `huggingface/smollm`: `text/`,
 `vision/`, `tools/` are **read-only upstream reference**; all project code
 lives in `astro/`. The approved phase plan (decisions are fixed) is
 `astro/PLAN.md`; hard constraints are in `AGENTS.md` — the critical ones:
-**no GPU or training runs on this machine** (CPU tests/smoke only), tests
+**GPU work and training runs are allowed here** (this box has 2×A100 80GB
+and slurm), but the CPU suite stays the fast gate and multi-day runs belong
+on the training cluster by preference; tests
 may use the network but only `network`-marked ones may require it
 (ADR 0006 streams the corpus live; deselect with `-m 'not network'` when
 the HF hub is down), special-token ids in
@@ -33,7 +35,8 @@ uv run python -m astropt3.train_smoke \
 
 These three (pytest, count_params, train_smoke) are the phase verification
 gates and must all pass before any phase is declared done. `@pytest.mark.gpu`
-tests exist to be run on the training machine, never here.
+tests run here too (`uv run pytest -m gpu` in the GPU venv); the node is
+shared, so pin a device and check `nvidia-smi` before claiming one.
 
 ## Architecture
 

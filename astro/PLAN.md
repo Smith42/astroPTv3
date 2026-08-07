@@ -33,9 +33,12 @@ using `<|begin_mod|>`/placeholder/`<|end_mod|>` special tokens;
    selectable via config.
 6. **uv** manages environments; new deps in `astro/pyproject.toml`; upgrading
    existing venv packages is fine.
-7. **No training runs on this machine.** Development + CPU unit/smoke tests
-   here; all GPU work (including nanotron smoke runs) on the training machine.
-   Deliver launch scripts + docs, don't execute.
+7. **GPU work and training runs are allowed on this machine** (2×A100 80GB
+   plus slurm; rule rewritten 2026-08-06, it previously forbade both). CPU
+   unit/smoke tests stay the fast gate and must be green first; the node is
+   shared, so pin a device and check `nvidia-smi` before claiming one.
+   Multi-day production runs still belong on the training cluster by
+   preference, not by prohibition.
 
 ## Verified pilot-data schemas (checked 2026-07-07 via HF datasets-server + MMU builders)
 
@@ -64,7 +67,7 @@ using `<|begin_mod|>`/placeholder/`<|end_mod|>` special tokens;
 - **nanotron fork** (`Smith42/nanotron`, branch `astropt3`, forked from
   `huggingface/nanotron@smollm3`): training-time model with TP + ZeRO-1 DP.
   Added as a **git submodule at repo root `nanotron/`**, installed editable via
-  a `[train]` extra (needs flash-attn; training machine only).
+  a `[train]` extra (needs flash-attn; any GPU box, this one included).
 - **transformers implementation** (`astro/src/astropt3/`): release artifact,
   probing/eval, and CPU tests. `AstroPT3Config(SmolLM3Config)` +
   `AstroPT3Model(SmolLM3PreTrainedModel)`, registered with Auto classes
@@ -477,8 +480,9 @@ sizes (bigger = lower at matched tokens).
 - **Pilot corpus is small** (~5.7B tokens/epoch): fine for 70M–410M; larger
   sizes need the Phase 6 modality/survey extensions or many epochs — flag at
   the Month-3 scope checkpoint.
-- **flash-attn / nanotron env** exists only on the training machine; all
-  gpu-marked tests deferred there; CPU tests must stay green here.
+- **flash-attn / nanotron env** is a separate GPU venv (see
+  `docs/training.md`); gpu-marked tests run wherever it exists, this box
+  included. CPU tests must stay green first.
 - **BeeGFS checkpoint pressure**: prune non-schedule intermediates; convert +
   upload scheduled checkpoints to HF hub as they land.
 - **Streaming-resume fidelity**: pin `datasets`, record the pin in checkpoint
