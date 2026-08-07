@@ -37,6 +37,16 @@ class ModalityConfig:
         token_ids: frozen (begin, placeholder, end) special-token block.
         loss_weight: legacy field retained for checkpoint compatibility;
             ADR 0013 aggregates by family instead.
+        channel_tokenization: image factorisation (ADR 0014 §8).
+            ``fused`` (default) makes one token per patch across all bands
+            (8*8*3 = 192 floats); ``per_band`` makes one token per patch PER
+            band (8*8 = 64 floats, 3x the tokens) from identical bytes — a
+            finer autoregressive factorisation with narrower heads, not more
+            information. ``E_values`` is unchanged either way.
+        band_order: fixed band serialization order for ``per_band``, in
+            record band names (``des-g``, ``des-r``, ``des-z``). Fixed, not
+            shuffled: band order as an ADR 0008 ordering decision is a
+            separate experiment, and this one changes one variable.
         scalar: ADR 0008 scalar-modality compatibility marker. It must agree
             with ``family == "scalar"``.
         ADR 0008 scalar modality — a one-token span holding a
@@ -58,12 +68,38 @@ class ModalityConfig:
     token_ids: tuple[int, int, int] | None = None
     loss_weight: float = 1.0
     scalar: bool = False
+    channel_tokenization: str = "fused"
+    band_order: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.family not in {"image", "spectrum", "scalar"}:
             raise ValueError(
                 f"modality {self.name!r} has invalid family {self.family!r}"
             )
+        if self.channel_tokenization not in {"fused", "per_band"}:
+            raise ValueError(
+                f"modality {self.name!r} has invalid channel_tokenization "
+                f"{self.channel_tokenization!r} (fused | per_band)"
+            )
+        self.band_order = tuple(self.band_order)
+        if self.channel_tokenization == "per_band":
+            if self.family != "image":
+                raise ValueError(
+                    f"modality {self.name!r} is {self.family!r}; per-band "
+                    "tokenisation only applies to images"
+                )
+            if not self.band_order:
+                raise ValueError(
+                    f"modality {self.name!r} is per_band but names no "
+                    "band_order; the order must be fixed, not inferred"
+                )
+            expected = self.patch_size * self.patch_size
+            if self.input_size != expected:
+                raise ValueError(
+                    f"modality {self.name!r} is per_band with patch_size "
+                    f"{self.patch_size}, so input_size must be {expected}, "
+                    f"got {self.input_size}"
+                )
         if self.scalar != (self.family == "scalar"):
             raise ValueError(
                 f"modality {self.name!r} scalar={self.scalar} disagrees with "
@@ -100,6 +136,8 @@ class ModalityConfig:
             "token_ids": list(self.token_ids or ()),
             "loss_weight": self.loss_weight,
             "scalar": self.scalar,
+            "channel_tokenization": self.channel_tokenization,
+            "band_order": list(self.band_order),
         }
 
 

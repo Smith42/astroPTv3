@@ -20,6 +20,7 @@ import importlib
 import json
 import math
 import os
+import warnings
 import zlib
 from typing import Any, cast
 
@@ -83,14 +84,31 @@ SPLIT_BUCKETS = 20
 MATCH_INDEX_ENV = "ASTROPT3_MATCH_INDEX"
 
 _IMAGE_SCALARS = ("ebv", "flux_g", "flux_r", "flux_z", "z_spec")
+# ADR 0014 §6: project the spectrum struct's LEAVES, not the whole struct.
+# `ivar` is 41% of every spectrum row's bytes and is read nowhere outside
+# synthetic.py (ADR 0007 normalization does not use it); pyarrow accepts
+# dotted leaf paths in read_row_group(columns=...) and returns a struct
+# carrying only the children asked for. _spectrum_part whitelists the same
+# three, so an unprojected read path cannot smuggle ivar back in.
+_SPECTRUM_LEAVES = ("flux", "lambda", "mask")
+_SPECTRUM_COLUMNS = [f"spectrum.{leaf}" for leaf in _SPECTRUM_LEAVES]
 _SOURCE_COLUMNS = {
-    "desi": ["object_id", "ra", "dec", "_healpix_29", "spectrum", "Z", "ZERR", "ZWARN"],
+    "desi": [
+        "object_id",
+        "ra",
+        "dec",
+        "_healpix_29",
+        *_SPECTRUM_COLUMNS,
+        "Z",
+        "ZERR",
+        "ZWARN",
+    ],
     "sdss": [
         "object_id",
         "ra",
         "dec",
         "_healpix_29",
-        "spectrum",
+        *_SPECTRUM_COLUMNS,
         "Z",
         "Z_ERR",
         "ZWARNING",
@@ -158,9 +176,14 @@ def _base(row) -> dict:
 
 
 def _spectrum_part(row) -> dict:
+    """The three leaves the sequencer reads, whatever else the row carries."""
+    spectrum = row["spectrum"]
+    missing = [leaf for leaf in _SPECTRUM_LEAVES if spectrum.get(leaf) is None]
+    if missing:
+        raise ValueError(f"spectrum row is missing {missing}")
     return {
-        key: np.asarray(value, dtype=bool if key == "mask" else np.float32)
-        for key, value in row["spectrum"].items()
+        leaf: np.asarray(spectrum[leaf], dtype=bool if leaf == "mask" else np.float32)
+        for leaf in _SPECTRUM_LEAVES
     }
 
 
@@ -358,17 +381,29 @@ def is_source_graph(graph) -> bool:
     return graph.schema_version in (2, 3) and set(graph.partner_revisions) != {"desi"}
 
 
-def source_assembly_for_index(match_index: str | None) -> str:
-    """Return the resume-state tag implied by a resolved pointer index."""
+def assembly_and_revisions(match_index: str | None) -> tuple[str, dict]:
+    """Resume-state tag plus the pinned source revisions behind it.
+
+    Both come from one ``load_source_graph`` read: ADR 0014 §5 fingerprints
+    the revisions alongside the assembly tag, and the graph is a 2M-row
+    parquet — loading it twice to answer two questions is not worth it.
+    """
     from pathlib import Path
 
     resolved = resolve_match_index(match_index)
     if resolved is None or (
         not resolved.startswith("hf://") and not Path(resolved).exists()
     ):
-        return SOURCE_ASSEMBLY
+        return SOURCE_ASSEMBLY, {}
     graph = load_source_graph(resolved)
-    return SOURCE_GRAPH_ASSEMBLY if is_source_graph(graph) else SOURCE_ASSEMBLY
+    assembly = SOURCE_GRAPH_ASSEMBLY if is_source_graph(graph) else SOURCE_ASSEMBLY
+    revisions = {"anchor": graph.anchor_revision, **dict(graph.partner_revisions)}
+    return assembly, revisions
+
+
+def source_assembly_for_index(match_index: str | None) -> str:
+    """Return the resume-state tag implied by a resolved pointer index."""
+    return assembly_and_revisions(match_index)[0]
 
 
 def load_match_index(path: str):
@@ -623,9 +658,13 @@ def _source_graph_examples(
                 for source, partner_id in sorted(wanted.get(anchor_id, {}).items()):
                     partner = partner_rows.get(source, {}).get(str(partner_id))
                     if partner is None:
-                        raise ValueError(
-                            f"match index points to missing {source} id {partner_id!r}"
+                        warnings.warn(
+                            f"match index points to missing {source} id "
+                            f"{partner_id!r}; skipping source attachment",
+                            RuntimeWarning,
+                            stacklevel=2,
                         )
+                        continue
                     attach_source(record, source, partner)
                 yield record
 

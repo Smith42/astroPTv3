@@ -38,16 +38,13 @@ def val_batches(config, data_root, *, n_batches, micro_batch_size, seq_len, seed
         split="val",
     )
     if data_root == "synthetic":
-        # start the val stream far past any training index (held-out records)
-        stream.load_state_dict(
-            {
-                "records": SYNTHETIC_VAL_OFFSET,
-                "epoch": 0,
-                "stream_state": None,
-                "data_root": "synthetic",
-                "source_assembly": "synthetic",
-            }
-        )
+        # start the val stream far past any training index (held-out records).
+        # The tag comes from the stream's own blank state, never a literal:
+        # ADR 0014 §5 made it a fingerprint over the whole sequence-assembly
+        # policy, so a hardcoded "synthetic" no longer matches.
+        state = stream.state_dict()
+        assert state is not None  # stateful=True by default
+        stream.load_state_dict({**state, "records": SYNTHETIC_VAL_OFFSET})
     names = config.modality_registry().names()
     for flat in islice(iter(stream), n_batches):
         yield regroup_micro_batch(flat, names)

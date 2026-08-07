@@ -243,7 +243,7 @@ def test_ar_replicas_reemit_each_record_under_a_different_span_order(
     assert replicas, "ar_replicas=2 emitted no replicas"
     assert all(i.removesuffix("#1") in ids for i in replicas)  # paired with base
 
-    # ar_replicas=1 must be byte-for-byte the historical behaviour
+    # ar_replicas=1 is still the default, and emits no replicas at all
     plain = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=1)
     baseline = PackedMicroBatches(tiny_config, MBS, SEQ_LEN)
     a, b = next(iter(plain)), next(iter(baseline))
@@ -263,3 +263,186 @@ def test_ar_replicas_reemit_each_record_under_a_different_span_order(
 def test_ar_replicas_rejects_a_nonsense_count(tiny_config):
     with pytest.raises(ValueError, match="ar_replicas must be >= 1"):
         PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=0)
+
+
+# -- ADR 0014 §7a: distinct-order enforcement ---------------------------------
+
+
+def test_one_span_records_get_no_replica(tiny_config):
+    """No alternative order exists, so a replica would be an exact duplicate.
+
+    Identical duplicates would raise MFU and E_AR while training on nothing
+    new — precisely the gaming §2 refuses to accept.
+    """
+    from astropt3.data.synthetic import make_record
+
+    stream = PackedMicroBatches(tiny_config, 8, SEQ_LEN, ar_replicas=4)
+    # a spectrum-only record with an unreliable Z carries a single span
+    record = make_record(2, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+    record["ZWARN"] = 1  # gates the Z span out (ADR 0008)
+    objects = stream._replica_objects(record)
+    assert len(objects[0].order) == 1
+    assert len(objects) == 1
+
+
+def test_replicas_carry_distinct_span_orders(tiny_config):
+    from astropt3.data.synthetic import make_record
+
+    stream = PackedMicroBatches(tiny_config, 8, SEQ_LEN, ar_replicas=4)
+    for i in range(12):
+        objects = stream._replica_objects(make_record(i))
+        orders = [obj.order for obj in objects]
+        assert len(orders) == len(set(orders)), f"record {i} repeated an order"
+        # replica 0 keeps the base id; replicas are suffixed for the audit
+        assert "#" not in objects[0].object_id
+        assert all("#" in obj.object_id for obj in objects[1:])
+
+
+def test_replicas_are_capped_by_the_number_of_distinct_permutations(tiny_config):
+    """A two-span record supports at most one extra ordering (2! = 2)."""
+    from astropt3.data.synthetic import make_record
+
+    stream = PackedMicroBatches(tiny_config, 8, SEQ_LEN, ar_replicas=8)
+    record = make_record(2, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+    objects = stream._replica_objects(record)
+    assert len(objects[0].order) == 2  # spectra + Z
+    assert len(objects) == 2
+    assert len({obj.order for obj in objects}) == 2
+
+
+# -- ADR 0014 §7b: decorrelation ----------------------------------------------
+
+
+def test_no_two_replicas_of_one_object_share_a_packed_row(tiny_config):
+    """Document masking stops cross-attention, not gradient repetition."""
+    from astropt3.data.synthetic import make_record
+
+    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=2)
+    placements = []
+    for i in range(8):
+        objects = stream._replica_objects(make_record(i))
+        if len(objects) > 1:
+            placements.append(stream._place(objects, [0] * MBS))
+    assert placements, "no record produced replicas"
+    for chosen in placements:
+        assert len(chosen) == len(set(chosen)), "two replicas landed in one row"
+
+
+def test_placement_returns_none_when_no_distinct_rows_fit(tiny_config):
+    from astropt3.data.synthetic import make_record
+
+    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=2)
+    objects = stream._replica_objects(make_record(3))
+    assert len(objects) == 2
+    # both rows already too full to take another object -> close the batch
+    full = [SEQ_LEN] * MBS
+    assert stream._place(objects, full) is None
+    # one row free is not enough for two replicas that must not share a row
+    one_free = [0] + [SEQ_LEN] * (MBS - 1)
+    assert stream._place(objects, one_free) is None
+
+
+def test_placement_prefers_the_emptiest_row_and_is_deterministic(tiny_config):
+    from astropt3.data.synthetic import make_record
+
+    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=1)
+    objects = stream._replica_objects(make_record(1))
+    used = [300, 10, 900] + [50] * (MBS - 3)
+    first = stream._place(objects, used)
+    assert first == [1]  # emptiest wins
+    assert stream._place(objects, used) == first  # pure function of `used`
+
+
+def test_more_replicas_than_rows_is_rejected(tiny_config):
+    with pytest.raises(ValueError, match="exceeds micro_batch_size"):
+        PackedMicroBatches(tiny_config, 2, SEQ_LEN, ar_replicas=3)
+
+
+# -- ADR 0014 §5: sequence-assembly fingerprint -------------------------------
+
+
+def _tag(config, **kwargs):
+    kwargs.setdefault("ar_replicas", 1)
+    return PackedMicroBatches(config, MBS, SEQ_LEN, **kwargs)._source_assembly
+
+
+def test_fingerprint_separates_replica_counts(tiny_config):
+    """The bug §5 exists to close: replicas 1 -> 2 passed the old check."""
+    assert _tag(tiny_config, ar_replicas=1) != _tag(tiny_config, ar_replicas=2)
+
+
+def test_fingerprint_separates_sequence_lengths(tiny_config):
+    a = PackedMicroBatches(tiny_config, MBS, 512)._source_assembly
+    b = PackedMicroBatches(tiny_config, MBS, 1024)._source_assembly
+    assert a != b
+
+
+def test_fingerprint_separates_tokenisation_policies(tiny_config):
+    from astropt3.configuration_astropt3 import AstroPT3Config
+
+    per_band = []
+    for modality in tiny_config.modalities:
+        modality = dict(modality)
+        if modality["name"] == "images":
+            modality.update(
+                input_size=64,
+                max_positions=432,
+                channel_tokenization="per_band",
+                band_order=["des-g", "des-r", "des-z"],
+            )
+        per_band.append(modality)
+    other = AstroPT3Config(
+        modalities=per_band,
+        hidden_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=128,
+    )
+    assert _tag(tiny_config) != _tag(other)
+
+
+def test_fingerprint_keeps_the_assembly_readable_and_is_stable(tiny_config):
+    tag = _tag(tiny_config)
+    assert tag.startswith("synthetic:")  # assembly still legible at a glance
+    assert tag == _tag(tiny_config)  # same policy -> same tag, run to run
+
+
+def test_a_mismatched_fingerprint_rejects_the_stream_state(tiny_config):
+    saved = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=1)
+    state = saved.state_dict()
+    resumed = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=2)
+    with pytest.raises(ValueError, match="source_assembly"):
+        resumed.load_state_dict(state)
+
+
+def test_adjacent_placement_is_the_pre_decorrelation_behaviour(tiny_config):
+    """The B1 arm exists to reproduce the measured result on the same footing."""
+    from astropt3.data.synthetic import make_record
+
+    stream = PackedMicroBatches(
+        tiny_config, MBS, SEQ_LEN, ar_replicas=2, replica_placement="adjacent"
+    )
+    objects = stream._replica_objects(make_record(3))
+    assert len(objects) == 2
+    chosen = stream._place(objects, [0] * MBS)
+    assert chosen == [0, 0]  # same row, as before §7b
+
+    # and the fingerprint separates the two arms, so neither can resume onto
+    # the other's stream state
+    decorrelated = PackedMicroBatches(
+        tiny_config, MBS, SEQ_LEN, ar_replicas=2, replica_placement="decorrelated"
+    )
+    assert stream._source_assembly != decorrelated._source_assembly
+
+
+def test_replica_placement_rejects_an_unknown_mode(tiny_config):
+    with pytest.raises(ValueError, match="replica_placement"):
+        PackedMicroBatches(tiny_config, MBS, SEQ_LEN, replica_placement="sideways")
+
+
+def test_adjacent_placement_allows_more_replicas_than_rows(tiny_config):
+    """Only the decorrelated mode needs one row per replica."""
+    PackedMicroBatches(
+        tiny_config, 2, SEQ_LEN, ar_replicas=4, replica_placement="adjacent"
+    )

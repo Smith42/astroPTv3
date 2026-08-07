@@ -60,6 +60,26 @@ from .transforms import per_patch_standardize
 # side of the central image crop applied before patchify, in pixels
 IMAGE_CROP = 96
 
+# ADR 0014 §5: bumped whenever :func:`span_order` changes, since a different
+# permutation rule changes the emitted sequences without changing record
+# order. Folded into the loader's resume fingerprint.
+SPAN_ORDER_VERSION = "adr0008_uniform_v1"
+
+
+def span_order(names, object_id: str, epoch: int = 0) -> list[str]:
+    """The ADR 0008 span order for one object: uniform, seeded, resume-exact.
+
+    Split out of :meth:`ObjectSequencer.build` so callers can ask what order
+    an ``(object_id, epoch)`` pair WOULD produce without paying for
+    tokenisation — ADR 0014 §7a needs exactly that to pick distinct replica
+    orders without patchifying a candidate it then discards.
+    """
+    order = list(names)
+    if len(order) > 1:
+        seed = zlib.crc32(str(object_id).encode()) ^ epoch
+        random.Random(seed).shuffle(order)
+    return order
+
 
 @dataclass
 class ObjectSeq:
@@ -70,6 +90,9 @@ class ObjectSeq:
     values: dict  # name -> [n_m, input_size]
     positions: dict  # name -> long [n_m] or float [n_m, pos_input_size]
     object_id: str = ""
+    # the span order this sequence was serialized in; ADR 0014 §7a compares
+    # it across replicas to refuse identical duplicates
+    order: tuple[str, ...] = ()
 
     def __len__(self) -> int:
         return len(self.input_ids)
@@ -112,14 +135,49 @@ class ObjectSequencer:
             left = (w - IMAGE_CROP) // 2
             flux = flux[..., top : top + IMAGE_CROP, left : left + IMAGE_CROP]
         # may arrive as a list or an array after a parquet round-trip
+        bands = [str(b) for b in image["band"]]
         flux = physical_normalize(
-            flux, [str(b) for b in image["band"]], divisor=self.image_norm_divisor
+            flux, bands, divisor=self.image_norm_divisor
         )
+        if mod.channel_tokenization == "per_band":
+            return self._per_band_tokens(mod, flux, bands)
         patches = patchify_image(flux, mod.patch_size)
         if self.standardize:
             patches = per_patch_standardize(patches)
         if self.spiral:
             patches = spiralise(patches)
+        positions = torch.arange(len(patches), dtype=torch.long)
+        return patches, positions
+
+    def _per_band_tokens(self, mod, flux: torch.Tensor, bands: list[str]):
+        """ADR 0014 §8: one token per patch PER band, band-major.
+
+        The same 27,648 target values as the fused path, factorised 3x finer:
+        144 x 192 becomes 432 x 64 for a Legacy crop. Cross-band structure is
+        then learned autoregressively instead of pre-fused, and the position
+        index runs across the whole concatenation, so a token's band is
+        implied by ``position // patches_per_band``.
+
+        Band order is FIXED by config (never shuffled) — one variable at a
+        time, per §8 — and a record missing a named band raises rather than
+        silently shifting every subsequent band's positions.
+        """
+        missing = [band for band in mod.band_order if band not in bands]
+        if missing:
+            raise ValueError(
+                f"modality {mod.name!r} needs bands {list(mod.band_order)} for "
+                f"per-band tokenisation; record has {bands} (missing {missing})"
+            )
+        per_band = []
+        for band in mod.band_order:
+            channel = flux[bands.index(band)].unsqueeze(0)
+            patches = patchify_image(channel, mod.patch_size)
+            if self.standardize:
+                patches = per_patch_standardize(patches)
+            if self.spiral:
+                patches = spiralise(patches)
+            per_band.append(patches)
+        patches = torch.cat(per_band, dim=0)
         positions = torch.arange(len(patches), dtype=torch.long)
         return patches, positions
 
@@ -209,7 +267,6 @@ class ObjectSequencer:
                 f"record {record.get('object_id')!r} has no known modality"
             )
 
-        order = list(parts)
         if modality_order is not None:
             if sorted(modality_order) != sorted(parts):
                 raise ValueError(
@@ -217,12 +274,11 @@ class ObjectSequencer:
                     f"record's modalities {sorted(parts)}"
                 )
             order = list(modality_order)
-        elif len(parts) > 1:
+        else:
             # ADR 0008: uniform span shuffle, seeded per (object_id, epoch) —
             # deterministic and resume-exact; at N=2 this is exactly the
             # superseded ADR 0005 parity rule's 50/50 flip in distribution
-            seed = zlib.crc32(str(record.get("object_id", "")).encode()) ^ epoch
-            random.Random(seed).shuffle(order)
+            order = span_order(parts, record.get("object_id", ""), epoch)
 
         ids = [BOS_ID]
         spans = {}
@@ -254,6 +310,7 @@ class ObjectSequencer:
             values=values,
             positions=positions,
             object_id=str(record.get("object_id", "")),
+            order=tuple(order),
         )
 
 
@@ -265,6 +322,7 @@ class PackedCollator:
         self.modality_names = config.modality_registry().names()
 
     def __call__(self, objects: list[ObjectSeq]) -> dict:
+        """Greedily pack a flat object list, then collate the rows it makes."""
         rows: list[list[ObjectSeq]] = [[]]
         used = 0
         for obj in objects:
@@ -279,6 +337,20 @@ class PackedCollator:
             used += len(obj)
         if not rows[-1]:
             rows.pop()
+        return self.collate_rows(rows)
+
+    def collate_rows(self, rows: list[list[ObjectSeq]]) -> dict:
+        """Collate rows the caller has already formed.
+
+        ADR 0014 §7b assigns replicas to rows itself (to keep a base object's
+        replicas out of the same packed row), so its rows are deliberately
+        NOT what greedy packing would produce — it hands them straight here
+        instead of round-tripping through the greedy path above.
+        """
+        for row in rows:
+            used = sum(len(obj) for obj in row)
+            if used > self.seq_len:
+                raise ValueError(f"row of length {used} exceeds seq_len {self.seq_len}")
 
         B, T = len(rows), self.seq_len
         input_ids = torch.full((B, T), PAD_ID, dtype=torch.long)

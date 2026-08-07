@@ -8,8 +8,11 @@ import numpy as np
 import pytest
 
 from astropt3.data.streaming import (
+    _SOURCE_COLUMNS,
+    _SPECTRUM_LEAVES,
     _partition_owner,
     _source_graph_examples,
+    _spectrum_part,
     attach_source,
     decode_record,
     owned_by_rank,
@@ -73,6 +76,70 @@ def test_decode_bimodal_row_carries_both_modalities():
 def test_decode_rejects_an_empty_row():
     with pytest.raises(ValueError, match="neither image nor spectrum"):
         decode_record({"object_id": "x", "ra": 0.0, "dec": 0.0, "_healpix_29": 0})
+
+
+def test_spectrum_leaf_projection_drops_ivar_and_decodes_identically(tmp_path):
+    """ADR 0014 §6: projecting the leaves must not change a decoded record.
+
+    ``ivar`` is 41% of a spectrum row's bytes and is read nowhere, so the
+    projected read is pure saving — provided the surviving leaves decode
+    byte-for-byte as they did from the whole struct.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    row = make_record(7, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+    spectrum = row["spectrum"]
+    table = pa.Table.from_pylist(
+        [
+            {
+                "object_id": "s1",
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": 0,
+                "spectrum": {
+                    "flux": np.asarray(spectrum["flux"]).tolist(),
+                    "lambda": np.asarray(spectrum["lambda"]).tolist(),
+                    "ivar": np.asarray(spectrum["ivar"]).tolist(),
+                    "mask": np.asarray(spectrum["mask"]).tolist(),
+                },
+                "Z": 0.5,
+                "ZERR": 0.01,
+                "ZWARN": 0,
+            }
+        ]
+    )
+    path = tmp_path / "desi.parquet"
+    pq.write_table(table, path)
+
+    parquet = pq.ParquetFile(path)
+    whole = parquet.read_row_group(0).slice(0, 1).to_pylist()[0]
+    projected = (
+        parquet.read_row_group(0, columns=_SOURCE_COLUMNS["desi"])
+        .slice(0, 1)
+        .to_pylist()[0]
+    )
+
+    # the projection really did leave ivar on the wire
+    assert "ivar" in whole["spectrum"]
+    assert set(projected["spectrum"]) == set(_SPECTRUM_LEAVES)
+
+    from_whole = _spectrum_part(whole)
+    from_projected = _spectrum_part(projected)
+    assert set(from_whole) == set(_SPECTRUM_LEAVES)  # whitelist, not passthrough
+    for leaf in _SPECTRUM_LEAVES:
+        assert from_whole[leaf].dtype == from_projected[leaf].dtype
+        assert np.array_equal(from_whole[leaf], from_projected[leaf])
+        assert from_whole[leaf].tobytes() == from_projected[leaf].tobytes()
+
+    # the scalar columns the adapters need survive the projection too
+    for key in ("object_id", "ra", "dec", "_healpix_29", "Z", "ZERR", "ZWARN"):
+        assert projected[key] == whole[key]
+
+
+def test_spectrum_part_rejects_a_row_missing_a_projected_leaf():
+    with pytest.raises(ValueError, match="missing"):
+        _spectrum_part({"spectrum": {"flux": [1.0], "lambda": [4000.0]}})
 
 
 def test_source_adapters_keep_sdss_and_hsc_distinct():
@@ -217,6 +284,74 @@ def test_source_graph_assembles_all_spokes_and_emits_unmatched(tmp_path):
         "hsc:h2",
         "sdss:s2",
     }
+
+
+def test_source_graph_warns_and_skips_missing_partner(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    image = {
+        "flux": np.zeros((3, 152, 152), dtype=np.float32).tolist(),
+        "band": ["des-g", "des-r", "des-z"],
+    }
+    spectrum = {
+        "flux": [1.0, 2.0],
+        "lambda": [4000.0, 4001.0],
+        "ivar": [1.0, 1.0],
+        "mask": [False, False],
+    }
+    anchors = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "object_id": "a1",
+                    "ra": 1.0,
+                    "dec": 2.0,
+                    "_healpix_29": 0,
+                    "image": image,
+                    "ebv": 0.1,
+                    "flux_g": 1.0,
+                    "flux_r": 1.0,
+                    "flux_z": 1.0,
+                    "z_spec": 0.2,
+                }
+            ]
+        ),
+        anchors,
+    )
+    sdss = tmp_path / "sdss.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "object_id": "present",
+                    "ra": 1.0,
+                    "dec": 2.0,
+                    "_healpix_29": 1,
+                    "spectrum": spectrum,
+                    "Z": 0.2,
+                    "Z_ERR": 0.01,
+                    "ZWARNING": 0,
+                }
+            ]
+        ),
+        sdss,
+    )
+
+    with pytest.warns(RuntimeWarning, match="missing sdss id 'missing'"):
+        records = list(
+            _source_graph_examples(
+                [str(anchors)],
+                [json.dumps({"a1": {"sdss": "missing"}})],
+                [json.dumps({"sdss": [{"path": str(sdss), "order": 6, "pixel": 0}]})],
+                [{"sdss": [str(sdss)]}],
+                {"sdss": ["missing", "present"]},
+            )
+        )
+
+    assert [record["object_id"] for record in records] == ["a1"]
+    assert "sdss_spectrum" not in records[0]
 
 
 # -- split + shuffle ---------------------------------------------------------
