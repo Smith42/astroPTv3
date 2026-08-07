@@ -3,10 +3,15 @@
 - **Status:** Accepted (2026-08-06). Rewritten the same date to fold the
   measurement study into the gated byte-efficiency + MFU programme below;
   the programme is the committed plan and its gates govern execution, not
-  adoption. Supersedes and absorbs the labbook working document *"Useful
-  bytes per megabyte downloaded"* (2026-08-06, amended same day for the
-  five-spoke corpus), which was deleted when the first version of this ADR
-  was extracted — recover it from git history if a derivation needs
+  adoption. **Amended 2026-08-06 (r3)** to add the HSC image projection,
+  partner-row scalar attachments, byte-balanced dealing, the bounded wire
+  experiment, cache-era decode work, compute-side follow-ons, and the
+  upstream publication ask. The implementation amendments at the foot of
+  this document record six corrections the code found. Supersedes and absorbs
+  the labbook working document *"Useful bytes per megabyte downloaded"*
+  (2026-08-06, amended same day for the five-spoke corpus), which was
+  deleted when the first version of this ADR was extracted — recover it from
+  git history if a derivation needs
   checking.
 - **References:** [ADR 0006](0006-stream-mmu-upstream.md), [ADR
   0008](0008-scalar-modalities.md), [ADR 0011](0011-skim-crossmatch-scans.md),
@@ -37,6 +42,14 @@ matters is therefore **loss-bearing signal per megabyte transferred**.
   pay for), full-frame image 0.73, ivar-projected spectrum 1.15, today's 96×96
   crop 1.82, today's spectrum 1.93, **HSC 3.56** — the most expensive token in
   the corpus by 5×.
+- **HSC (verifiable from published metadata):** the catalog reports 335.6 GiB
+  across 156 partitions (about 2.2 GiB/partition). Its `image` struct carries
+  `flux`, `ivar`, `mask`, `psf_fwhm`, and `scale`; the adapter currently
+  consumes only `flux` and band metadata. `image.ivar` is a 5×160×160
+  float32 plane, the same raw size as `flux` (~512 KB/row), and `mask` is
+  another transferred plane (compressible, but not free). Unless normalization
+  uses `psf_fwhm`/`scale`,
+  roughly half of each HSC payload is fetched and discarded.
 - The discarded periphery is **not** empty sky: on 40 real North objects the
   median peripheral patch carries the same arcsinh-normalised variance as the
   median central patch (ratio 1.01×), and only 12.7% of full-frame patches
@@ -61,14 +74,24 @@ Adopt a gated programme, in this order:
 
 1. **Immediately, in parallel:** fetch-boundary instrumentation, MFU
    accounting, and a frozen benchmark; the sequence-assembly fingerprint
-   fix; nested spectrum-leaf projection for DESI and SDSS; validation-set
-   repair; the replay (`ar_replicas`) quality validation; open the
-   transient-cache ADR conversation against ADR 0006/0011.
+   fix; nested spectrum-leaf projection for DESI and SDSS plus HSC image-struct
+   projection; validation-set repair; the replay (`ar_replicas`) quality
+   validation; open the transient-cache ADR conversation against ADR 0006/0011;
+   send the upstream publication request.
 2. **Next:** per-band tokenisation A/B **on the cropped image** — now the
    only image-representation experiment in scope.
 3. **Last:** transient cross-epoch cache prototype under stable ownership;
    re-measure partner-fetch locality on the 5,488-cell index before any
    ordering/caching-adjacent work beyond that.
+
+The r3 additions fit around that order rather than replacing the cache:
+HSC projection ships with §6, scalar attachments are a Phase 1 shortlist in
+§6a, byte-balanced dealing follows the §3 cell-cost measurement, and the
+single-fetch wire test in §10a runs only when telemetry shows headroom below
+NIC line rate. Decode vectorisation waits for the cache prototype, while
+scalar-head fusion and the other MFU hygiene wait for the instrumented
+baseline. The publisher request in §10b goes out immediately because its lead
+time is external.
 
 Progress is judged on two headline axes — **useful bits per byte
 transferred** and **model FLOPs utilisation (MFU)** — with scientific
@@ -117,7 +140,8 @@ ceiling is fixed. 92.3% of anchor row-group bytes are `image.flux`, of
 which 60.1% are fetched and discarded before tokenisation; images stay at
 ~1.82 KB per fused token. No lever in this programme recovers those bytes.
 All remaining gains come from factorisation (replay §7, per-band §8),
-projection (§6), and cross-epoch reuse (§9).
+projection and partner signal (§6–§6a), scheduling (§10–§10a), and
+cross-epoch reuse (§9).
 
 **Reopening clause:** this decision may be revisited through an evidenced
 amendment if (a) the sharper periphery measurement shows the discarded
@@ -144,10 +168,13 @@ counts:
   modality losses, fixed redshift/morphology probes) per TiB downloaded
   **and per GPU-hour**, at matched bytes and matched wall clock.
 
-No change is accepted for raising `E_AR` or MFU alone — both are gameable
-by repetition (identical replicas raise MFU and `E_AR` while adding zero
-information; so would padding). They are **necessary-but-not-sufficient**
-gates; `E_science` is the deciding metric wherever they conflict.
+Partner-row scalar attachments are the one r3 lever intended to raise
+`E_values`; projection, replay, per-band, scheduling, and caching primarily
+change bytes, `E_AR`, or stall time. No change is accepted for raising `E_AR`
+or MFU alone — both are gameable by repetition (identical replicas raise MFU
+and `E_AR` while adding zero information; so would padding). They are
+**necessary-but-not-sufficient** gates; `E_science` is the deciding metric
+wherever they conflict.
 
 ### 2a. MFU: definition, decomposition, and role
 
@@ -178,12 +205,27 @@ The decomposition is the point: an undecomposed MFU comparison between a
 fused and a per-band arm confounds a data-pipeline effect with a
 model-shape effect and supports the wrong conclusion.
 
-**Where the baseline stands (measured wall-clock ratios, instrumented MFU
-pending §3):** step medians of ~0.68 s against a 7.80 s mean put the
-`ar_replicas: 1` baseline at roughly **9% of its own stall-free MFU**, and
-replay-2 at ~28% (2.51 s mean). The §3 instrumentation replaces these with
-measured values, and the benchmark freezes the measured baseline as B0's
-reference MFU.
+Alongside the three MFU factors, report `loss_bearing_token_fraction`: the
+fraction of non-padding tokens whose positions participate in a loss. A
+representative galaxies-only anchor is about 255 tokens, of which roughly 72
+begin/end specials carry no loss — about 28% delimiter overhead. This is a
+diagnostic, not a fourth multiplier in the MFU identity; it makes structural
+waste visible before proposing a token-layout change.
+
+**Where the baseline stands — MEASURED 2026-08-06** (superseding the
+wall-clock-ratio estimate this paragraph used to carry; full table in
+`docs/evidence/adr0014-benchmark-2026-08-06/benchmark.md`). A frozen 120-step
+window, dp=2 × 8 workers:
+
+| Arm | mean s/step | MFU | MFU_busy | stall_share | packing |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| B0 (replicas 1) | 8.53 | **2.42%** | 27.29% | 90.9% | 0.979 |
+| B1 (replicas 2, adjacent) | 4.06 | 4.98% | 21.63% | 75.9% | 0.954 |
+| B1-D (replicas 2, decorrelated) | 3.81 | **5.42%** | 27.67% | 80.0% | 0.980 |
+
+The estimate held: B0 runs at **9.06% of its own stall-free MFU** against the
+"roughly 9%" predicted here, with a time-weighted stall share of 90.9%
+against the implied ~91%. B0 is frozen as the reference MFU.
 
 **Why MFU belongs alongside the byte metrics.** The byte metrics price the
 resource we are short of (wire bytes); MFU prices the resource we have in
@@ -205,6 +247,28 @@ fixed step count survive the reduced unique-object diversity?** Every A/B
 in §7–§8 is an instance of that question; MFU and the byte metrics measure
 the benefit side, `E_science` measures the risk side.
 
+## 2b. Compute-side follow-ons (after the instrumented baseline)
+
+These are independent of the transfer levers and are deliberately deferred
+until §3 provides a trustworthy `MFU_busy` baseline:
+
+- **Fuse scalar heads (inferred):** the source graph has roughly 40 scalar
+  modalities, each with an `input_size: 1` encoder/decoder. Group them into a
+  batched GEMM or block-diagonal path to remove dozens of tiny launches. Keep
+  the state-dict layout when possible so this is a compute-graph rewrite; if
+  parameter names or shapes change, treat it as a new checkpoint family and
+  cover it in the sequence fingerprint.
+- **Standard hygiene:** run `torch.compile` on modality paths and a
+  micro-batch shape sweep only after the instrumented baseline exists. Report
+  `MFU_busy`, launch/compile effects, and scientific quality separately from
+  wire changes.
+- **Scalar-span consolidation (parked):** consolidating the 34 `gwh_*`
+  fractions into one 34-dimensional span would replace 102 tokens with one,
+  but conflicts with ADR 0013's one-field-one-modality rule. Under fixed-step
+  arithmetic it also creates more unique objects per step and therefore more
+  bytes while the run is transfer-bound. Reopen only after the cache changes
+  the regime and a dated governance amendment accepts the semantic trade.
+
 ## 3. Instrumentation and benchmark (Phase 0)
 
 Byte accounting through `HfFileSystemFile._fetch_range` is the only
@@ -212,15 +276,20 @@ accepted instrument — HTTP-request counting and contiguous-log-run counting
 are both recorded failures (range requests are not downloads; 16 workers
 interleave one log). Extend the instrument with structured fields: DP rank,
 loader worker, source, partition path, anchor cell, byte range and payload
-bytes, fetch wait duration, and projected columns where known.
+bytes, fetch wait duration, and projected columns where known. Also record
+HTTP response bytes, requested/payload byte ratios, effective throughput for
+each logical fetch, and the fsspec block/coalescing settings used.
 
 Per step (or short window), record: transferred bytes by source;
 non-padding and loss-bearing tokens by family/modality; valid target
 dimensions; distinct base object ids; replica count and distinct span-order
 count; cells consumed and boundaries crossed; packing utilisation; **step
 wall time split into compute-busy and loader-wait; achieved model FLOPs and
-the three MFU factors of §2a**; rolling 100-step source composition (the
-`object_id_log` already carries this); RSS per process.
+the three MFU factors of §2a**; `loss_bearing_token_fraction`; rolling
+100-step source composition (the `object_id_log` already carries this); RSS
+per process. Persist measured byte cost per cell and its source/partition
+breakdown; §10's dealing and §10a's line-rate decision use this record rather
+than row-count estimates.
 
 MFU accounting notes: FLOPs/token is computed once per (model config,
 tokenisation policy) pair and pinned in the benchmark record — per-band
@@ -238,16 +307,25 @@ problem, and undecomposed MFU would be equally blind to its cause.
 
 ## 4. Validation repair (Phase 0b — gates everything downstream)
 
-Every acceptance gate below routes through validation quality, and the
-current validation set cannot carry that weight: `VAL_PARTITIONS = 8` is
-0.15% of 5,488 cells, and realised composition swings 0.1% → 16.4% for HSC
-between runs (§Mechanism notes). Therefore, before the benchmark freezes:
+> **Amended 2026-08-06 (A1 below): the premise of this section was wrong.**
+> `VAL_PARTITIONS` does not govern the five-spoke corpus at all. The
+> source-graph path splits on `split_of_cell`, which already reserves
+> **252 of 5,488 cells (4.6%), 4.0% of anchors** — above the 1–2% asked for
+> here. The split change and its assembly bump are **cancelled**; the
+> composition work below stands and is delivered by §3's instrument.
 
-- raise `VAL_PARTITIONS` to a defensible fraction of cells (order 1–2%,
-  sized so each family's val loss is stable across reruns); this changes
-  the split and **bumps the source assembly** — do it once, now, not
-  mid-programme;
-- land the composition-per-100-step-window measurement from the audit logs;
+Every acceptance gate below routes through validation quality, and the
+validation set has to carry that weight against a corpus whose realised
+composition swings 0.1% → 16.4% for HSC between runs (§Mechanism notes).
+Therefore, before the benchmark freezes:
+
+- ~~raise `VAL_PARTITIONS`~~ — cancelled; the split is already defensible
+  (A1). Confirm per-family val-loss stability across reruns instead, and
+  only revisit the split if a family proves unstable;
+- land the composition-per-100-step-window measurement. **Delivered by §3**:
+  per-modality loss-bearing token counts per step are exact, where inferring
+  composition from `object_id_log` cannot tell whether a matched anchor
+  carried HSC. One instrument, not two;
 - require composition-matched or composition-stratified comparison windows
   for every A/B; decide HSC-touching questions on HSC-enriched cells, since
   0.7% coverage means random short windows cannot evidence that spoke.
@@ -258,13 +336,14 @@ between runs (§Mechanism notes). Therefore, before the benchmark freezes:
 `ar_replicas: 1` and resumed at `ar_replicas: 2` today passes the assembly
 check while silently changing the emitted sequence stream. Extend the
 resume-state tag to a fingerprint over: source-graph assembly and
-revisions; modality-config hash; image-crop policy; band-tokenisation
-policy (§8); `ar_replicas` and replica-separation policy (§7); span-order
+revisions; modality-config and scalar-field-registry hash (§6a);
+image-crop policy; band-tokenisation policy (§8); `ar_replicas` and
+replica-separation policy (§7); span-order
 algorithm version; sequence length. Mismatch rejects the stream state
 (weights still load), exactly like an assembly bump. This protects every
 A/B in the programme from contaminated resumes.
 
-## 6. Nested spectrum-leaf projection (ship now)
+## 6. Nested leaf and HSC-image projection (ship now)
 
 Change `_SOURCE_COLUMNS["desi"]` and `["sdss"]` from the whole `spectrum`
 struct to the leaf paths `spectrum.flux`, `spectrum.lambda`,
@@ -272,7 +351,13 @@ struct to the leaf paths `spectrum.flux`, `spectrum.lambda`,
 three children rather than copying every struct child present.
 
 Measured saving: 40% of spectrum bytes per read (60.7 → 36.4 MB, counted at
-`_fetch_range`). Demoted, correctly, from headline to hygiene: DESI is 6.3%
+`_fetch_range`). **Gate met and exceeded, 2026-08-06** (A2): on a 436.8 MB
+single-row-group DESI partition (`Npix=2356`) the projected read pulls
+229.6 MB against 436.9 MB whole-struct — **47.5%** — and SDSS, measured
+independently on `Npix=268`, saves **57.9%** (72.9 → 30.7 MB). Both beat the
+40% headline because the unread siblings (`lsf_sigma` and friends) drop with
+`ivar`; footer overhead is 0.01 MB and does not scale with partition size.
+Demoted, correctly, from headline to hygiene: DESI is 6.3%
 of five-spoke anchors (was 92.2% at three spokes), so the corpus-level
 effect is small — but it is free, reversible, and scientifically neutral
 (`ivar` is read nowhere outside synthetic fixtures; ADR 0007 normalisation
@@ -282,6 +367,42 @@ Gates: decoded records byte-identical before/after; the saving re-verified
 against a **520 MB single-row-group partition**, not only the 60.7 MB one
 (footer and range-coalescing overheads need not scale linearly); SDSS
 saving measured independently; record order and resume unchanged.
+
+### HSC image-struct projection (verifiable from published metadata; ship now)
+
+`_SOURCE_COLUMNS["hsc"]` currently requests the whole `image` struct, while
+`attach_source` consumes only `image.flux` and `image.band`. Project the
+consumed leaves instead; include `image.psf_fwhm` or `image.scale` only if a
+future normalization actually uses them. This drops the unread `image.ivar`
+and `image.mask` planes from the wire. The published 335.6 GiB / 156-partition
+catalog size and the equal raw `flux`/`ivar` plane sizes make the source-local
+saving verifiable; the exact compressed/HTTP saving remains a §3 measurement.
+
+Gate it exactly like the spectrum projection: compare `_fetch_range` bytes on
+an HSC-enriched window and a representative large partition, keep decoded
+flux and band values byte-identical, verify optional normalization fields are
+not silently required, and require unchanged record order and resume state.
+Do not generalise the result from the 2.2 GiB partition average to the corpus
+without measuring HSC composition.
+
+## 6a. Partner-row scalar attachments (Phase 1)
+
+Rows already fetched for a matched partner can carry useful scalar targets at
+near-zero marginal wire cost. HSC rows expose 50+ candidate scalar columns;
+candidate HSC fields include
+`{g,r,i,z,y}_cmodel_mag`, their `magerr`s, extendedness, and extinction
+`a_*`; DESI candidates include `FLUX_*` and `EBV` photometry. Add fields one at
+a time under ADR 0013's field-predicate governance: documented units,
+provenance, fixed transform and inverse, missingness, valid range, quality
+predicate, and source revision. A field that fails its predicate is omitted;
+there are no standalone partner scans.
+
+This lever raises `E_values`, not merely `E_AR` or MFU. Measure its actual
+incremental `_fetch_range` bytes, valid values per MiB, object-length and
+packing effects, family loss share, and validation/scalar metrics. Accept a
+field only when the marginal bytes are consistent with the fetched-row
+assumption, ADR 0013's family weighting remains bounded, and
+`E_science` improves or holds at matched bytes and GPU-hours.
 
 ## 7. Replay validation (`ar_replicas`) — the headline lever
 
@@ -327,6 +448,20 @@ exactly-once (replica 0 keeps the original id; every logged line unique),
 resume stays exact, and most of the measured MFU/stall gain survives
 decorrelation.
 
+> **Throughput half measured 2026-08-06 (A6); the quality half is still
+> open.** Decorrelation does not merely preserve the gain — B1-D beats B1 on
+> every axis (MFU 5.42% vs 4.98%, mean step 3.81 s vs 4.06 s, p99 34 s vs
+> 46 s). The decomposition attributes it: adjacent placement stacks a
+> record's replicas into one row and fragments the row tail, dropping packing
+> to 0.954 and `MFU_busy` to 21.63%, while B1-D's `MFU_busy` of 27.67%
+> matches B0's 27.29% as identical model shapes must. `E_values` stays flat
+> across all three arms and `E_AR` doubles with primary held constant, so the
+> gain is not the repetition artefact §2 warns about. Exactly-once holds on
+> every arm. The replay factor measures 1.99×, not 2.00× — §7a correctly
+> withholds a replica from one-span records. **Still required before B1-D is
+> adopted:** the `E_science` comparison, composition-matched windows (the B0
+> window drew HSC, the B1 windows did not), and repetitions.
+
 ## 8. Per-band tokenisation — on the cropped image
 
 With full frame out of scope, per-band is the only image-representation
@@ -343,6 +478,17 @@ narrower jetformer flow do less arithmetic per token against the same
 kernel overheads; more tokens per object also lengthens attention). The
 decomposed report decides whether the net is a win; an undecomposed MFU
 number would hide the trade.
+
+> **Both factors measured, 2026-08-06 (arm P0, throughput only).**
+> `stall_share` 90.9% → **76.2%**; `MFU_busy` 27.29% → **25.14%** (−7.9%
+> relative); `utilisation_packing` 0.979 → 0.970 at 355 non-padding tokens
+> per emitted sequence, so the `seq_len` length gate is comfortable. Net MFU
+> 2.42% → **5.81%** at identical bytes, `E_AR` 388 → 1,076 per MiB (2.77×,
+> below 3× because scalar spans do not triple), `E_values` flat. Amendment A5
+> sharpens the `MFU_busy` explanation: the heads are exactly cost-neutral, so
+> the loss is kernel efficiency at width 64 and attention length, not reduced
+> arithmetic. **This is not acceptance** — §8 accepts only on `E_science`,
+> and the window was not composition-matched to B0.
 
 Design for the first A/B: one modality per survey image; **fixed** band
 order (g,r,z; HSC g,r,i,z,y if it ever reaches this stage), centre-out
@@ -390,6 +536,17 @@ reduction, bounded disk/RSS, no cross-split or duplicate emission,
 acceptable rank balance, and a measured epoch-2 MFU report (expected to be
 the largest single MFU movement in the programme).
 
+**Cache-era decode path (inferred; build with the cache prototype).**
+`_rows()` currently materializes every row with
+`table.slice(j, 1).to_pylist()[0]`, including large nested image lists. That
+Python conversion is hidden by today's network stalls but becomes the next
+loader bottleneck when epoch-2 reads are local. Replace it then with
+batch-level Arrow→NumPy conversion, using zero-copy `to_numpy` on primitive
+leaves such as `image.flux` where Arrow permits; keep the row adapter only at
+the schema boundary. Gate the change on decoded-value identity, RSS, resume,
+and a measured reduction in post-cache decode/loader time. Do not build this
+before the cache prototype makes the CPU cost visible.
+
 ## 10. Worker and scheduling policy
 
 Baseline: 8 loader workers, exactly one large read in flight per worker, no
@@ -407,6 +564,22 @@ successor to fixed replay, after §7 passes — it preserves unique-record
 rate whenever data is ready and converts residual stall time to MFU
 directly.
 
+**Byte-balanced cell dealing (inferred; after Phase 0).** The current
+count-based deal can put several expensive HSC-referencing cells on the same
+worker even when another worker receives cheap, galaxy-only cells. Once §3
+has measured per-cell byte costs, use the match-index partner partition
+membership as a prior, greedily bin-pack cells by measured bytes rather than
+count, then interleave heavy and cheap cells within each worker's queue.
+This changes no read concurrency; it only prevents one worker's rotation slot
+from repeatedly owning the heavy tail. It is a scheduling
+change, not a second prefetch path.
+
+Because cell order is part of the stream contract, bump `SOURCE_ASSEMBLY` and
+re-measure composition, rank/worker balance, resume, RSS, p95/p99 step time,
+and stall share. Build it only if the five-spoke evidence shows lower tail
+stalling without skewing family exposure; otherwise keep the simpler
+count-based deal.
+
 Before any locality/block-ordering work: re-measure partner-fetch
 redundancy on the 5,488-cell index with the §3 instrument (the 39% /
 434-vs-266 figures are three-spoke and superseded; the 8–16-cell block
@@ -417,6 +590,41 @@ smaller than the consumer count has its locality stripped on arrival). Only
 build if the five-spoke trace shows a material byte opportunity at
 consumer-aware block sizes — the null result of the reverted block-shuffle
 run and DESI's exit from the byte budget both argue it will not.
+
+## 10a. Segmented single-fetch experiment (bounded, inferred)
+
+This is not the failed prefetch. Test whether one large HSC column-chunk
+fetch is below link rate by segmenting that one logical fetch into bounded
+parallel range requests (an `hf_transfer`-style implementation), without
+adding another logical column read or another large read per worker. First
+compare aggregate throughput at the fixed eight-worker layout with the
+available NIC capacity. A single stream at roughly 100–200 Mbit/s on a
+1 Gbit/s link is evidence for the experiment; a stream already at line rate
+is a stop condition.
+
+In the same bounded experiment, audit fsspec block size and readahead against
+the actual column-chunk offsets, using payload-versus-HTTP bytes to expose
+over-fetch. Compare the ordinary and segmented arms on an HSC-enriched
+window with fixed order, workers, and starting state. Proceed only if there is
+measured line-rate headroom and segmentation lowers stall share or p95/p99
+tail time without increasing total bytes, RSS, errors, or concurrent logical
+reads; decoded values and resume must remain exact.
+
+## 10b. Upstream publication request (send now)
+
+Extend the MMU publisher request to include:
+
+- `BYTE_STREAM_SPLIT` for float columns, with compression settings and
+  representative before/after sizes recorded;
+- approximately 64 MB row groups and page indexes; and
+- splitting the outlier HSC partitions, whose published average is about
+  2.2 GiB, into smaller independently fetchable chunks.
+
+The request should quantify the current PLAIN+ZSTD result (about 5% on
+`image.flux`) against the expected 15–30% float32-imaging improvement from
+`BYTE_STREAM_SPLIT`. Treat that replacement ratio as an upstream measurement,
+not a client-side acceptance assumption: if achieved, it is a corpus-wide
+wire reduction unavailable to local projection changes.
 
 ## 11. Stop list (refused, with reasons)
 
@@ -429,9 +637,9 @@ run and DESI's exit from the byte budget both argue it will not.
   of baseline (3.73 vs 2.88 s/step mean, identical slow-step count).
 - **Row-group / page skipping on published files** — every DESI partition
   is a *single* row group (up to 520 MB) and no page index is written;
-  there is no sub-file granularity to skip to. Remains an upstream ask
-  (64 MB row groups, page index, `BYTE_STREAM_SPLIT`) to the MMU
-  publishers.
+  there is no sub-file granularity to skip to. Remains an external publication
+  request in §10b, which also asks publishers to split the outlier HSC
+  partitions; it is not a client-side build.
 - **Request-count or log-run "redundancy" metrics** — recorded measurement
   failures (HTTP requests count *ranges*, and 16 loader processes
   interleave in one log with no worker id).
@@ -459,16 +667,35 @@ run and DESI's exit from the byte budget both argue it will not.
 
 | Arm | Image | Bands | Replay | Gate to run |
 | --- | --- | --- | ---: | --- |
-| B0 | 96 crop | fused | 1 | frozen baseline (reference MFU) |
-| B1 | 96 crop | fused | 2 adjacent | reproduce measured result |
-| B1-D | 96 crop | fused | 2 decorrelated | after §7a/7b land |
-| P0 | 96 crop | per-band | 1 | after B-arms decided |
-| P1 | 96 crop | per-band | §7 winner | only if B1-D and P0 both pass |
+| B0 | 96 crop | fused | 1 | frozen baseline (reference MFU) — **throughput measured 2026-08-06** |
+| B1 | 96 crop | fused | 2 adjacent | reproduce measured result — **throughput measured** |
+| B1-D | 96 crop | fused | 2 decorrelated | after §7a/7b land — **throughput measured; `E_science` open** |
+| P0 | 96 crop | per-band | 1 | after B-arms decided — **throughput measured; `E_science` open** |
+| P1 | 96 crop | per-band | §7 winner | only if B1-D and P0 both pass — **not run** (passing means `E_science`) |
+
+Configs: `configs/nanotron/bench-north-5spoke-{b0,b1,b1d,p0-perband}.yaml`;
+run with `scripts/run_benchmark.sh`, report with `scripts/bench_report.py`.
+Throughput results: `docs/evidence/adr0014-benchmark-2026-08-06/benchmark.md`.
 
 Each arm reports the §3 per-step record plus `E_values`, `E_AR`
 (decomposed), **decomposed MFU (MFU_busy, stall_share,
 utilisation_packing, with per-arm FLOPs/token)**, and `E_science` at
 matched bytes and matched wall clock.
+
+### R3 lever matrix
+
+| Rank | Lever | Confidence | Primary movement | Placement |
+| ---: | --- | --- | --- | --- |
+| 1 | HSC image-struct projection | Verifiable from published metadata | bytes / stall share | §6, ship now |
+| 2 | Partner-row scalar attachments | Verifiable from published metadata | `E_values` | §6a, Phase 1 |
+| 3 | Byte-balanced cell dealing | Inferred | stall share / tail steps | §10, after Phase 0 cell costs |
+| 4 | Segmented single-fetch download | Inferred | stall share / tail steps | §10a, only below line rate |
+| 5 | Vectorised decode | Inferred | post-cache stall share | §9, with cache prototype |
+| 6 | Fused scalar heads and MFU hygiene | Inferred | `MFU_busy` | §2b, after baseline |
+| 7 | Upstream publication changes | Measured current / inferred gain | all byte metrics | §10b, send now |
+
+The cache remains the dominant regime-changing lever; this table only shortens
+the transfer-bound interval before it lands.
 
 ## Mechanism notes worth keeping
 
@@ -512,14 +739,109 @@ the ordering between arms.
 - The programme's expected byte wins are: replay ~2× fewer unique-record
   bytes per fixed-step run (measured ~3.1× wall-clock mean); per-band up to
   a further token-inflation factor **if and only if** quality per pixel
-  holds; projection a few corpus percent; the cache, if adopted, ~an
-  epoch's bytes for every epoch after the first — the dominant term for
-  multi-epoch runs.
-- Validation cost: `VAL_PARTITIONS` rises and every arm pays for
-  composition-controlled windows; this is the price of decisions that mean
-  anything on a corpus whose modality mix swings 160× between short runs.
-- Two assembly bumps are scheduled (validation split §4, stable ownership
-  §9); both reject stale stream states while keeping weights loadable, per
-  the documented mechanism.
+  holds; DESI/SDSS projection as a free hygiene win; HSC projection at the
+  source-local ~half-payload ceiling, with corpus impact set by HSC
+  composition; and the cache, if adopted, ~an epoch's bytes for every epoch
+  after the first — the dominant term for multi-epoch runs. Scalar
+  attachments instead add `E_values` at marginal row bytes and add bounded
+  sequence/head overhead.
+- Validation cost: `VAL_PARTITIONS` does not rise for the five-spoke path;
+  every arm still pays for composition-controlled windows, and any
+  byte-balanced order pays an additional composition/resume re-measurement.
+  This is the price of decisions that mean anything on a corpus whose
+  modality mix swings 160× between short runs.
+- One assembly bump remains scheduled for stable ownership in §9; any
+  byte-balanced dealing also bumps `SOURCE_ASSEMBLY`. Both reject stale
+  stream states while keeping weights loadable, per the documented mechanism.
 - Old checkpoints are unaffected by everything except per-band adoption,
   which creates a new model family by design.
+
+---
+
+## Implementation amendments (2026-08-06)
+
+Recorded when Phase 0/0b, §7a/7b and §8 were built. Each is a place where
+the code found the plan wrong or under-specified; none changes the
+programme's direction.
+
+**A1 — §4's premise was wrong; one of the two scheduled assembly bumps is
+cancelled.** The five-spoke corpus runs the *source-graph* path
+(`_source_graph_dataset`), which splits on `split_of_cell` — crc32 buckets
+over order-4 parents, 1-in-20 — not on `VAL_PARTITIONS`. Measured on the
+live index: 252 of 5,488 cells (4.6%) and 4.0% of anchors are val, already
+above the 1–2% §4 prescribed. `VAL_PARTITIONS = 8` binds only the retired
+DESI-only path. Consequence: no split change, no assembly bump, and
+§Consequences' "two assembly bumps are scheduled" becomes one (stable cell
+ownership, §9). The composition measurement §4 wanted is delivered by the §3
+instrument as per-modality token counts per step.
+
+**A2 — §6's saving is larger than estimated, and the large-partition gate is
+met.** 47.5% on a 436.8 MB single-row-group DESI partition, 57.9% on SDSS,
+both measured through `_fetch_range` (see §6). Still hygiene, not headline —
+DESI is 6.3% of five-spoke anchors — but a bigger free win than booked.
+
+**A3 — the checkpoint unit moved from the partial row to the partial
+micro-batch, and B1 needed a placement switch.** §7b requires a base
+object's replicas to land in different packed rows, so the loader now opens
+all `micro_batch_size` rows at once and assigns emptiest-first. That makes
+the natural resume unit the open micro-batch rather than the open row —
+equally exact, since nothing in an open batch has been yielded, and simpler
+than the old partial-row bookkeeping. Two consequences the ADR did not
+anticipate:
+
+- packing at `ar_replicas: 1` is no longer byte-identical to the historical
+  runs (worst-fit across open rows instead of next-fit down one). B0 is
+  being re-frozen as the reference anyway, and `utilisation_packing` is
+  reported per arm, so the change is visible rather than hidden;
+- B1 ("2 adjacent") and B1-D ("2 decorrelated") would otherwise be the same
+  config. A `replica_placement: adjacent | decorrelated` knob keeps B1 as a
+  real continuity arm; the fingerprint covers it, so the arms cannot resume
+  onto each other.
+
+**A4 — §7a's distinctness cap binds harder than §7a implies, and MFU has a
+stated approximation.** A record's replicas are capped at `n_spans!`, so the
+94%-of-anchors galaxies-only case (~37 spans) is unconstrained while a
+two-span unmatched record supports exactly one extra ordering and a one-span
+record supports none — `ar_replicas: 4` therefore does *not* mean 4× tokens
+on the unmatched tail. Separately, the MFU backbone term is scaled linearly
+by the non-padding fraction although attention is quadratic in `seq_len`;
+this errs toward over-counting (document masking already makes real
+attention block-diagonal), so reported MFU is an upper bound. Model the
+block structure only if an arm is ever decided on the attention term alone.
+
+**A5 — per-band's compute cost is entirely in the backbone; the heads are
+cost-neutral.** Measured from the implemented accounting: image FLOPs per
+token fall to **6.92e5 from 2.07e6** — exactly 1/3, because encoder, GMM head
+and flow all scale linearly in `input_size` — while tokens triple. The
+modality modules therefore cost the *same* per object; every extra FLOP is
+144 → 432 tokens through the transformer body. §8's warning that per-band
+"may lower `MFU_busy`" is right but for a sharper reason than stated: not
+less arithmetic per token against fixed kernel overheads in aggregate, but
+**kernel efficiency at width 64** and a longer attention span per object.
+Object length measures 463 mean / 477 p95 against `seq_len: 4096` (~8 objects
+per row), close to §8's ~437 estimate.
+
+**A6 — two arithmetic traps in the reporting, both found by measurement.**
+Neither changes the instrument, both changed the answer:
+
+- **`stall_share` must be time-weighted.** A mean of per-step ratios reported
+  12.4% where the run actually paid 90.9%. On a corpus this bimodal — most
+  steps stall for nothing, a few for a minute and a half — averaging ratios
+  buries exactly the behaviour under measurement. Same for MFU: aggregate
+  `total_flops / total_wall`, never a mean of per-step MFU.
+- **`utilisation_packing` is already inside the flops.** Since padding earns
+  no credit, `MFU_busy` computed from those flops double-counts the packing
+  factor and the §2a identity does not close. `MFU_busy` must be deflated by
+  packing to be the full-occupancy number the decomposition means. Both traps
+  are now pinned by `tests/test_bench_report.py`, and the report prints an
+  identity check.
+
+A third, smaller: `E_values` counted *presented* target dimensions, so it
+doubled under replay — the exact immunity §2 requires it to have. It is now
+deflated by the measured replay factor, and both figures are reported.
+
+**Also recorded:** the surviving five-spoke run config uses
+`ar_replicas: 4`, which §11 refuses until B1-D passes. That is deliberate —
+it is a *running job*, not a default. The benchmark arms are new configs
+(`bench-north-5spoke-{b0,b1,b1d,p0-perband}.yaml`) and the running config
+was left untouched.
