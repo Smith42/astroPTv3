@@ -11,6 +11,7 @@ Monkeypatch ``astropt3.data.streaming.open_stream`` with
 
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from datasets import Array3D, Dataset, Features, Sequence, Value
@@ -64,7 +65,7 @@ _SPECTRUM_FEATURES = Features(
         "ZWARN": Value("bool"),
     }
 )
-_cache: dict | None = None
+_cache: Optional[dict] = None
 
 
 def _image_row(record):
@@ -161,7 +162,7 @@ def fake_open_stream(
     epoch=0,
     shard=0,
     num_shards=1,
-    match_index: str | None = "present",
+    match_index: Optional[str] = "present",
 ):
     """Open the local crossmatch-only fixture with production semantics."""
     import json

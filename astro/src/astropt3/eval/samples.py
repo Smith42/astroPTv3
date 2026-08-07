@@ -29,7 +29,9 @@ discards each patch's mean/std).
 """
 
 import itertools
+import math
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -53,7 +55,8 @@ def build_template(sequencer, record: dict, mode: str):
     comparable with pre-0008 runs.
     """
     present = [
-        m for m in ("images", "spectra")
+        m
+        for m in ("images", "spectra")
         if record.get({"images": "image", "spectra": "spectrum"}[m]) is not None
     ]
     if mode == "spectra-to-images":
@@ -62,7 +65,10 @@ def build_template(sequencer, record: dict, mode: str):
 
 
 def load_template_record(
-    data_root: str, record_index: int, prefer_spectrum: bool, spectrum_only: bool = False
+    data_root: str,
+    record_index: int,
+    prefer_spectrum: bool,
+    spectrum_only: bool = False,
 ) -> dict:
     """The ``record_index``-th usable template record.
 
@@ -80,8 +86,12 @@ def load_template_record(
         from ..data.synthetic import make_record
 
         if spectrum_only:
-            return make_record(record_index, image_only_fraction=0.0, spectrum_only_fraction=1.0)
-        return make_record(record_index, image_only_fraction=0.0 if prefer_spectrum else 0.3)
+            return make_record(
+                record_index, image_only_fraction=0.0, spectrum_only_fraction=1.0
+            )
+        return make_record(
+            record_index, image_only_fraction=0.0 if prefer_spectrum else 0.3
+        )
     # ADR 0006: the reserved val partitions, streamed live. The stream is
     # endless and deterministic, so the n-th record matching a predicate is
     # stable across checkpoints; the three sources interleave, so a
@@ -104,7 +114,9 @@ def load_template_record(
     wanted = (r for r, _ in zip(open_stream(split="val"), range(budget)) if want(r))
     record = next(itertools.islice(wanted, record_index, None), None)
     if record is None:
-        raise ValueError(f"fewer than {record_index + 1} {missing} in {budget} val draws")
+        raise ValueError(
+            f"fewer than {record_index + 1} {missing} in {budget} val draws"
+        )
     return record
 
 
@@ -112,7 +124,7 @@ def save_image_png(
     values: np.ndarray,
     path: Path,
     title: str,
-    truth: np.ndarray | None = None,
+    truth: Optional[np.ndarray] = None,
     truth_label: str = "truth",
 ):
     """[n, C, H, W] -> one PNG grid (per-image normalized RGB).
@@ -124,9 +136,13 @@ def save_image_png(
     panels = ([(truth_label, truth)] if truth is not None else []) + [
         (f"sample {i}", img) for i, img in enumerate(values)
     ]
-    fig, axes = plt.subplots(1, len(panels), figsize=(3 * len(panels), 3.2), squeeze=False)
+    fig, axes = plt.subplots(
+        1, len(panels), figsize=(3 * len(panels), 3.2), squeeze=False
+    )
     for ax, (label, img) in zip(axes[0], panels):
-        rgb = np.transpose(img, (1, 2, 0))
+        # Matplotlib accepts at most RGBA; source cubes such as five-band HSC
+        # use their first three published bands for this qualitative panel.
+        rgb = np.transpose(img[:3] if img.shape[0] > 4 else img, (1, 2, 0))
         lo, hi = np.percentile(rgb, [1, 99])
         ax.imshow(np.clip((rgb - lo) / (hi - lo + 1e-8), 0, 1))
         ax.set_title(label, fontsize="small")
@@ -142,7 +158,7 @@ def save_spectra_png(
     lam: np.ndarray,
     path: Path,
     title: str,
-    truth: np.ndarray | None = None,
+    truth: Optional[np.ndarray] = None,
     truth_label: str = "truth",
 ):
     """[n, W] flux + [W] wavelength -> one subplot per spectrum, stacked.
@@ -193,21 +209,26 @@ def sample_template(
     n: int = 4,
     temperature: float = 1.0,
     argmax: bool = False,
-    generator: torch.Generator | None = None,
+    generator: Optional[torch.Generator] = None,
 ) -> dict:
     """Run one sampling mode against a template: ``{name: [n, T, D]}``."""
     if mode == "reconstruct":
         return {m: v.unsqueeze(0) for m, v in reconstruct(model, template).items()}
     if mode == "image-to-spectra":
         if "spectra" not in template.masks:
-            raise ValueError("image-to-spectra needs a template record carrying a spectrum")
+            raise ValueError(
+                "image-to-spectra needs a template record carrying a spectrum"
+            )
         gen_modalities = {"spectra"}
     elif mode == "spectra-to-images":
         if not {"images", "spectra"} <= set(template.masks):
-            raise ValueError("spectra-to-images needs a template carrying both modalities")
+            raise ValueError(
+                "spectra-to-images needs a template carrying both modalities"
+            )
         # conditioning only flows left to right under the causal mask
-        if int(template.masks["spectra"].nonzero()[0]) > int(
-            template.masks["images"].nonzero()[0]
+        if (
+            template.masks["spectra"].nonzero()[0].item()
+            > template.masks["images"].nonzero()[0].item()
         ):
             raise ValueError(
                 "spectra-to-images needs a spectra-first template (build_template)"
@@ -241,19 +262,22 @@ def render_sampled_tokens(
 ) -> dict:
     """Invert sampled tokens and write one PNG per modality: ``{name: path}``."""
     registry = model.config.modality_registry()
-    # keys the physical inverse normalization back to survey flux
-    bands = [str(b) for b in (record.get("image") or {}).get("band", [])]
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     pngs = {}
     for name, tokens in sampled.items():
-        if name not in ("images", "spectra"):
-            continue  # scalar spans have no panel rendering
-        tokens = tokens.cpu().float()  # bf16 -> f32 so matplotlib/numpy can ingest
         mod = registry.get_config(name)
+        if mod.family not in ("image", "spectrum"):
+            continue  # scalar spans have no panel rendering
+        payload = record[mod.record_keys[0]]
+        tokens = tokens.cpu().float()  # bf16 -> f32 so matplotlib/numpy can ingest
         png = out_dir / f"{name}_{tag}.png"
-        if name == "images":
-            side = int(round((tokens.shape[1]) ** 0.5)) * mod.patch_size
+        if mod.family == "image":
+            bands = [str(band) for band in payload["band"]]
+            patches_per_side = math.isqrt(tokens.shape[1])
+            if patches_per_side**2 != tokens.shape[1]:
+                raise ValueError(f"{name} has a non-square patch count")
+            side = patches_per_side * mod.patch_size
             channels = mod.input_size // (mod.patch_size**2)
             # the checkpoint's own arcsinh knee, so the inverse matches
             # the normalization its training data went through
@@ -276,9 +300,11 @@ def render_sampled_tokens(
                 truth = physical_inverse(
                     to_pixels(template.values[name].float()), bands, divisor=divisor
                 ).numpy()
-            save_image_png(imgs.numpy(), png, f"{name} {tag}", truth=truth, truth_label=truth_label)
-        elif name == "spectra":
-            lam = np.asarray(record["spectrum"]["lambda"])
+            save_image_png(
+                imgs.numpy(), png, f"{name} {tag}", truth=truth, truth_label=truth_label
+            )
+        elif mod.family == "spectrum":
+            lam = np.asarray(payload["lambda"])
             lam_t = torch.as_tensor(lam, dtype=torch.float32)
             # the checkpoint's own arcsinh knee, mirroring the image path
             divisor = model.config.spectra_norm_divisor
@@ -286,17 +312,26 @@ def render_sampled_tokens(
                 torch.stack([unpatchify_spectrum(t, len(lam)) for t in tokens]),
                 lam_t,
                 divisor=divisor,
+                source=mod.source,
             )
             truth = (
                 spectral_inverse(
                     unpatchify_spectrum(template.values[name].float(), len(lam)),
                     lam_t,
                     divisor=divisor,
+                    source=mod.source,
                 ).numpy()
                 if show_truth
                 else None
             )
-            save_spectra_png(flux.numpy(), lam, png, f"{name} {tag}", truth=truth, truth_label=truth_label)
+            save_spectra_png(
+                flux.numpy(),
+                lam,
+                png,
+                f"{name} {tag}",
+                truth=truth,
+                truth_label=truth_label,
+            )
         pngs[name] = png
     return pngs
 
@@ -305,13 +340,13 @@ def sample_checkpoint(
     checkpoint,
     records: list[dict],
     *,
-    modes: list[str] | None = None,
+    modes: Optional[list[str]] = None,
     n: int = 4,
     temperature: float = 1.0,
     seed: int = 0,
     out_dir: Path,
     device=None,
-    step: int | None = None,
+    step: Optional[int] = None,
 ) -> dict:
     """Sample + render every (record, mode) pair from a converted checkpoint.
 
@@ -368,7 +403,7 @@ def sample_checkpoint(
                 sampled,
                 out_dir=out_dir,
                 tag=(f"step{step}_" if step is not None else "")
-            + f"{mode}_{template.object_id}_seed{seed}",
+                + f"{mode}_{template.object_id}_seed{seed}",
                 show_truth=True,
                 truth_label="truth (reference)" if mode == "unconditional" else "truth",
             )

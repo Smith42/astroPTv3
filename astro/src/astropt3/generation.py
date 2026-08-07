@@ -18,12 +18,16 @@ The token loop re-runs the full forward per generated token — no KV cache
 caching only if generation ever becomes a hot path.
 """
 
+from typing import Optional
+
 import torch
 
 from .data.packing import ObjectSeq, PackedCollator
 
 
-def sample_gmm(logits_pi, mu, log_sigma, *, temperature=1.0, argmax=False, generator=None):
+def sample_gmm(
+    logits_pi, mu, log_sigma, *, temperature=1.0, argmax=False, generator=None
+):
     """One draw per row from a diagonal GMM ([n, K], [n, K, D] -> [n, D])."""
     pi = torch.softmax(logits_pi, dim=-1)
     if argmax:
@@ -32,7 +36,9 @@ def sample_gmm(logits_pi, mu, log_sigma, *, temperature=1.0, argmax=False, gener
     idx = k.unsqueeze(-1).expand(-1, 1, mu.size(-1))
     mu_k = mu.gather(-2, idx).squeeze(-2)
     sigma_k = log_sigma.gather(-2, idx).squeeze(-2).exp()
-    eps = torch.randn(mu_k.shape, generator=generator, device=mu_k.device, dtype=mu_k.dtype)
+    eps = torch.randn(
+        mu_k.shape, generator=generator, device=mu_k.device, dtype=mu_k.dtype
+    )
     return mu_k + temperature * sigma_k * eps
 
 
@@ -45,7 +51,7 @@ def generate(
     n: int = 1,
     temperature: float = 1.0,
     argmax: bool = False,
-    generator: torch.Generator | None = None,
+    generator: Optional[torch.Generator] = None,
 ) -> dict:
     """Sample ``n`` versions of the template's ``generate_modalities`` spans.
 
@@ -56,7 +62,9 @@ def generate(
     ``{name: [n, n_tokens, input_size]}`` in data (standardized-patch) space.
     """
     if model.config.tokeniser != "jetformer":
-        raise ValueError("generate() samples from GMM heads; checkpoint is not jetformer")
+        raise ValueError(
+            "generate() samples from GMM heads; checkpoint is not jetformer"
+        )
     generate_modalities = set(generate_modalities)
     unknown = generate_modalities - set(template.masks)
     if unknown:
@@ -85,7 +93,7 @@ def generate(
             "modality_positions": {},
         }
         for m, mask in masks.items():
-            cnt = int(mask[:t].sum())
+            cnt = mask[:t].sum().item()
             if cnt == 0:
                 continue
             kw["modality_masks"][m] = mask[:t].unsqueeze(0).expand(n, -1)
@@ -93,7 +101,9 @@ def generate(
             # flattening order the model's mask indexing expects
             kw["modality_values"][m] = values[m][:, :cnt].reshape(n * cnt, -1)
             pos = positions[m][:cnt]
-            kw["modality_positions"][m] = pos.repeat(n) if pos.dim() == 1 else pos.repeat(n, 1)
+            kw["modality_positions"][m] = (
+                pos.repeat(n) if pos.dim() == 1 else pos.repeat(n, 1)
+            )
         return kw
 
     for t in range(1, len(ids)):
@@ -103,7 +113,12 @@ def generate(
         out = model(**prefix_kwargs(t), compute_loss=False)
         logits_pi, mu, log_sigma = model.decoders[m_t](out.last_hidden_state[:, -1])
         z = sample_gmm(
-            logits_pi, mu, log_sigma, temperature=temperature, argmax=argmax, generator=generator
+            logits_pi,
+            mu,
+            log_sigma,
+            temperature=temperature,
+            argmax=argmax,
+            generator=generator,
         )
         if m_t in model.scalar_names:
             x = z  # scalar GMMs predict raw normalized values — no flow (ADR 0008)
@@ -126,7 +141,11 @@ def reconstruct(model, template: ObjectSeq) -> dict:
     device = next(model.parameters()).device
     batch = PackedCollator(model.config, seq_len=len(template))([template])
     batch = {
-        k: ({kk: vv.to(device) for kk, vv in v.items()} if isinstance(v, dict) else v.to(device))
+        k: (
+            {kk: vv.to(device) for kk, vv in v.items()}
+            if isinstance(v, dict)
+            else v.to(device)
+        )
         for k, v in batch.items()
     }
     out = model(**batch)

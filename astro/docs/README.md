@@ -32,7 +32,7 @@ map stays invertible. Tracked as `astro-phase5`; gates in
 `tests/test_jetformer_gpu.py`.
 
 | Entry | Kind | Status |
-|-------|------|--------|
+| ------- | ------ | -------- |
 | [`jetformer_plan.md`](jetformer_plan.md) | Plan (J1–J4) | J1–J3 implemented & CPU-tested; J4 (GPU verify + test run) on the reserved GH200 node. |
 | [`jetformer_run_guide.md`](jetformer_run_guide.md) | Run record | First 70M run (`astropt3-70m-jetformer`, wandb `17k4i9n1`, 2×GH200, 20k steps) completed; image NLL +799→≈−38, reconstruction corr 0.69–0.90; grad-norm explosion + null-spectrum red flags flagged. |
 | [`jetformer_noise_diagnosis.md`](jetformer_noise_diagnosis.md) | Diagnosis | Measured 2026-07-14 on step-20000 ckpt of the low-LR follow-up (`y3oak0l0`): two independent problems — optimisation drift and uncalibrated per-pixel noise generation. |
@@ -50,10 +50,36 @@ Spectra unchanged. Additive; gated on `uv run pytest` + the
 
 ---
 
+## MMU corpus expansion
+
+| Entry | Kind | Status |
+| --- | --- | --- |
+| [`evidence/adr0013-anchor-scout-2026-08-04/README.md`](evidence/adr0013-anchor-scout-2026-08-04/README.md) | Evidence | Pinned North/South scout; both capped inconclusive, owner selected North first and retained South. |
+| [`evidence/adr0013-source-spokes-2026-08-05/README.md`](evidence/adr0013-source-spokes-2026-08-05/README.md) | Evidence | Bounded schema-v2 index, live stream, transform, and transferred-byte smoke for all four North spokes. |
+
+The five-spoke North graph is built (2,182,875 anchors, 5,488 cells) and the
+canonical run config is
+[`../configs/nanotron/astropt3-70m-jetformer-north-5spoke-replay4.yaml`](../configs/nanotron/astropt3-70m-jetformer-north-5spoke-replay4.yaml);
+build a new one with [`../scripts/build_remaining_spokes.sh`](../scripts/build_remaining_spokes.sh).
+The expansion plan, its test plan, the crossmatch research and the per-run
+handoff notes were deleted 2026-08-06 once ADRs 0011–0014 carried their
+conclusions — recover them from git history if a derivation is needed.
+
+---
+
 ## ADRs (decision records, `adr/`)
 
 | ADR | Status |
-|-----|--------|
+| ----- | -------- |
 | [`adr/0001-jetformer-inverse-variance-loss.md`](adr/0001-jetformer-inverse-variance-loss.md) | Rejected — ivar-weighted loss does not transfer to the jetformer likelihood head. |
 | [`adr/0002-ivar-weighted-huber-loss.md`](adr/0002-ivar-weighted-huber-loss.md) | Proposed (Parked) — ivar-weighted Huber for the affine tokeniser. |
+| [`adr/0003-checkpoint-samples-in-eval-sidecar.md`](adr/0003-checkpoint-samples-in-eval-sidecar.md) | Accepted — sample panels render in the eval sweep, never in the trainer. |
+| [`adr/0004-spiral-token-order-for-imagery.md`](adr/0004-spiral-token-order-for-imagery.md) | Accepted — centre-out spiral patch order for images (default on). |
+| [`adr/0005-include-spectra-from-non-crossmatched-desi.md`](adr/0005-include-spectra-from-non-crossmatched-desi.md) | Accepted — ZWARN==0 spectrum-only rows train too; generalised by ADR 0008's span order. |
+| [`adr/0006-stream-mmu-upstream.md`](adr/0006-stream-mmu-upstream.md) | Accepted (closed 2026-08-04) — stream MMU live from the hub; the local reshard is deleted. |
 | [`adr/0007-physical-spectra-normalization.md`](adr/0007-physical-spectra-normalization.md) | Accepted — DESI spectra → AB nanomaggies, `arcsinh(f_ν/10 nMgy)` (`data/spectral.py`), the symmetric counterpart of `band_registry.py`. |
+| [`adr/0008-scalar-modalities.md`](adr/0008-scalar-modalities.md) | Accepted — one-token scalar modalities (`Z`, `ebv`, `photometry`) with GMM heads and the uniform random span order. |
+| [`adr/0011-skim-crossmatch-scans.md`](adr/0011-skim-crossmatch-scans.md) | Accepted (amended 2026-08-04 to crossmatch-only) — the match index defines the corpus: one source, one pass, no weights or governor. |
+| [`adr/0012-gate-mmu-streaming-throughput.md`](adr/0012-gate-mmu-streaming-throughput.md) | Closed by ADR 0014 — gated throughput work on measured byte economics. |
+| [`adr/0013-legacy-centred-mmu-expansion.md`](adr/0013-legacy-centred-mmu-expansion.md) | Proposed — prototype one Legacy anchor, retain the second when marginal evidence warrants it, then add ordered source spokes. |
+| [`adr/0014-byte-efficiency-and-mfu-programme.md`](adr/0014-byte-efficiency-and-mfu-programme.md) | Accepted — the gated byte-efficiency + MFU programme: replay (built, ~3x) gated for production, per-band A/B, projection shipped, cache conversation opened, concurrency fixes rejected. |

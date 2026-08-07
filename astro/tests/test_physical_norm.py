@@ -8,7 +8,6 @@ import torch
 from astropt3.data.band_registry import (
     _DIV_FACTOR,
     BAND_REGISTRY,
-    RAW_BANDS,
     clamp_flux,
     physical_inverse,
     physical_normalize,

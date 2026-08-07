@@ -1,15 +1,25 @@
 """Crossmatch-only MMU stream: decode, ownership, splitting, and resume."""
 
+import json
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import pytest
 
 from astropt3.data.streaming import (
+    _SOURCE_COLUMNS,
+    _SPECTRUM_LEAVES,
+    _partition_owner,
+    _source_graph_examples,
+    _spectrum_part,
+    attach_source,
     decode_record,
     owned_by_rank,
     shuffled,
+    source_only_record,
     split_files,
+    split_of_cell,
 )
 from astropt3.data.synthetic import make_record
 from fake_mmu import fake_open_stream
@@ -68,7 +78,403 @@ def test_decode_rejects_an_empty_row():
         decode_record({"object_id": "x", "ra": 0.0, "dec": 0.0, "_healpix_29": 0})
 
 
+def test_spectrum_leaf_projection_drops_ivar_and_decodes_identically(tmp_path):
+    """ADR 0014 §6: projecting the leaves must not change a decoded record.
+
+    ``ivar`` is 41% of a spectrum row's bytes and is read nowhere, so the
+    projected read is pure saving — provided the surviving leaves decode
+    byte-for-byte as they did from the whole struct.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    row = make_record(7, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+    spectrum = row["spectrum"]
+    table = pa.Table.from_pylist(
+        [
+            {
+                "object_id": "s1",
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": 0,
+                "spectrum": {
+                    "flux": np.asarray(spectrum["flux"]).tolist(),
+                    "lambda": np.asarray(spectrum["lambda"]).tolist(),
+                    "ivar": np.asarray(spectrum["ivar"]).tolist(),
+                    "mask": np.asarray(spectrum["mask"]).tolist(),
+                },
+                "Z": 0.5,
+                "ZERR": 0.01,
+                "ZWARN": 0,
+            }
+        ]
+    )
+    path = tmp_path / "desi.parquet"
+    pq.write_table(table, path)
+
+    parquet = pq.ParquetFile(path)
+    whole = parquet.read_row_group(0).slice(0, 1).to_pylist()[0]
+    projected = (
+        parquet.read_row_group(0, columns=_SOURCE_COLUMNS["desi"])
+        .slice(0, 1)
+        .to_pylist()[0]
+    )
+
+    # the projection really did leave ivar on the wire
+    assert "ivar" in whole["spectrum"]
+    assert set(projected["spectrum"]) == set(_SPECTRUM_LEAVES)
+
+    from_whole = _spectrum_part(whole)
+    from_projected = _spectrum_part(projected)
+    assert set(from_whole) == set(_SPECTRUM_LEAVES)  # whitelist, not passthrough
+    for leaf in _SPECTRUM_LEAVES:
+        assert from_whole[leaf].dtype == from_projected[leaf].dtype
+        assert np.array_equal(from_whole[leaf], from_projected[leaf])
+        assert from_whole[leaf].tobytes() == from_projected[leaf].tobytes()
+
+    # the scalar columns the adapters need survive the projection too
+    for key in ("object_id", "ra", "dec", "_healpix_29", "Z", "ZERR", "ZWARN"):
+        assert projected[key] == whole[key]
+
+
+def test_hsc_image_projection_drops_ivar_and_decodes_identically(tmp_path):
+    """ADR 0014 A7: ivar is 47.0% of an HSC partition and is read nowhere."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from astropt3.data.streaming import HSC_IMAGE_SHAPE
+
+    flux = np.arange(np.prod(HSC_IMAGE_SHAPE), dtype=np.float32).reshape(
+        HSC_IMAGE_SHAPE
+    )
+    table = pa.Table.from_pylist(
+        [
+            {
+                "object_id": "h1",
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": 0,
+                # every leaf the real HSC struct carries, so the projection is
+                # tested against the actual schema and not a simplified one
+                "image": {
+                    "flux": flux.tolist(),
+                    "band": ["hsc-g", "hsc-r", "hsc-i", "hsc-z", "hsc-y"],
+                    "ivar": np.ones_like(flux).tolist(),
+                    "mask": np.zeros_like(flux, dtype=np.int8).tolist(),
+                    "psf_fwhm": [0.8] * 5,
+                    "scale": [0.168] * 5,
+                },
+                **{f"{b}_cmodel_mag": 21.0 for b in "grizy"},
+                **{f"{b}_cmodel_magerr": 0.01 for b in "grizy"},
+                "i_extendedness_value": 1.0,
+                **{f"i_sdssshape_shape{m}": 0.3 for m in ("11", "22", "12")},
+                **{f"i_sdssshape_psf_shape{m}": 0.11 for m in ("11", "22", "12")},
+            }
+        ]
+    )
+    path = tmp_path / "hsc.parquet"
+    pq.write_table(table, path)
+    parquet = pq.ParquetFile(path)
+    whole = parquet.read_row_group(0).slice(0, 1).to_pylist()[0]
+    projected = (
+        parquet.read_row_group(0, columns=_SOURCE_COLUMNS["hsc"])
+        .slice(0, 1)
+        .to_pylist()[0]
+    )
+
+    assert "ivar" in whole["image"]  # the projection had something to drop
+    assert set(projected["image"]) == {"flux", "band"}
+
+    from_whole, from_projected = {}, {}
+    attach_source(from_whole, "hsc", whole)
+    attach_source(from_projected, "hsc", projected)
+    assert np.array_equal(
+        from_whole["hsc_image"]["flux"], from_projected["hsc_image"]["flux"]
+    )
+    assert (
+        from_whole["hsc_image"]["flux"].tobytes()
+        == from_projected["hsc_image"]["flux"].tobytes()
+    )
+    assert from_whole == {k: v for k, v in from_whole.items()}  # scalars survive too
+    assert from_projected["hsc_i_cmodel_mag"] == 21.0
+    assert from_projected["hsc_extendedness"] == 1.0
+    assert from_projected["hsc_i_sdssshape_shape11"] == pytest.approx(0.3)
+
+
+def test_hsc_magerr_screens_magnitudes_and_is_never_a_target():
+    """A8: magerr is the noise itself — a predicate, never a stored value."""
+    row = {
+        "image": None,
+        **{f"{b}_cmodel_mag": 21.0 for b in "grizy"},
+        **{f"{b}_cmodel_magerr": 0.01 for b in "grizy"},
+        "i_cmodel_magerr": 0.5,  # above _HSC_MAX_MAGERR -> that band is dropped
+        "g_cmodel_mag": 99.0,  # outside 10 < m < 30 -> dropped on range
+        "i_extendedness_value": 0.5,  # not in {0, 1} -> dropped
+    }
+    record: dict[str, Any] = {}
+    attach_source(record, "hsc", row)
+    assert "hsc_i_cmodel_mag" not in record  # screened by its error
+    assert "hsc_g_cmodel_mag" not in record  # screened by range
+    assert "hsc_extendedness" not in record  # not a valid flag value
+    assert record["hsc_r_cmodel_mag"] == 21.0  # the good bands survive
+    assert not any("magerr" in key for key in record)
+
+
+def test_anchor_free_scalars_attach_with_per_band_seeing():
+    """A8: psf_fwhm is keyed BY BAND NAME, not by position."""
+    record = decode_record(make_record(3, image_only_fraction=1.0))
+    for band in ("g", "r", "z"):
+        assert record[f"fiberflux_{band}"] > 0
+        assert record[f"psfdepth_{band}"] > 0
+    fwhm = [record[f"psf_fwhm_des-{b}"] for b in "grz"]
+    assert all(0 < value < 5 for value in fwhm)
+    assert fwhm[0] > fwhm[2]  # g-band seeing is worst, per the fixture's factors
+
+
+def test_psfdepth_of_zero_is_omitted_not_defaulted():
+    """ADR 0013 governance: a field failing its predicate leaves no span."""
+    row = make_record(4, image_only_fraction=1.0)
+    row["psfdepth_r"] = 0.0  # 0 means no coverage
+    record = decode_record(row)
+    assert "psfdepth_r" not in record
+    assert record["psfdepth_g"] > 0
+
+
+def test_spectrum_part_rejects_a_row_missing_a_projected_leaf():
+    with pytest.raises(ValueError, match="missing"):
+        _spectrum_part({"spectrum": {"flux": [1.0], "lambda": [4000.0]}})
+
+
+def test_source_adapters_keep_sdss_and_hsc_distinct():
+    anchor = decode_record(make_record(1, image_only_fraction=1.0))
+    spectrum_row = make_record(2, image_only_fraction=0.0, spectrum_only_fraction=1.0)
+    spectrum_row.update({"Z_ERR": 0.01, "ZWARNING": 0})
+    attach_source(anchor, "sdss", spectrum_row)
+    assert list(anchor["sdss_spectrum"]["flux"].shape) == [7781]
+    assert anchor["sdss_Z_ERR"] == 0.01
+    assert anchor["sdss_ZWARNING"] is False
+    assert "spectrum" not in anchor
+
+    hsc_row = make_record(3, image_only_fraction=1.0)
+    hsc_row["image"] = {
+        "flux": [[[0.0] * 160 for _ in range(160)] for _ in range(5)],
+        "band": ["hsc-g", "hsc-r", "hsc-i", "hsc-z", "hsc-y"],
+    }
+    standalone = source_only_record("hsc", hsc_row)
+    assert standalone["object_id"].startswith("hsc:")
+    assert list(standalone["hsc_image"]["flux"].shape) == [5, 160, 160]
+    assert "image" not in standalone
+
+
+def test_source_graph_assembles_all_spokes_and_emits_unmatched(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    def write(name, rows):
+        path = tmp_path / f"{name}.parquet"
+        pq.write_table(pa.Table.from_pylist(rows), path)
+        return str(path)
+
+    def image(bands, side):
+        return {
+            "flux": np.zeros((len(bands), side, side), dtype=np.float32).tolist(),
+            "band": bands,
+        }
+
+    spectrum = {
+        "flux": [1.0, 2.0],
+        "lambda": [4000.0, 4001.0],
+        "ivar": [1.0, 1.0],
+        "mask": [False, False],
+    }
+    anchors = write(
+        "anchors",
+        [
+            {
+                "object_id": object_id,
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "image": image(["des-g", "des-r", "des-z"], 152),
+            }
+            for i, object_id in enumerate(("a1", "a2"))
+        ],
+    )
+    rows = {
+        "desi": [
+            {
+                "object_id": value,
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "spectrum": spectrum,
+            }
+            for i, value in enumerate(("d1", "d2"))
+        ],
+        "sdss": [
+            {
+                "object_id": value.encode(),
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "spectrum": spectrum,
+            }
+            for i, value in enumerate(("s1", "s2"))
+        ],
+        "hsc": [
+            {
+                "object_id": value,
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "image": image(["hsc-g", "hsc-r", "hsc-i", "hsc-z", "hsc-y"], 160),
+            }
+            for i, value in enumerate(("h1", "h2"))
+        ],
+        "galaxies": [
+            {
+                "dr8_id": value,
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "smooth-or-featured_smooth_fraction": 0.7,
+            }
+            for i, value in enumerate(("g1", "g2"))
+        ],
+        "provabgs": [
+            {
+                "object_id": str(value),
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": i,
+                "LOG_MSTAR": 10.0,
+                "TSNR2_BGS": 100.0,
+            }
+            for i, value in enumerate((11, 12))
+        ],
+    }
+    paths = {source: write(source, source_rows) for source, source_rows in rows.items()}
+    matches = {
+        "a1": {
+            "desi": "d1",
+            "galaxies": "g1",
+            "hsc": "h1",
+            "provabgs": "11",
+            "sdss": "s1",
+        }
+    }
+    partition_specs = {
+        source: [{"path": path, "order": 6, "pixel": i}]
+        for i, (source, path) in enumerate(paths.items())
+    }
+    records = list(
+        _source_graph_examples(
+            [anchors],
+            [json.dumps(matches)],
+            [json.dumps(partition_specs)],
+            [{source: [path] for source, path in paths.items()}],
+            {source: [partner_id] for source, partner_id in matches["a1"].items()},
+        )
+    )
+    paired = next(record for record in records if record["object_id"] == "a1")
+    assert {"image", "spectrum", "sdss_spectrum", "hsc_image"} <= paired.keys()
+    assert paired["gwh_smooth-or-featured_smooth_fraction"] == 0.7
+    assert paired["provabgs_LOG_MSTAR"] == 10.0
+    assert {
+        record["object_id"] for record in records if ":" in record["object_id"]
+    } == {
+        "desi:d2",
+        "hsc:h2",
+        "sdss:s2",
+    }
+
+
+def test_source_graph_warns_and_skips_missing_partner(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    image = {
+        "flux": np.zeros((3, 152, 152), dtype=np.float32).tolist(),
+        "band": ["des-g", "des-r", "des-z"],
+    }
+    spectrum = {
+        "flux": [1.0, 2.0],
+        "lambda": [4000.0, 4001.0],
+        "ivar": [1.0, 1.0],
+        "mask": [False, False],
+    }
+    anchors = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "object_id": "a1",
+                    "ra": 1.0,
+                    "dec": 2.0,
+                    "_healpix_29": 0,
+                    "image": image,
+                    "ebv": 0.1,
+                    "flux_g": 1.0,
+                    "flux_r": 1.0,
+                    "flux_z": 1.0,
+                    "z_spec": 0.2,
+                }
+            ]
+        ),
+        anchors,
+    )
+    sdss = tmp_path / "sdss.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "object_id": "present",
+                    "ra": 1.0,
+                    "dec": 2.0,
+                    "_healpix_29": 1,
+                    "spectrum": spectrum,
+                    "Z": 0.2,
+                    "Z_ERR": 0.01,
+                    "ZWARNING": 0,
+                }
+            ]
+        ),
+        sdss,
+    )
+
+    with pytest.warns(RuntimeWarning, match="missing sdss id 'missing'"):
+        records = list(
+            _source_graph_examples(
+                [str(anchors)],
+                [json.dumps({"a1": {"sdss": "missing"}})],
+                [json.dumps({"sdss": [{"path": str(sdss), "order": 6, "pixel": 0}]})],
+                [{"sdss": [str(sdss)]}],
+                {"sdss": ["missing", "present"]},
+            )
+        )
+
+    assert [record["object_id"] for record in records] == ["a1"]
+    assert "sdss_spectrum" not in records[0]
+
+
 # -- split + shuffle ---------------------------------------------------------
+
+
+def test_common_split_uses_canonical_parent_cells():
+    for pixel in range(16):
+        assert split_of_cell((6, pixel << 4)) == split_of_cell((4, pixel))
+
+
+def test_partner_owner_is_deterministic_and_requires_a_same_split_reference():
+    references = [(6, 3), (6, 1), (6, 2)]
+    assert _partition_owner("path", references, [(6, 1), (6, 2)]) in {
+        (6, 1),
+        (6, 2),
+    }
+    assert _partition_owner("path", list(reversed(references)), [(6, 1), (6, 2)]) == (
+        _partition_owner("path", references, [(6, 1), (6, 2)])
+    )
+    assert _partition_owner("path", references, [(6, 9)]) is None
 
 
 def test_val_reserves_the_first_partitions_disjoint_from_train():

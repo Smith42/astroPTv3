@@ -38,16 +38,13 @@ def val_batches(config, data_root, *, n_batches, micro_batch_size, seq_len, seed
         split="val",
     )
     if data_root == "synthetic":
-        # start the val stream far past any training index (held-out records)
-        stream.load_state_dict(
-            {
-                "records": SYNTHETIC_VAL_OFFSET,
-                "epoch": 0,
-                "stream_state": None,
-                "data_root": "synthetic",
-                "source_assembly": "synthetic",
-            }
-        )
+        # start the val stream far past any training index (held-out records).
+        # The tag comes from the stream's own blank state, never a literal:
+        # ADR 0014 §5 made it a fingerprint over the whole sequence-assembly
+        # policy, so a hardcoded "synthetic" no longer matches.
+        state = stream.state_dict()
+        assert state is not None  # stateful=True by default
+        stream.load_state_dict({**state, "records": SYNTHETIC_VAL_OFFSET})
     names = config.modality_registry().names()
     for flat in islice(iter(stream), n_batches):
         yield regroup_micro_batch(flat, names)
@@ -74,6 +71,7 @@ def evaluate(
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
     total, per_key, per_key_n = 0.0, {}, {}
+    per_family, per_family_n = {}, {}
     n = 0
     for kwargs in (
         batches
@@ -105,12 +103,18 @@ def evaluate(
         for key, value in out.modality_losses.items():
             per_key[key] = per_key.get(key, 0.0) + value.item()
             per_key_n[key] = per_key_n.get(key, 0) + 1
+        for key, value in out.family_losses.items():
+            per_family[key] = per_family.get(key, 0.0) + value.item()
+            per_family_n[key] = per_family_n.get(key, 0) + 1
         n += 1
     if n == 0:
         raise ValueError("no validation batches produced")
     return {
         "loss": total / n,
         "modality_losses": {k: per_key[k] / per_key_n[k] for k in sorted(per_key)},
+        "family_losses": {
+            k: per_family[k] / per_family_n[k] for k in sorted(per_family)
+        },
         "n_batches": n,
     }
 

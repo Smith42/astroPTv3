@@ -24,10 +24,9 @@
   - `astro/src/astropt3/data/streaming.py` — `_crossmatch_examples`,
     `owned_by_rank`, `open_stream` (the skim's `_paired_examples` and
     `interleaved` were deleted by the 2026-08-04 revision)
-  - `astro/docs/2026-07-21-streaming-throughput-audit.md` — measured wire
-    costs, NIC ceiling
-  - `astro/docs/2026-07-21-streaming-shakeout-handoff.md` — why the loader
-    is the way it is
+  - [ADR 0014](0014-byte-efficiency-of-the-streamed-corpus.md) — measured
+    wire costs and byte economics (the 2026-07-21 throughput audit and
+    shakeout handoff behind them were deleted 2026-08-06; git history)
 
 ## Question
 
@@ -372,5 +371,5 @@ load.
   weights rationale, match-index.
 - `astro/scripts/probe_stream_rss.py` — the rebuild-leak and per-cell-spike
   arms behind the 2026-08-04 revision's memory numbers.
-- `astro/docs/2026-07-21-streaming-throughput-audit.md` — ~250 KB/image,
-  incompressible flux, 1 GbE ceiling, pre-crop republish idea (Option G).
+- [ADR 0014](0014-byte-efficiency-of-the-streamed-corpus.md) — ~250 KB/image,
+  incompressible flux, the 1 GbE ceiling, and the crop-waste lever.

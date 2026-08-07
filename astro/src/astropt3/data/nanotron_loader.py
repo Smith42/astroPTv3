@@ -52,8 +52,13 @@ caller (worker-prefetched batches are accounted for by torchdata). The
 trainer captures either kind of loader through :func:`loader_state_dict`.
 """
 
+from __future__ import annotations
+
 import gc
+import hashlib
 import itertools
+import json
+import math
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -64,8 +69,19 @@ import torch
 from ..configuration_astropt3 import AstroPT3Config
 from .band_registry import _DIV_FACTOR
 from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
-from .packing import ObjectSequencer, PackedCollator
-from .streaming import MMU_ROOT, SOURCE_ASSEMBLY, SYNTHETIC_ROOT
+from .packing import (
+    IMAGE_CROP,
+    SPAN_ORDER_VERSION,
+    ObjectSequencer,
+    PackedCollator,
+    span_order,
+)
+from .streaming import (
+    MMU_ROOT,
+    SYNTHETIC_ROOT,
+    assembly_and_revisions,
+)
+from .telemetry import install_byte_probe, instrument
 from .synthetic import make_record
 
 STATE_FILE_TEMPLATE = "dp_{rank}.pt"
@@ -79,6 +95,55 @@ LOADER_STATE_FORMAT = "stateful_dataloader"
 # run should die loudly rather than hang looking like a stall
 _MAX_NET_RETRIES = 60
 _MAX_NET_RETRY_WAIT = 120
+
+# ADR 0014 §7a/7b: bumped whenever the replica SELECTION or PLACEMENT rule
+# changes, since either changes the emitted sequence stream without changing
+# record order. Folded into the §5 fingerprint below.
+REPLICA_POLICY_VERSION = "distinct_orders_decorrelated_v1"
+# candidate replica orders are cheap to test (span_order, no tokenisation) and
+# a repeat is just skipped, so a small cap suffices: at the hardest case,
+# 2 spans, each draw is a coin flip, and 32 tries fail with p ~ 2e-10
+_MAX_REPLICA_ATTEMPTS = 32
+
+
+def sequence_fingerprint(
+    *,
+    assembly: str,
+    revisions: dict,
+    config: AstroPT3Config,
+    seq_len: int,
+    ar_replicas: int,
+    replica_placement: str = "decorrelated",
+) -> str:
+    """ADR 0014 §5: a resume tag over the whole sequence-assembly policy.
+
+    ``source_assembly`` alone protects record ORDER. A checkpoint saved at
+    ``ar_replicas: 1`` and resumed at 2 passed that check while silently
+    changing the emitted sequence stream — as would a crop change, a
+    per-band switch (§8), or a new span-order algorithm. Fingerprinting all
+    of them means a mismatched stream state is REJECTED (weights still load,
+    exactly like an assembly bump) instead of resuming onto the wrong
+    sequences and contaminating an A/B.
+
+    Deliberately excluded: normalization divisors and the spiral flag. They
+    change token VALUES, not the sequence stream, and are already
+    checkpoint-incompatible — a weights load is what stops you there.
+    """
+    registry = config.modality_registry()
+    payload = {
+        "assembly": assembly,
+        "revisions": dict(sorted(revisions.items())),
+        "modalities": [registry.get_config(n).to_dict() for n in registry.names()],
+        "image_crop": IMAGE_CROP,
+        "span_order": SPAN_ORDER_VERSION,
+        "replica_policy": REPLICA_POLICY_VERSION,
+        "replica_placement": replica_placement,
+        "ar_replicas": int(ar_replicas),
+        "seq_len": int(seq_len),
+    }
+    canonical = json.dumps(payload, sort_keys=True, default=str)
+    digest = hashlib.sha256(canonical.encode()).hexdigest()[:12]
+    return f"{assembly}:{digest}"
 
 
 def hf_config_from_modalities(
@@ -177,6 +242,8 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         split: str = "train",
         object_id_log: str | Path | None = None,
         stateful: bool = True,
+        ar_replicas: int = 1,
+        replica_placement: str = "decorrelated",
     ):
         super().__init__()
         self.config = config
@@ -193,6 +260,10 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             )
         # The MMU branch has one assembly and requires its precomputed index.
         self.match_index = match_index
+        if self.data_root == MMU_ROOT:
+            assembly, revisions = assembly_and_revisions(match_index)
+        else:
+            assembly, revisions = SYNTHETIC_ROOT, {}
         self.synthetic_image_only_fraction = synthetic_image_only_fraction
         self.synthetic_spectrum_only_fraction = synthetic_spectrum_only_fraction
         self.rank = rank
@@ -200,6 +271,35 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self.seed = seed
         self.split = split
         self.object_id_log = None if object_id_log is None else str(object_id_log)
+        if ar_replicas < 1:
+            raise ValueError(f"ar_replicas must be >= 1, got {ar_replicas}")
+        if replica_placement not in ("decorrelated", "adjacent"):
+            raise ValueError(
+                f"replica_placement must be 'decorrelated' or 'adjacent', "
+                f"got {replica_placement!r}"
+            )
+        if replica_placement == "decorrelated" and ar_replicas > micro_batch_size:
+            # ADR 0014 §7b puts each replica in its own packed row, so more
+            # replicas than rows can never be placed — fail here rather than
+            # deadlock the packing loop
+            raise ValueError(
+                f"ar_replicas={ar_replicas} exceeds micro_batch_size="
+                f"{micro_batch_size}; each replica needs its own packed row"
+            )
+        self.ar_replicas = ar_replicas
+        self.replica_placement = replica_placement
+        # ADR 0014 §5: the resume tag is the whole sequence-assembly policy,
+        # not just record order — built here so it covers ar_replicas AND the
+        # replica-separation policy (an A/B between the two placements must
+        # not be resumable across arms)
+        self._source_assembly_tag = sequence_fingerprint(
+            assembly=assembly,
+            revisions=revisions,
+            config=config,
+            seq_len=seq_len,
+            ar_replicas=ar_replicas,
+            replica_placement=replica_placement,
+        )
         self._stateful = stateful
         self._resume_state: dict | None = None  # applied on next __iter__
         self._ckpt_state: dict | None = None  # updated at every yield
@@ -213,7 +313,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
 
     @property
     def _source_assembly(self) -> str:
-        return SOURCE_ASSEMBLY if self.data_root == MMU_ROOT else SYNTHETIC_ROOT
+        return self._source_assembly_tag
 
     def state_dict(self) -> dict | None:
         """Stream position at the start of the current partial row.
@@ -329,10 +429,96 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             worker,
         )
 
+    # -- replay (ADR 0014 §7) -------------------------------------------------
+
+    def _replica_objects(self, record: dict) -> list:
+        """Build this record's sequences: replica 0 plus DISTINCT re-orderings.
+
+        ``ar_replicas > 1`` re-emits the same downloaded record under a
+        different ADR 0008 span order. The corpus is transfer-bound, so extra
+        factorisations of a record already in memory are close to free, and
+        every conditional among its spans gets trained rather than one sample
+        of them.
+
+        ADR 0014 §7a is what keeps that honest. Suffixing the object id
+        reseeds the shuffle but does NOT guarantee a different permutation,
+        and identical duplicates would raise MFU and ``E_AR`` while training
+        on nothing new. So: one-span records get no replica (there is no
+        other order), replicas are capped at the number of distinct
+        permutations, and a candidate whose order repeats one already emitted
+        is skipped. Candidates are rejected using :func:`span_order` alone —
+        no tokenisation is paid for an order we then discard.
+
+        Replica 0 keeps the original id (replicas get ``#n``), so
+        ``object_id_log`` stays one unique line per emitted sequence and the
+        no-replay audit still catches accidental duplication.
+        """
+        base_id = str(record.get("object_id", ""))
+        first = self.sequencer.build(record, epoch=self._epoch)
+        names = sorted(first.order)  # canonical input: a pure function of the SET
+        if self.ar_replicas == 1 or len(names) < 2:
+            return [first]
+
+        wanted = min(self.ar_replicas, math.factorial(len(names)))
+        objects, seen = [first], {first.order}
+        attempt = 1
+        while len(objects) < wanted and attempt <= _MAX_REPLICA_ATTEMPTS:
+            replica_id = f"{base_id}#{attempt}"
+            order = tuple(span_order(names, replica_id, self._epoch))
+            attempt += 1
+            if order in seen:
+                continue
+            seen.add(order)
+            record["object_id"] = replica_id
+            objects.append(
+                self.sequencer.build(
+                    record, epoch=self._epoch, modality_order=list(order)
+                )
+            )
+        record["object_id"] = base_id
+        return objects
+
+    def _place(self, objects: list, used: list[int]) -> list[int] | None:
+        """Assign each of a record's sequences to a packed row.
+
+        ADR 0014 §7b: under ``decorrelated`` (the default) a base object's
+        replicas land in DIFFERENT rows — document masking prevents
+        cross-attention but not gradient repetition within the batch.
+        ``adjacent`` keeps them in one row, which is the pre-§7b behaviour
+        and exists only so the B1 benchmark arm reproduces the measured
+        3.1x result on the same footing.
+
+        Emptiest row first (ties by index) keeps the rows balanced and makes
+        the assignment a pure function of ``used``, which resume rebuilds
+        exactly by replaying the batch from its saved start. Returns None
+        when no assignment fits, which is the signal to close the batch.
+        """
+        order = sorted(range(len(used)), key=lambda b: (used[b], b))
+        if self.replica_placement == "adjacent":
+            span = sum(len(obj) for obj in objects)
+            for row_index in order:
+                if used[row_index] + span <= self.seq_len:
+                    return [row_index] * len(objects)
+            return None
+        chosen: list[int] = []
+        for obj in objects:
+            for row_index in order:
+                if row_index in chosen:
+                    continue
+                if used[row_index] + len(obj) <= self.seq_len:
+                    chosen.append(row_index)
+                    break
+            else:
+                return None
+        return chosen
+
     # -- iteration ------------------------------------------------------------
 
     def __iter__(self):
         worker = torch.utils.data.get_worker_info()
+        # ADR 0014 §3: the byte probe must live where the fetches happen —
+        # this runs in each loader worker process, so patch there.
+        install_byte_probe(self.rank, worker.id if worker else 0)
         # Worker copies are always stateful: a StatefulDataLoader snapshots
         # them via state_dict() inside the worker process (under a plain
         # DataLoader the bookkeeping is dead weight but harmless). The
@@ -342,7 +528,6 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
 
         count = state["records"] if state else 0
         start_epoch = state["epoch"] if state else 0
-        stream_state = state.get("stream_state") if state else None
         self._epoch = start_epoch
         self._stream = None
 
@@ -361,16 +546,19 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 ) from error
 
         # prev_state = stream position BEFORE the record about to be drawn;
-        # row_start = position at the first record of the current partial row.
-        # On resume that position is the loaded state itself (the MMU dataset
-        # object does not exist until the record generator first runs).
+        # batch_start = position at the first record of the current OPEN
+        # micro-batch. On resume that position is the loaded state itself (the
+        # MMU dataset object does not exist until the record generator first
+        # runs). ADR 0014 §7b opens all micro_batch_size rows at once (a
+        # record's replicas must land in different rows), so the checkpoint
+        # unit moved from the partial row to the partial micro-batch —
+        # equally exact, since nothing in an open batch has been yielded.
         prev_state = (
             dict(state) if state else (self._snapshot(count) if stateful else None)
         )
-        row_start = prev_state
-        rows: list[list] = []
-        row: list = []
-        used = 0
+        batch_start = prev_state
+        rows: list[list] = [[] for _ in range(self.micro_batch_size)]
+        used = [0] * self.micro_batch_size
 
         net_retries = 0
         try:
@@ -434,32 +622,62 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 # live epoch feeds the modality-order parity (ADR 0005
                 # amendment); pure function of (object_id, epoch), so the
                 # resumed stream rebuilds identical sequences
-                obj = self.sequencer.build(record, epoch=self._epoch)
-                if len(obj) > self.seq_len:
-                    raise ValueError(
-                        f"object of length {len(obj)} exceeds seq_len {self.seq_len}"
-                    )
-                if used + len(obj) > self.seq_len:
-                    rows.append(row)
-                    row, used = [], 0
-                    row_start = prev_state  # the new row starts at this record
-                    if len(rows) == self.micro_batch_size:
-                        batch = self.collator([o for r in rows for o in r])
-                        expected_shape = (self.micro_batch_size, self.seq_len)
-                        if batch["input_ids"].shape != expected_shape:
-                            raise AssertionError(
-                                f"greedy repack mismatch: {batch['input_ids'].shape} != "
-                                f"{expected_shape}"
-                            )
-                        if stateful:
-                            self._ckpt_state = row_start
-                        if log is not None:
-                            log.writelines(f"{o.object_id}\n" for r in rows for o in r)
-                            log.flush()
-                        rows = []
-                        yield flatten_packed_batch(batch, self.config, self.seq_len)
-                row.append(obj)
-                used += len(obj)
+                #
+                # ar_replicas > 1 re-emits the SAME downloaded record under a
+                # different ADR 0008 span order. The corpus is transfer-bound
+                # (~94% of wall waits for bytes), so extra factorisations of a
+                # record already in memory are close to free, and every
+                # conditional among its spans gets trained rather than one
+                # sample of them. The span order is a pure function of
+                # (object_id, epoch), so suffixing the id IS the reseed — no
+                # extra RNG state to checkpoint. Replica 0 keeps the original
+                # id, so object_id_log stays one unique line per emitted
+                # sequence and the no-replay audit still catches accidental
+                # duplication.
+                objects = self._replica_objects(record)
+                for obj in objects:
+                    if len(obj) > self.seq_len:
+                        raise ValueError(
+                            f"object of length {len(obj)} exceeds seq_len {self.seq_len}"
+                        )
+
+                placement = self._place(objects, used)
+                if placement is None:
+                    # No assignment keeps this record's replicas in separate
+                    # rows with room to spare, so the micro-batch is done.
+                    # Nothing in it has been yielded, so the record we could
+                    # not place simply opens the next one — exactly-once holds
+                    # and the saved position is this record's.
+                    batch = self.collator.collate_rows(rows)
+                    expected_shape = (self.micro_batch_size, self.seq_len)
+                    if batch["input_ids"].shape != expected_shape:
+                        raise AssertionError(
+                            f"packing mismatch: "
+                            f"{batch['input_ids'].shape} != {expected_shape}"
+                        )
+                    # the saved position is the first UNTRAINED record: this
+                    # one, which could not be placed and so opens the next
+                    # micro-batch. Everything in the batch being yielded has
+                    # been consumed by the packer and is about to be trained.
+                    batch_start = prev_state
+                    if stateful:
+                        self._ckpt_state = batch_start
+                    if log is not None:
+                        log.writelines(f"{o.object_id}\n" for r in rows for o in r)
+                        log.flush()
+                    yield flatten_packed_batch(batch, self.config, self.seq_len)
+                    rows = [[] for _ in range(self.micro_batch_size)]
+                    used = [0] * self.micro_batch_size
+                    placement = self._place(objects, used)
+                    if placement is None:
+                        raise AssertionError(
+                            f"record {record.get('object_id')!r} cannot be placed "
+                            f"into an empty micro-batch of {self.micro_batch_size} "
+                            f"rows x {self.seq_len} tokens"
+                        )
+                for obj, row_index in zip(objects, placement):
+                    rows[row_index].append(obj)
+                    used[row_index] += len(obj)
                 count += 1
                 if stateful:
                     prev_state = self._snapshot(count)
@@ -543,6 +761,9 @@ def build_astropt3_dataloader(
         seed=seed,
         object_id_log=getattr(dataset_args, "object_id_log", None),
         stateful=num_workers == 0,
+        ar_replicas=getattr(dataset_args, "ar_replicas", 1) or 1,
+        replica_placement=getattr(dataset_args, "replica_placement", None)
+        or "decorrelated",
     )
     try:
         from torchdata.stateful_dataloader import StatefulDataLoader as loader_cls
@@ -567,7 +788,7 @@ def build_astropt3_dataloader(
     if resume_state_dir is not None:
         state_file = Path(resume_state_dir) / STATE_FILE_TEMPLATE.format(rank=dp_rank)
         if state_file.exists():
-            state = torch.load(state_file, weights_only=True)
+            state = torch.serialization.load(state_file, weights_only=True)
             if isinstance(state, dict) and state.get("format") == LOADER_STATE_FORMAT:
                 if state["num_workers"] != num_workers:
                     raise ValueError(
@@ -583,4 +804,6 @@ def build_astropt3_dataloader(
                         f"num_loading_workers == 0 (got {num_workers})"
                     )
                 dataset.load_state_dict(state)
-    return loader
+    # ADR 0014 §3: wraps only when $ASTROPT3_TELEMETRY_DIR is set, and
+    # proxies state_dict/num_workers, so resume is unaffected either way
+    return instrument(loader)

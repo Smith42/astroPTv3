@@ -449,7 +449,8 @@ Still open (do not block this ADR):
   single-source corpus, but the mechanism returns with the second survey.
 
 Out of scope, deferred to the corpus-expansion work (`mmu-corpus-expansion`
-branch, `docs/mmu_crossmatch_research.md`): Legacy South DR10 × DESI,
+branch; see [ADR 0013](0013-legacy-centred-mmu-expansion.md), and
+`docs/mmu_crossmatch_research.md` (deleted 2026-08-06; in git history)): Legacy South DR10 × DESI,
 HSC PDR3 × SDSS, Gaia DR3 × APOGEE, and JWST. Each needs its own gate — a
 band registry that is source-aware, an SDSS spectrum normalizer, epoch
 propagation for the stellar branch — and none of them is implemented here.

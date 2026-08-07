@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import torch
 
-from fake_mmu import fake_open_stream, fixed_records
+from fake_mmu import fixed_records
 from astropt3.data.nanotron_loader import PackedMicroBatches
 from astropt3.eval import linear_probe, val_loss
 
@@ -23,6 +23,7 @@ def test_val_loss_deterministic_and_finite(tiny_model):
     assert first == second
     assert math.isfinite(first["loss"]) and first["n_batches"] == 2
     assert set(first["modality_losses"]) >= {"images"}
+    assert set(first["family_losses"]) >= {"image"}
 
 
 def test_val_batches_are_held_out(tiny_config):
@@ -158,6 +159,8 @@ def _sweep_module():
 
     path = Path(__file__).resolve().parents[1] / "scripts" / "run_probe_sweep.py"
     spec = importlib.util.spec_from_file_location("run_probe_sweep", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

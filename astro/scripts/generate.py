@@ -38,7 +38,9 @@ shared with the per-checkpoint sweep (``run_probe_sweep.py`` — ADR 0003).
 """
 
 import argparse
+import importlib
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -49,14 +51,25 @@ def main():
     parser.add_argument("--checkpoint", required=True, help="HF checkpoint dir")
     parser.add_argument(
         "--mode",
-        choices=["unconditional", "image-to-spectra", "spectra-to-images", "reconstruct"],
+        choices=[
+            "unconditional",
+            "image-to-spectra",
+            "spectra-to-images",
+            "reconstruct",
+        ],
         default="unconditional",
     )
     parser.add_argument("--n", type=int, default=4, help="samples to draw")
-    parser.add_argument("--temperature", type=float, default=1.0, help="scales GMM sigma")
-    parser.add_argument("--argmax", action="store_true", help="mixture-mean point sample")
+    parser.add_argument(
+        "--temperature", type=float, default=1.0, help="scales GMM sigma"
+    )
+    parser.add_argument(
+        "--argmax", action="store_true", help="mixture-mean point sample"
+    )
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--data-root", default="synthetic", help="val shard dir or 'synthetic'")
+    parser.add_argument(
+        "--data-root", default="synthetic", help="val shard dir or 'synthetic'"
+    )
     parser.add_argument(
         "--record-index",
         default="0",
@@ -93,22 +106,29 @@ def main():
     # sampling modes want the full skeleton (image + spectra spans) where the
     # corpus has one; image-only corpora fall back to an image-only template
     prefer_spectrum = args.mode != "reconstruct"
-    record_indices = [int(i) for i in str(args.record_index).split(",")]
+    try:
+        record_indices = [int(i) for i in str(args.record_index).split(",")]
+    except ValueError:
+        parser.error("--record-index must be a comma-separated list of integers")
     sequencer = ObjectSequencer(model.config)
 
     # one wandb run for the whole invocation: a fresh generation run by
     # default, or the run named by --wandb-run-id (e.g. the training run)
+    wandb_module = None
     wandb_run = None
     if args.wandb:
-        import wandb
-
-        wandb_run = wandb.init(
+        wandb_module = cast(Any, importlib.import_module("wandb"))
+        wandb_run = wandb_module.init(
             project="astropt3",
             id=args.wandb_run_id,
             resume="allow" if args.wandb_run_id else None,
             name=None if args.wandb_run_id else f"generate-{args.mode}",
             job_type="generation",
-            config={k: v for k, v in vars(args).items() if k not in ("wandb", "wandb_run_id")},
+            config={
+                k: v
+                for k, v in vars(args).items()
+                if k not in ("wandb", "wandb_run_id")
+            },
         )
 
     # ground truth for teacher-forced/conditioned spans: unconditional samples
@@ -143,12 +163,24 @@ def main():
         for name, tokens in sampled.items():
             np.save(out_dir / f"{name}_{tag}.npy", tokens.cpu().float().numpy())
         pngs = render_sampled_tokens(
-            model, record, template, sampled, out_dir=out_dir, tag=tag, show_truth=show_truth
+            model,
+            record,
+            template,
+            sampled,
+            out_dir=out_dir,
+            tag=tag,
+            show_truth=show_truth,
         )
         for name, png in pngs.items():
             if wandb_run is not None:
-                wandb_run.log({f"generation/{name}_{tag}": wandb.Image(str(png))})
-            print(f"wrote {name}: {tuple(sampled[name].shape)} -> {out_dir}/{name}_{tag}.{{npy,png}}")
+                if wandb_module is None:
+                    raise RuntimeError("wandb module missing after initialization")
+                wandb_run.log(
+                    {f"generation/{name}_{tag}": wandb_module.Image(str(png))}
+                )
+            print(
+                f"wrote {name}: {tuple(sampled[name].shape)} -> {out_dir}/{name}_{tag}.{{npy,png}}"
+            )
 
     if wandb_run is not None:
         wandb_run.finish()

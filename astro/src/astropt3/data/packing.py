@@ -33,10 +33,13 @@ row-major (batch, time) order — the same order a boolean mask lookup
 ``tensor[mask]`` produces — so the model can align them without indices.
 """
 
+from __future__ import annotations
+
 import math
 import random
 import zlib
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 
@@ -44,7 +47,6 @@ from ..configuration_astropt3 import AstroPT3Config
 from ..tokenization import (
     BOS_ID,
     PAD_ID,
-    modality_token_ids,
     normalize_wavelength,
     patchify_image,
     patchify_spectrum,
@@ -58,16 +60,39 @@ from .transforms import per_patch_standardize
 # side of the central image crop applied before patchify, in pixels
 IMAGE_CROP = 96
 
+# ADR 0014 §5: bumped whenever :func:`span_order` changes, since a different
+# permutation rule changes the emitted sequences without changing record
+# order. Folded into the loader's resume fingerprint.
+SPAN_ORDER_VERSION = "adr0008_uniform_v1"
+
+
+def span_order(names, object_id: str, epoch: int = 0) -> list[str]:
+    """The ADR 0008 span order for one object: uniform, seeded, resume-exact.
+
+    Split out of :meth:`ObjectSequencer.build` so callers can ask what order
+    an ``(object_id, epoch)`` pair WOULD produce without paying for
+    tokenisation — ADR 0014 §7a needs exactly that to pick distinct replica
+    orders without patchifying a candidate it then discards.
+    """
+    order = list(names)
+    if len(order) > 1:
+        seed = zlib.crc32(str(object_id).encode()) ^ epoch
+        random.Random(seed).shuffle(order)
+    return order
+
 
 @dataclass
 class ObjectSeq:
     """One object's token sequence and its continuous payloads."""
 
-    input_ids: torch.LongTensor  # [L]
+    input_ids: torch.Tensor  # int64 [L]
     masks: dict  # name -> bool [L]
     values: dict  # name -> [n_m, input_size]
     positions: dict  # name -> long [n_m] or float [n_m, pos_input_size]
     object_id: str = ""
+    # the span order this sequence was serialized in; ADR 0014 §7a compares
+    # it across replicas to refuse identical duplicates
+    order: tuple[str, ...] = ()
 
     def __len__(self) -> int:
         return len(self.input_ids)
@@ -98,9 +123,9 @@ class ObjectSequencer:
             config, "spectra_norm_divisor", _SPECTRA_DIV_FACTOR
         )
 
-    def _images_tokens(self, record: dict):
-        mod = self.registry.get_config("images")
-        image = record["image"]
+    def _image_tokens(self, name: str, record: dict):
+        mod = self.registry.get_config(name)
+        image = record[mod.record_keys[0]]
         flux = torch.as_tensor(image["flux"], dtype=torch.float32)
         # central crop: 152x152 survey cutouts -> 96x96 (144 patch-8 tokens);
         # JWST cubes are already 96x96 and pass through untouched
@@ -110,9 +135,12 @@ class ObjectSequencer:
             left = (w - IMAGE_CROP) // 2
             flux = flux[..., top : top + IMAGE_CROP, left : left + IMAGE_CROP]
         # may arrive as a list or an array after a parquet round-trip
+        bands = [str(b) for b in image["band"]]
         flux = physical_normalize(
-            flux, [str(b) for b in image["band"]], divisor=self.image_norm_divisor
+            flux, bands, divisor=self.image_norm_divisor
         )
+        if mod.channel_tokenization == "per_band":
+            return self._per_band_tokens(mod, flux, bands)
         patches = patchify_image(flux, mod.patch_size)
         if self.standardize:
             patches = per_patch_standardize(patches)
@@ -121,14 +149,48 @@ class ObjectSequencer:
         positions = torch.arange(len(patches), dtype=torch.long)
         return patches, positions
 
-    def _spectra_tokens(self, record: dict):
-        mod = self.registry.get_config("spectra")
-        spec = record["spectrum"]
+    def _per_band_tokens(self, mod, flux: torch.Tensor, bands: list[str]):
+        """ADR 0014 §8: one token per patch PER band, band-major.
+
+        The same 27,648 target values as the fused path, factorised 3x finer:
+        144 x 192 becomes 432 x 64 for a Legacy crop. Cross-band structure is
+        then learned autoregressively instead of pre-fused, and the position
+        index runs across the whole concatenation, so a token's band is
+        implied by ``position // patches_per_band``.
+
+        Band order is FIXED by config (never shuffled) — one variable at a
+        time, per §8 — and a record missing a named band raises rather than
+        silently shifting every subsequent band's positions.
+        """
+        missing = [band for band in mod.band_order if band not in bands]
+        if missing:
+            raise ValueError(
+                f"modality {mod.name!r} needs bands {list(mod.band_order)} for "
+                f"per-band tokenisation; record has {bands} (missing {missing})"
+            )
+        per_band = []
+        for band in mod.band_order:
+            channel = flux[bands.index(band)].unsqueeze(0)
+            patches = patchify_image(channel, mod.patch_size)
+            if self.standardize:
+                patches = per_patch_standardize(patches)
+            if self.spiral:
+                patches = spiralise(patches)
+            per_band.append(patches)
+        patches = torch.cat(per_band, dim=0)
+        positions = torch.arange(len(patches), dtype=torch.long)
+        return patches, positions
+
+    def _spectrum_tokens(self, name: str, record: dict):
+        mod = self.registry.get_config(name)
+        spec = record[mod.record_keys[0]]
         flux = torch.as_tensor(spec["flux"], dtype=torch.float32)
         lam = torch.as_tensor(spec["lambda"], dtype=torch.float32)
         mask = torch.as_tensor(spec["mask"], dtype=torch.bool)
         flux = torch.where(mask, torch.zeros_like(flux), flux)
-        flux = spectral_normalize(flux, lam, divisor=self.spectra_norm_divisor)
+        flux = spectral_normalize(
+            flux, lam, divisor=self.spectra_norm_divisor, source=mod.source or ""
+        )
         patches, lam_mean = patchify_spectrum(flux, lam, mod.patch_size)
         if self.standardize:
             patches = per_patch_standardize(patches)
@@ -143,17 +205,23 @@ class ObjectSequencer:
         reliability flag (ADR 0008 reuses ADR 0005's cut; a missing flag on
         a Z-bearing record — synthetic pre-ZWARN fixtures — passes).
         """
-        if name == "photometry":
-            fluxes = [record.get(k) for k in ("flux_g", "flux_r", "flux_z")]
-            if any(f is None or not math.isfinite(float(f)) for f in fluxes):
+        mod = self.registry.get_config(name)
+        values = []
+        for key in mod.record_keys:
+            raw_value: Any = record.get(key)
+            if raw_value is None:
                 return None
-            return [float(f) for f in fluxes]
-        value = record.get(name)
-        if value is None or not math.isfinite(float(value)):
+            try:
+                values.append(float(raw_value))
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"modality {name!r} has a non-numeric value"
+                ) from error
+        if not all(math.isfinite(value) for value in values):
             return None
         if name == "Z" and bool(record.get("ZWARN") or False):
             return None
-        return [float(value)]
+        return values
 
     def _scalar_tokens(self, name: str, record: dict):
         value = self._scalar_value(name, record)
@@ -181,19 +249,24 @@ class ObjectSequencer:
         must pool over sequences that cannot contain the target, ADR 0008)."""
         parts = {}
         for name in self.registry.names():
-            if getattr(self.registry.get_config(name), "scalar", False):
+            mod = self.registry.get_config(name)
+            if mod.family == "scalar":
                 if include_scalars:
                     tokens = self._scalar_tokens(name, record)
                     if tokens is not None:
                         parts[name] = tokens
-            elif name == "images" and record.get("image") is not None:
-                parts[name] = self._images_tokens(record)
-            elif name == "spectra" and record.get("spectrum") is not None:
-                parts[name] = self._spectra_tokens(record)
+                continue
+            if record.get(mod.record_keys[0]) is None:
+                continue
+            if mod.family == "image":
+                parts[name] = self._image_tokens(name, record)
+            elif mod.family == "spectrum":
+                parts[name] = self._spectrum_tokens(name, record)
         if not parts:
-            raise ValueError(f"record {record.get('object_id')!r} has no known modality")
+            raise ValueError(
+                f"record {record.get('object_id')!r} has no known modality"
+            )
 
-        order = list(parts)
         if modality_order is not None:
             if sorted(modality_order) != sorted(parts):
                 raise ValueError(
@@ -201,18 +274,22 @@ class ObjectSequencer:
                     f"record's modalities {sorted(parts)}"
                 )
             order = list(modality_order)
-        elif len(parts) > 1:
+        else:
             # ADR 0008: uniform span shuffle, seeded per (object_id, epoch) —
             # deterministic and resume-exact; at N=2 this is exactly the
             # superseded ADR 0005 parity rule's 50/50 flip in distribution
-            seed = zlib.crc32(str(record.get("object_id", "")).encode()) ^ epoch
-            random.Random(seed).shuffle(order)
+            order = span_order(parts, record.get("object_id", ""), epoch)
 
         ids = [BOS_ID]
         spans = {}
         for name in order:
             values, _ = parts[name]
-            begin_id, placeholder_id, end_id = modality_token_ids(name)
+            token_ids = self.registry.get_config(name).token_ids
+            if (
+                token_ids is None
+            ):  # guarded by ModalityConfig; keeps type checkers honest
+                raise ValueError(f"modality {name!r} has no token ids")
+            begin_id, placeholder_id, end_id = token_ids
             ids.append(begin_id)
             spans[name] = (len(ids), len(ids) + len(values))
             ids.extend([placeholder_id] * len(values))
@@ -233,6 +310,7 @@ class ObjectSequencer:
             values=values,
             positions=positions,
             object_id=str(record.get("object_id", "")),
+            order=tuple(order),
         )
 
 
@@ -244,6 +322,7 @@ class PackedCollator:
         self.modality_names = config.modality_registry().names()
 
     def __call__(self, objects: list[ObjectSeq]) -> dict:
+        """Greedily pack a flat object list, then collate the rows it makes."""
         rows: list[list[ObjectSeq]] = [[]]
         used = 0
         for obj in objects:
@@ -258,6 +337,20 @@ class PackedCollator:
             used += len(obj)
         if not rows[-1]:
             rows.pop()
+        return self.collate_rows(rows)
+
+    def collate_rows(self, rows: list[list[ObjectSeq]]) -> dict:
+        """Collate rows the caller has already formed.
+
+        ADR 0014 §7b assigns replicas to rows itself (to keep a base object's
+        replicas out of the same packed row), so its rows are deliberately
+        NOT what greedy packing would produce — it hands them straight here
+        instead of round-tripping through the greedy path above.
+        """
+        for row in rows:
+            used = sum(len(obj) for obj in row)
+            if used > self.seq_len:
+                raise ValueError(f"row of length {used} exceeds seq_len {self.seq_len}")
 
         B, T = len(rows), self.seq_len
         input_ids = torch.full((B, T), PAD_ID, dtype=torch.long)
