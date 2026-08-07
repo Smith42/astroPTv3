@@ -89,6 +89,12 @@ def test_complete_source_graph_config_sequences_every_accepted_target(tmp_path):
         }
     )
     record.update({f"gwh_{field}": 0.5 for field in GWH_FRACTION_FIELDS})
+    # ADR 0014 A8 free scalars: the anchor's arrive from make_record, the HSC
+    # ones ride on the partner row we already fetched
+    record.update({f"hsc_{band}_cmodel_mag": 21.0 for band in "grizy"})
+    record["hsc_extendedness"] = 1.0
+    record.update({f"hsc_i_sdssshape_shape{m}": 0.3 for m in ("11", "22", "12")})
+    record.update({f"hsc_i_sdssshape_psf_shape{m}": 0.11 for m in ("11", "22", "12")})
 
     sequence = ObjectSequencer(config).build(record)
     expected = {
@@ -98,11 +104,19 @@ def test_complete_source_graph_config_sequences_every_accepted_target(tmp_path):
         "sdss_Z",
         "provabgs_LOG_MSTAR",
         *(f"gwh_{field}" for field in GWH_FRACTION_FIELDS),
+        # A8
+        "fiberflux",
+        "psfdepth",
+        "psf_fwhm",
+        "hsc_cmodel_mag",
+        "hsc_extendedness",
+        "hsc_shape",
+        "hsc_psf_shape",
     }
     assert expected <= sequence.masks.keys()
-    assert len(config.modalities) == 47
+    assert len(config.modalities) == 54  # 47 + A8's seven
     assert (
-        len({token for mod in config.modalities for token in mod["token_ids"]}) == 141
+        len({token for mod in config.modalities for token in mod["token_ids"]}) == 162
     )
     assert len(sequence) < 512
 
@@ -146,5 +160,5 @@ def test_nanotron_source_graph_config_has_the_same_token_map():
     assert [mod["token_ids"] for mod in nanotron["modalities"]] == [
         mod["token_ids"] for mod in config.modalities
     ]
-    assert nanotron["vocab_size"] == config.vocab_size == 145
+    assert nanotron["vocab_size"] == config.vocab_size == 166  # +21 for A8
     assert nanotron["loss_aggregation"] == "family"

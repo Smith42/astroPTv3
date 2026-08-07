@@ -85,6 +85,31 @@ SCALAR_TRANSFORMS = {
     "provabgs_AVG_SFR": (torch.asinh, torch.sinh),
     "ebv": (lambda x: x / _EBV_DIV, lambda x: x * _EBV_DIV),
     "photometry": (_photometry_fwd, _photometry_inv),
+    # ADR 0014 A8 — free scalars from rows already on the wire. Knees are
+    # published units, never corpus fits; the percentiles in A8 are shown only
+    # to evidence that each lands O(1).
+    #
+    # fiberflux is nMgy like photometry, so it takes the IDENTICAL band-registry
+    # knee — aperture flux and image pixels stay in one unit system.
+    "fiberflux": (_photometry_fwd, _photometry_inv),
+    # psfdepth is a PSF-flux inverse variance (p1-p99 ~49-916). log10 of 1+x
+    # tolerates the 0 that means "no coverage"; -2.5 centres the corpus O(1).
+    "psfdepth": (
+        lambda x: torch.log10(1.0 + x) - 2.5,
+        lambda x: torch.pow(10.0, x + 2.5) - 1.0,
+    ),
+    # seeing FWHM in arcsec, 1.05-2.24 measured; a 1.5" offset is enough
+    "psf_fwhm": (lambda x: x - 1.5, lambda x: x + 1.5),
+    # AB magnitudes, 17.3-25.5 measured against HSC's 22.5 DUD cut
+    "hsc_cmodel_mag": (lambda x: (x - 21.5) / 2.0, lambda x: x * 2.0 + 21.5),
+    # binary 0/1 star-galaxy flag; same map as the gwh fractions
+    "hsc_extendedness": (lambda x: 2.0 * x - 1.0, lambda x: (x + 1.0) / 2.0),
+    # second moments in px^2: heavy-tailed (p50 0.28, p99 24.7) and shape12 is
+    # SIGNED, so arcsinh — it keeps both tails and the sign, which log cannot.
+    "hsc_shape": (lambda x: torch.arcsinh(x / 0.3), lambda x: torch.sinh(x) * 0.3),
+    # PSF moments: same units, tighter knee. A8 records that this target is
+    # narrow enough (p1-p99 0.094-0.147) to be beaten by predicting a constant.
+    "hsc_psf_shape": (lambda x: torch.arcsinh(x / 0.1), lambda x: torch.sinh(x) * 0.1),
 }
 
 _GWH_FRACTION = (lambda x: 2.0 * x - 1.0, lambda x: (x + 1.0) / 2.0)

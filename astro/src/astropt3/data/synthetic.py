@@ -56,15 +56,22 @@ def make_record(
 
     ra = float(rng.uniform(0, 360))
     dec = float(rng.uniform(-1.6, 81.5))
+    # drawn in the historical order — healpix BEFORE seeing — because the rng
+    # draw order is frozen and hoisting these out of the dict must not swap it
+    healpix = int(rng.integers(0, 2**40))
+    seeing = float(rng.uniform(1.0, 2.0))
     record = {
         "object_id": f"synth_{index:08d}",
         "ra": ra,
         "dec": dec,
-        "_healpix_29": int(rng.integers(0, 2**40)),
+        "_healpix_29": healpix,
         "image": {
             "flux": flux.astype(np.float32),
+            # real MMU rows carry ONE fwhm PER BAND; the single historical draw
+            # is kept as the base and scaled by fixed factors so the frozen rng
+            # order still reproduces every earlier record exactly
+            "psf_fwhm": [float(seeing * f) for f in (1.10, 1.00, 0.78)],
             "band": IMAGE_BANDS,
-            "psf_fwhm": float(rng.uniform(1.0, 2.0)),
             "scale": 0.262,
         },
         "z_spec": z,
@@ -76,6 +83,23 @@ def make_record(
         "flux_r": float(flux[1].sum()),
         "flux_z": float(flux[2].sum()),
         "ebv": 0.02 + 0.08 * (dec + 1.6) / 83.1,
+        # ADR 0014 A8 free scalars, likewise derived. fiberflux is a CENTRAL
+        # APERTURE sum, so it correlates with but is not proportional to the
+        # total — the concentration signal A8 measured at 0.64-0.67 on real
+        # rows is what makes it worth a span. psfdepth is a smooth sky field.
+        "fiberflux_g": float(flux[0, 44:52, 44:52].sum()),
+        "fiberflux_r": float(flux[1, 44:52, 44:52].sum()),
+        "fiberflux_z": float(flux[2, 44:52, 44:52].sum()),
+        "psfdepth_g": 617.0 * (1.0 + 0.2 * (dec + 1.6) / 83.1),
+        "psfdepth_r": 178.0 * (1.0 + 0.2 * (dec + 1.6) / 83.1),
+        "psfdepth_z": 120.0 * (1.0 + 0.2 * (dec + 1.6) / 83.1),
+        # the synthetic stream feeds make_record straight to the sequencer and
+        # never runs streaming._attach_image, so the per-band seeing has to be
+        # flattened here too — same keys the real adapter writes
+        **{
+            f"psf_fwhm_{band}": float(seeing * factor)
+            for band, factor in zip(IMAGE_BANDS, (1.10, 1.00, 0.78))
+        },
     }
 
     u = rng.uniform()
@@ -102,6 +126,10 @@ def make_record(
             # cutout image and no image-catalog scalars
             del record["image"], record["z_spec"]
             del record["flux_g"], record["flux_r"], record["flux_z"], record["ebv"]
+            for band in ("g", "r", "z"):
+                del record[f"fiberflux_{band}"], record[f"psfdepth_{band}"]
+            for band in IMAGE_BANDS:
+                del record[f"psf_fwhm_{band}"]
 
     return record
 

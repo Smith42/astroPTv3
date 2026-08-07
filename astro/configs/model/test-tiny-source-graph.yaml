@@ -508,3 +508,94 @@ modalities:
   record_keys:
   - gwh_merging_merger_fraction
   loss_weight: 0.1
+- name: fiberflux
+  input_size: 3
+  patch_size: 1
+  pos_type: index
+  max_positions: 1
+  family: scalar
+  source: legacy
+  record_keys:
+  - fiberflux_g
+  - fiberflux_r
+  - fiberflux_z
+  loss_weight: 0.1
+  scalar: true
+- name: psfdepth
+  input_size: 3
+  patch_size: 1
+  pos_type: index
+  max_positions: 1
+  family: scalar
+  source: legacy
+  record_keys:
+  - psfdepth_g
+  - psfdepth_r
+  - psfdepth_z
+  loss_weight: 0.1
+  scalar: true
+- name: psf_fwhm
+  input_size: 3
+  patch_size: 1
+  pos_type: index
+  max_positions: 1
+  family: scalar
+  source: legacy
+  record_keys:
+  - psf_fwhm_des-g
+  - psf_fwhm_des-r
+  - psf_fwhm_des-z
+  loss_weight: 0.1
+  scalar: true
+- name: hsc_cmodel_mag
+  input_size: 5
+  patch_size: 1
+  pos_type: index
+  max_positions: 1
+  family: scalar
+  source: hsc
+  record_keys:
+  - hsc_g_cmodel_mag
+  - hsc_r_cmodel_mag
+  - hsc_i_cmodel_mag
+  - hsc_z_cmodel_mag
+  - hsc_y_cmodel_mag
+  loss_weight: 0.1
+  scalar: true
+- name: hsc_extendedness
+  input_size: 1
+  patch_size: 1
+  pos_type: index
+  max_positions: 1
+  family: scalar
+  source: hsc
+  record_keys:
+  - hsc_extendedness
+  loss_weight: 0.1
+  scalar: true
+- name: hsc_shape
+  input_size: 3
+  patch_size: 1
+  pos_type: index
+  max_positions: 1
+  family: scalar
+  source: hsc
+  record_keys:
+  - hsc_i_sdssshape_shape11
+  - hsc_i_sdssshape_shape22
+  - hsc_i_sdssshape_shape12
+  loss_weight: 0.1
+  scalar: true
+- name: hsc_psf_shape
+  input_size: 3
+  patch_size: 1
+  pos_type: index
+  max_positions: 1
+  family: scalar
+  source: hsc
+  record_keys:
+  - hsc_i_sdssshape_psf_shape11
+  - hsc_i_sdssshape_psf_shape22
+  - hsc_i_sdssshape_psf_shape12
+  loss_weight: 0.1
+  scalar: true

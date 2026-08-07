@@ -6,8 +6,12 @@
   adoption. **Amended 2026-08-06 (r3)** to add the HSC image projection,
   partner-row scalar attachments, byte-balanced dealing, the bounded wire
   experiment, cache-era decode work, compute-side follow-ons, and the
-  upstream publication ask. The implementation amendments at the foot of
-  this document record six corrections the code found. Supersedes and absorbs
+  upstream publication ask. **Amended 2026-08-07 (r4)** to ship the HSC
+  image-struct projection, record the Legacy projection as a measured null
+  result, and adopt seven free scalar modalities — telescope measurements
+  included by owner decision — from columns already on the wire (A7, A8).
+  The implementation amendments at the foot of
+  this document record eight corrections the code found. Supersedes and absorbs
   the labbook working document *"Useful bytes per megabyte downloaded"*
   (2026-08-06, amended same day for the five-spoke corpus), which was
   deleted when the first version of this ADR was extracted — recover it from
@@ -252,12 +256,18 @@ the benefit side, `E_science` measures the risk side.
 These are independent of the transfer levers and are deliberately deferred
 until §3 provides a trustworthy `MFU_busy` baseline:
 
-- **Fuse scalar heads (inferred):** the source graph has roughly 40 scalar
-  modalities, each with an `input_size: 1` encoder/decoder. Group them into a
-  batched GEMM or block-diagonal path to remove dozens of tiny launches. Keep
-  the state-dict layout when possible so this is a compute-graph rewrite; if
-  parameter names or shapes change, treat it as a new checkpoint family and
-  cover it in the sequence fingerprint.
+- **Fuse scalar heads — proposed, then DROPPED (owner decision,
+  2026-08-07).** The idea was to group the ~40 (now 50) tiny `input_size: 1`
+  encoder/decoder pairs into a batched GEMM or block-diagonal path, removing
+  dozens of small kernel launches. It does **not** share weights between
+  scalars — each field keeps its own parameters, exactly as an LLM's embedding
+  table holds a distinct row per token id in one tensor, or an MoE layer runs
+  separate experts through one grouped GEMM. It was dropped anyway: it renames
+  parameters (new checkpoint family), it touches the fork's tied-parameter
+  replication of modality modules, and the gain is unprofiled — we do not
+  actually know how much of the missing `MFU_busy` is launch overhead. The
+  scalars stay unmerged. Record `MFU_busy` before and after A8's seven new
+  modalities land; reopen only if that number moves.
 - **Standard hygiene:** run `torch.compile` on modality paths and a
   micro-batch shape sweep only after the instrumented baseline exists. Report
   `MFU_busy`, launch/compile effects, and scientific quality separately from
@@ -385,6 +395,11 @@ not silently required, and require unchanged record order and resume state.
 Do not generalise the result from the 2.2 GiB partition average to the corpus
 without measuring HSC composition.
 
+> **Measured and shipped 2026-08-07 (A7).** 47.0% of a 1,849 MB HSC partition
+> is `image.ivar`, never read. This section's field list was correct; `mask`
+> exists but compresses to 0.001%, so the saving is `ivar` alone. See A7 for
+> the column table and the Legacy null result.
+
 ## 6a. Partner-row scalar attachments (Phase 1)
 
 Rows already fetched for a matched partner can carry useful scalar targets at
@@ -403,6 +418,12 @@ packing effects, family loss share, and validation/scalar metrics. Accept a
 field only when the marginal bytes are consistent with the fetched-row
 assumption, ADR 0013's family weighting remains bounded, and
 `E_science` improves or holds at matched bytes and GPU-hours.
+
+> **First batch adopted 2026-08-07 (A8):** seven modalities over 12 columns,
+> from the Legacy anchor as well as the HSC partner, chosen against measured
+> distributions and with 45 candidate columns refused as redundant or as pure
+> measurement error. The `E_science` acceptance above still governs — A8 is
+> the shortlist and its evidence, not a quality verdict.
 
 ## 7. Replay validation (`ar_replicas`) — the headline lever
 
@@ -686,8 +707,9 @@ matched bytes and matched wall clock.
 
 | Rank | Lever | Confidence | Primary movement | Placement |
 | ---: | --- | --- | --- | --- |
-| 1 | HSC image-struct projection | Verifiable from published metadata | bytes / stall share | §6, ship now |
-| 2 | Partner-row scalar attachments | Verifiable from published metadata | `E_values` | §6a, Phase 1 |
+| 1 | HSC image-struct projection | **Measured: 47.0% of an HSC partition** | bytes / stall share | §6, **shipped 2026-08-07 (A7)** |
+| 1b | Legacy image-struct projection | **Measured: 0.0% — null result** | none | §6, **refused (A7)** |
+| 2 | Partner-row and anchor scalar attachments | **Measured, 7 modalities adopted** | `E_values` | §6a, **shipped 2026-08-07 (A8)**; `E_science` open |
 | 3 | Byte-balanced cell dealing | Inferred | stall share / tail steps | §10, after Phase 0 cell costs |
 | 4 | Segmented single-fetch download | Inferred | stall share / tail steps | §10a, only below line rate |
 | 5 | Vectorised decode | Inferred | post-cache stall share | §9, with cache prototype |
@@ -845,3 +867,163 @@ deflated by the measured replay factor, and both figures are reported.
 it is a *running job*, not a default. The benchmark arms are new configs
 (`bench-north-5spoke-{b0,b1,b1d,p0-perband}.yaml`) and the running config
 was left untouched.
+
+---
+
+## Implementation amendments (2026-08-07, r4)
+
+**A7 — image-struct projection measured on both catalogues: HSC is a large
+win, Legacy is a null result.** Column-chunk sizes from the parquet footers of
+one representative partition per catalogue, so these are exact on-disk
+compressed shares, not estimates:
+
+| Catalogue | Partition | Size | `image.flux` | `image.ivar` | `image.mask` | Other leaves |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| HSC | `Npix=70744` (2,394 rows) | 1,849 MB | 53.001% | **46.961%** | 0.001% | 0.003% |
+| Legacy North | `Npix=5072` (2,465 rows) | 645 MB | **99.973%** | — | — | 0.002% |
+
+Two findings, one of which corrects §6 and one of which corrects an earlier
+draft of this amendment:
+
+- **§6's field list was right; an earlier draft of A7 wrongly "corrected" it.**
+  The HSC struct is `band`, `flux`, `ivar`, `mask`, `psf_fwhm`, `scale`,
+  exactly as §6 said. The draft claim that there is no `mask` plane came from
+  a truncated schema print and is withdrawn. §6's hedge on `mask`
+  ("compressible, but not free") is also settled by measurement: it is 0.011 MB
+  in a 1,849 MB partition, i.e. free. **The entire saving is `ivar`**, and
+  projecting to `image.flux` + `image.band` halves every HSC fetch.
+- **Legacy image projection saves nothing and is not built.** The Legacy
+  `image` struct is `band`, `flux`, `psf_fwhm`, `scale` — no `ivar`, no
+  `mask`, no second plane of any kind. At
+  99.973% `flux`, the projectable remainder is 0.014 MB per 645 MB partition.
+  Writing the whitelist anyway would add a code path and a test to defend
+  0.0%, which is the kind of hygiene that is only hygiene when it is free.
+  Recorded here so the question is not reopened; if upstream ever adds an
+  `ivar` plane, the HSC whitelist is the pattern to copy.
+
+The **anchor's** `psf_fwhm` is now consumed as a scalar target (A8); it rides
+in free inside the unprojected Legacy `image` struct. HSC's own `psf_fwhm`
+stays off the wire, since projecting to leaves nothing reads is the whole
+point of the change.
+
+**A8 — free scalar attachments: 7 new modalities from 12 already-fetched
+columns, chosen against measured distributions.** §6a's premise holds and is
+now exercised on both the anchor and the HSC partner: the rows are already on
+the wire, so these fields raise `E_values` at a marginal byte cost of 0.0%
+(each is ~0.01 MB per partition against 645–1,849 MB of pixels). §6a asked for
+one field at a time under ADR 0013's field-predicate governance; what follows
+is the shortlist, the evidence for each cut, and the predicates.
+
+*Grouping.* Bands of the same physical quantity are one modality with
+`input_size = n_bands`, following the existing `photometry` precedent
+(`input_size: 3` over `flux_g/r/z`) rather than ADR 0013's
+one-field-one-modality rule, which exists to stop *unlike* quantities being
+lumped together (the `gwh_*` case in §2b). This turns 19 candidate columns
+into 7 heads and 21 tokens instead of 57.
+
+| Modality | Size | Source columns | Coverage | Transform |
+| --- | ---: | --- | ---: | --- |
+| `fiberflux` | 3 | `fiberflux_{g,r,z}` | every anchor | `arcsinh(f/0.01)` |
+| `psfdepth` | 3 | `psfdepth_{g,r,z}` | every anchor | `log10(1+x) − 2.5` |
+| `psf_fwhm` | 3 | `image.psf_fwhm` | every anchor | `x − 1.5` |
+| `hsc_cmodel_mag` | 5 | `{g,r,i,z,y}_cmodel_mag` | HSC | `(m − 21.5)/2` |
+| `hsc_extendedness` | 1 | `i_extendedness_value` | HSC | `2x − 1` |
+| `hsc_shape` | 3 | `i_sdssshape_shape{11,22,12}` | HSC | `arcsinh(x/0.3)` |
+| `hsc_psf_shape` | 3 | `i_sdssshape_psf_shape{11,22,12}` | HSC | `arcsinh(x/0.1)` |
+
+Every transform is fixed, invertible and carries no corpus-fitted constant,
+per the ADR 0007 discipline `scalar_registry.py` already enforces. The knees
+are pinned to published units, and the percentiles below are reported only to
+show each transform lands O(1) — they are not fitted to.
+
+*Evidence for what was kept* (n ≈ 2,400 objects per catalogue, one partition
+each):
+
+- `fiberflux` correlates only **0.64–0.67** with the `flux_{g,r,z}` we already
+  train on. Fibre-aperture flux against total flux is a light-concentration
+  measure, so this is genuinely new information rather than a rescaling. Same
+  units as `photometry` (nMgy), so it takes the identical band-registry knee.
+- `hsc_cmodel_mag` has signal-to-noise **89–254** (population spread over
+  median reported error) across the five bands. The 22.5-mag DUD cut means
+  nothing here is faint. Kept in all five bands.
+- `hsc_shape` second moments: about **80% of objects are resolved** in every
+  band (`shape11 > 1.5 × psf_shape11`). The distribution is heavy-tailed
+  (p50 0.28, p99 24.7 px²) and `shape12` is signed, so `arcsinh` on a 0.3 px²
+  knee is the transform that keeps both tails and the sign.
+
+*Evidence for what was refused*, all of it free on the wire and refused
+anyway, because a target that cannot be learned is an irreducible loss term
+and three wasted tokens:
+
+- **`{g,r,i,z,y}_cmodel_magerr` (5 columns).** Median 0.004–0.013 mag — this
+  *is* the noise, not a property of the object. Refused as a target but
+  **fetched and used as a quality predicate** (see below), which is the honest
+  use of an error column.
+- **`a_{g,r,i,z,y}` (5 columns).** Their pairwise correlation is exactly
+  **1.0000**: one dust map times a fixed per-band coefficient. `ebv` on the
+  anchor is that same map a third time. Five columns carrying one number.
+- **`{g,r,z,y}_extendedness_value` (4 columns).** The value is binary (only
+  0.0 and 1.0 occur; 85.5% are 1.0) and near-identical across bands. One band
+  is the whole field.
+- **Object shape moments in four of five bands (12 columns).** ~80% resolved
+  in *every* band, so these are twelve correlated views of one shape. `i` is
+  HSC's reference band.
+- **PSF shape moments in four of five bands (12 columns).** Same argument.
+
+*Telescope measurements are included by owner decision (2026-08-07).* An
+earlier draft refused `psfdepth`, `psf_fwhm` and the PSF shape moments on the
+grounds that they describe the observing conditions rather than the object,
+and are largely predictable from sky position — a model that learns them has
+learned the survey footprint. The counter-argument, which the owner took, is
+that they are exactly what a model needs in order to *separate* instrument
+from sky, they cost nothing on the wire, and refusing them presumes an answer
+we have not measured. Two honesty notes attach to the decision:
+
+- these are the fields most likely to inflate a headline scalar-family loss
+  improvement while teaching nothing about galaxies, so scalar-family loss
+  must be read per modality, which §3's instrument already does; and
+- `hsc_psf_shape` is a **very narrow** target (p1–p99 spans 0.094–0.147 px²
+  on `shape11`). A GMM head can score well on it by predicting a constant.
+  If it is ever cited as evidence of anything, it needs a
+  predict-the-marginal baseline first.
+
+*Predicates* (ADR 0013 governance; a field failing its predicate is omitted,
+not defaulted, and a group is all-or-nothing because `_scalar_value` returns
+`None` if any member key is missing):
+
+| Modality | Predicate |
+| --- | --- |
+| `fiberflux` | all three finite |
+| `psfdepth` | all three finite and `> 0` |
+| `psf_fwhm` | all three finite and `0 < x < 5` arcsec |
+| `hsc_cmodel_mag` | all five finite, `10 < m < 30`, **and** the band's `cmodel_magerr` finite and `< 0.1` mag |
+| `hsc_extendedness` | finite and in `{0, 1}` |
+| `hsc_shape` | all three finite |
+| `hsc_psf_shape` | all three finite |
+
+The magerr screen passes **99.8%** of rows in the measured partition, so it is
+a guard against pathological rows rather than a cut.
+
+*Costs, stated up front.* Sequence length grows by 9 tokens on every anchor
+(3 modalities × 3 tokens) and a further 12 on HSC-matched rows; against §2a's
+~255-token galaxies-only anchor that is ~3.5%, and it worsens the 28%
+delimiter overhead §2a already flags. Scalar heads go from 43 to 50. §2b's
+head-fusion idea was **considered and dropped** on 2026-08-07: it would rename
+parameters (new checkpoint family) and touch the fork's tied-parameter
+replication, for an unprofiled gain. The scalars stay unmerged; `MFU_busy` is
+recorded before and after these fields land, and fusion is reopened only if
+that number moves.
+
+*Model-family consequence.* Seven new modalities means 21 new token ids
+(`vocab_size` 145 → 166) and seven new head/encoder pairs. Checkpoints from
+before this change are a different model family and cannot be resumed onto —
+the §5 fingerprint covers the modality-config hash and rejects the stream
+state, and the parameter-shape change stops the weights loading, which is the
+correct outcome rather than a silent one. Record *order* is unchanged, so
+`SOURCE_ASSEMBLY` does **not** bump.
+
+*Caveat carried from §Caveats.* Every number above is one partition per
+catalogue, one patch of sky. The extinction degeneracy and the magnitude
+signal-to-noise are structural and will hold corpus-wide; the shape and
+resolved-fraction statistics are the least safe to generalise, and the HSC
+figures describe 0.7% of the corpus.

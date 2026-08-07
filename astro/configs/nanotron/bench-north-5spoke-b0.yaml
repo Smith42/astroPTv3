@@ -736,6 +736,125 @@ model:
       - 142
       - 143
       - 144
+    - name: fiberflux
+      input_size: 3
+      patch_size: 1
+      pos_type: index
+      max_positions: 1
+      family: scalar
+      source: legacy
+      record_keys:
+      - fiberflux_g
+      - fiberflux_r
+      - fiberflux_z
+      token_ids:
+      - 145
+      - 146
+      - 147
+      loss_weight: 0.1
+      scalar: true
+    - name: psfdepth
+      input_size: 3
+      patch_size: 1
+      pos_type: index
+      max_positions: 1
+      family: scalar
+      source: legacy
+      record_keys:
+      - psfdepth_g
+      - psfdepth_r
+      - psfdepth_z
+      token_ids:
+      - 148
+      - 149
+      - 150
+      loss_weight: 0.1
+      scalar: true
+    - name: psf_fwhm
+      input_size: 3
+      patch_size: 1
+      pos_type: index
+      max_positions: 1
+      family: scalar
+      source: legacy
+      record_keys:
+      - psf_fwhm_des-g
+      - psf_fwhm_des-r
+      - psf_fwhm_des-z
+      token_ids:
+      - 151
+      - 152
+      - 153
+      loss_weight: 0.1
+      scalar: true
+    - name: hsc_cmodel_mag
+      input_size: 5
+      patch_size: 1
+      pos_type: index
+      max_positions: 1
+      family: scalar
+      source: hsc
+      record_keys:
+      - hsc_g_cmodel_mag
+      - hsc_r_cmodel_mag
+      - hsc_i_cmodel_mag
+      - hsc_z_cmodel_mag
+      - hsc_y_cmodel_mag
+      token_ids:
+      - 154
+      - 155
+      - 156
+      loss_weight: 0.1
+      scalar: true
+    - name: hsc_extendedness
+      input_size: 1
+      patch_size: 1
+      pos_type: index
+      max_positions: 1
+      family: scalar
+      source: hsc
+      record_keys:
+      - hsc_extendedness
+      token_ids:
+      - 157
+      - 158
+      - 159
+      loss_weight: 0.1
+      scalar: true
+    - name: hsc_shape
+      input_size: 3
+      patch_size: 1
+      pos_type: index
+      max_positions: 1
+      family: scalar
+      source: hsc
+      record_keys:
+      - hsc_i_sdssshape_shape11
+      - hsc_i_sdssshape_shape22
+      - hsc_i_sdssshape_shape12
+      token_ids:
+      - 160
+      - 161
+      - 162
+      loss_weight: 0.1
+      scalar: true
+    - name: hsc_psf_shape
+      input_size: 3
+      patch_size: 1
+      pos_type: index
+      max_positions: 1
+      family: scalar
+      source: hsc
+      record_keys:
+      - hsc_i_sdssshape_psf_shape11
+      - hsc_i_sdssshape_psf_shape22
+      - hsc_i_sdssshape_psf_shape12
+      token_ids:
+      - 163
+      - 164
+      - 165
+      loss_weight: 0.1
+      scalar: true
     tokeniser: jetformer
     jetformer_flow_steps: 4
     jetformer_flow_hidden: 128
@@ -757,7 +876,7 @@ model:
     hidden_act: silu
     attention_bias: false
     initializer_range: 0.02
-    vocab_size: 145
+    vocab_size: 166
     pad_token_id: 0
     bos_token_id: 1
     eos_token_id: 1

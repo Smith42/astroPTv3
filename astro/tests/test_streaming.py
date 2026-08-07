@@ -137,6 +137,109 @@ def test_spectrum_leaf_projection_drops_ivar_and_decodes_identically(tmp_path):
         assert projected[key] == whole[key]
 
 
+def test_hsc_image_projection_drops_ivar_and_decodes_identically(tmp_path):
+    """ADR 0014 A7: ivar is 47.0% of an HSC partition and is read nowhere."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from astropt3.data.streaming import HSC_IMAGE_SHAPE
+
+    flux = np.arange(np.prod(HSC_IMAGE_SHAPE), dtype=np.float32).reshape(
+        HSC_IMAGE_SHAPE
+    )
+    table = pa.Table.from_pylist(
+        [
+            {
+                "object_id": "h1",
+                "ra": 1.0,
+                "dec": 2.0,
+                "_healpix_29": 0,
+                # every leaf the real HSC struct carries, so the projection is
+                # tested against the actual schema and not a simplified one
+                "image": {
+                    "flux": flux.tolist(),
+                    "band": ["hsc-g", "hsc-r", "hsc-i", "hsc-z", "hsc-y"],
+                    "ivar": np.ones_like(flux).tolist(),
+                    "mask": np.zeros_like(flux, dtype=np.int8).tolist(),
+                    "psf_fwhm": [0.8] * 5,
+                    "scale": [0.168] * 5,
+                },
+                **{f"{b}_cmodel_mag": 21.0 for b in "grizy"},
+                **{f"{b}_cmodel_magerr": 0.01 for b in "grizy"},
+                "i_extendedness_value": 1.0,
+                **{f"i_sdssshape_shape{m}": 0.3 for m in ("11", "22", "12")},
+                **{f"i_sdssshape_psf_shape{m}": 0.11 for m in ("11", "22", "12")},
+            }
+        ]
+    )
+    path = tmp_path / "hsc.parquet"
+    pq.write_table(table, path)
+    parquet = pq.ParquetFile(path)
+    whole = parquet.read_row_group(0).slice(0, 1).to_pylist()[0]
+    projected = (
+        parquet.read_row_group(0, columns=_SOURCE_COLUMNS["hsc"])
+        .slice(0, 1)
+        .to_pylist()[0]
+    )
+
+    assert "ivar" in whole["image"]  # the projection had something to drop
+    assert set(projected["image"]) == {"flux", "band"}
+
+    from_whole, from_projected = {}, {}
+    attach_source(from_whole, "hsc", whole)
+    attach_source(from_projected, "hsc", projected)
+    assert np.array_equal(
+        from_whole["hsc_image"]["flux"], from_projected["hsc_image"]["flux"]
+    )
+    assert (
+        from_whole["hsc_image"]["flux"].tobytes()
+        == from_projected["hsc_image"]["flux"].tobytes()
+    )
+    assert from_whole == {k: v for k, v in from_whole.items()}  # scalars survive too
+    assert from_projected["hsc_i_cmodel_mag"] == 21.0
+    assert from_projected["hsc_extendedness"] == 1.0
+    assert from_projected["hsc_i_sdssshape_shape11"] == pytest.approx(0.3)
+
+
+def test_hsc_magerr_screens_magnitudes_and_is_never_a_target():
+    """A8: magerr is the noise itself — a predicate, never a stored value."""
+    row = {
+        "image": None,
+        **{f"{b}_cmodel_mag": 21.0 for b in "grizy"},
+        **{f"{b}_cmodel_magerr": 0.01 for b in "grizy"},
+        "i_cmodel_magerr": 0.5,  # above _HSC_MAX_MAGERR -> that band is dropped
+        "g_cmodel_mag": 99.0,  # outside 10 < m < 30 -> dropped on range
+        "i_extendedness_value": 0.5,  # not in {0, 1} -> dropped
+    }
+    record: dict[str, Any] = {}
+    attach_source(record, "hsc", row)
+    assert "hsc_i_cmodel_mag" not in record  # screened by its error
+    assert "hsc_g_cmodel_mag" not in record  # screened by range
+    assert "hsc_extendedness" not in record  # not a valid flag value
+    assert record["hsc_r_cmodel_mag"] == 21.0  # the good bands survive
+    assert not any("magerr" in key for key in record)
+
+
+def test_anchor_free_scalars_attach_with_per_band_seeing():
+    """A8: psf_fwhm is keyed BY BAND NAME, not by position."""
+    record = decode_record(make_record(3, image_only_fraction=1.0))
+    for band in ("g", "r", "z"):
+        assert record[f"fiberflux_{band}"] > 0
+        assert record[f"psfdepth_{band}"] > 0
+    fwhm = [record[f"psf_fwhm_des-{b}"] for b in "grz"]
+    assert all(0 < value < 5 for value in fwhm)
+    assert fwhm[0] > fwhm[2]  # g-band seeing is worst, per the fixture's factors
+
+
+def test_psfdepth_of_zero_is_omitted_not_defaulted():
+    """ADR 0013 governance: a field failing its predicate leaves no span."""
+    row = make_record(4, image_only_fraction=1.0)
+    row["psfdepth_r"] = 0.0  # 0 means no coverage
+    record = decode_record(row)
+    assert "psfdepth_r" not in record
+    assert record["psfdepth_g"] > 0
+
+
 def test_spectrum_part_rejects_a_row_missing_a_projected_leaf():
     with pytest.raises(ValueError, match="missing"):
         _spectrum_part({"spectrum": {"flux": [1.0], "lambda": [4000.0]}})

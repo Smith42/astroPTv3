@@ -84,6 +84,38 @@ SPLIT_BUCKETS = 20
 MATCH_INDEX_ENV = "ASTROPT3_MATCH_INDEX"
 
 _IMAGE_SCALARS = ("ebv", "flux_g", "flux_r", "flux_z", "z_spec")
+# ADR 0014 A8: anchor columns already on the wire (0.01 MB against 645 MB of
+# pixels) that now carry loss-bearing scalar targets. fiberflux correlates
+# only 0.64-0.67 with flux_*, so it is aperture concentration, not a rescale;
+# psfdepth is an observing condition, included by owner decision with the
+# caveat recorded in A8.
+_ANCHOR_FREE_SCALARS = (
+    "fiberflux_g",
+    "fiberflux_r",
+    "fiberflux_z",
+    "psfdepth_g",
+    "psfdepth_r",
+    "psfdepth_z",
+)
+# ADR 0014 §6/A7: the HSC image struct is band/flux/ivar/mask/psf_fwhm/scale.
+# `ivar` alone is 47.0% of every HSC partition and is read nowhere, so project
+# down to the two leaves attach_source actually consumes (`mask` measures
+# 0.001% — free either way, but there is no reason to ask for it). HSC's own
+# psf_fwhm stays off the wire: only the ANCHOR's is a scalar target (A8).
+_HSC_IMAGE_LEAVES = ("flux", "band")
+_HSC_IMAGE_COLUMNS = [f"image.{leaf}" for leaf in _HSC_IMAGE_LEAVES]
+# A8: i-band only. Every one of these is duplicated across grizy at pairwise
+# correlations near 1 (extinction is exactly 1.0000), so one band IS the field.
+_HSC_SHAPE_MOMENTS = ("11", "22", "12")
+_HSC_FREE_SCALARS = (
+    *[f"{band}_cmodel_mag" for band in "grizy"],
+    # magerr is fetched as a QUALITY PREDICATE and never becomes a target:
+    # median 0.004-0.013 mag, i.e. it is the noise itself (A8).
+    *[f"{band}_cmodel_magerr" for band in "grizy"],
+    "i_extendedness_value",
+    *[f"i_sdssshape_shape{m}" for m in _HSC_SHAPE_MOMENTS],
+    *[f"i_sdssshape_psf_shape{m}" for m in _HSC_SHAPE_MOMENTS],
+)
 # ADR 0014 §6: project the spectrum struct's LEAVES, not the whole struct.
 # `ivar` is 41% of every spectrum row's bytes and is read nowhere outside
 # synthetic.py (ADR 0007 normalization does not use it); pyarrow accepts
@@ -113,7 +145,14 @@ _SOURCE_COLUMNS = {
         "Z_ERR",
         "ZWARNING",
     ],
-    "hsc": ["object_id", "ra", "dec", "_healpix_29", "image"],
+    "hsc": [
+        "object_id",
+        "ra",
+        "dec",
+        "_healpix_29",
+        *_HSC_IMAGE_COLUMNS,
+        *_HSC_FREE_SCALARS,
+    ],
     "provabgs": [
         "object_id",
         "ra",
@@ -127,7 +166,17 @@ _SOURCE_COLUMNS = {
         "TSNR2_BGS",
     ],
 }
-_ANCHOR_COLUMNS = ["object_id", "ra", "dec", "_healpix_29", "image", *_IMAGE_SCALARS]
+_ANCHOR_COLUMNS = [
+    "object_id",
+    "ra",
+    "dec",
+    "_healpix_29",
+    "image",
+    *_IMAGE_SCALARS,
+    *_ANCHOR_FREE_SCALARS,
+]
+# A7: Legacy's image struct is 99.97% `flux` — there is no second plane to
+# drop, so it is NOT projected. Measured null result, not an oversight.
 
 
 # -- decode: hub row -> record dict ------------------------------------------
@@ -196,14 +245,73 @@ def _attach_spectrum(record: dict, row) -> None:
         record["ZWARN"] = bool(row["ZWARN"])
 
 
+def _attach_free_scalars(record: dict, row, predicates: dict) -> None:
+    """ADR 0014 A8: promote already-fetched columns to scalar targets.
+
+    A field failing its predicate is OMITTED, never defaulted (ADR 0013
+    governance). Grouping is all-or-nothing downstream: ``_scalar_value``
+    returns ``None`` if any of a modality's ``record_keys`` is absent, so a
+    dropped band drops its whole span rather than poisoning it.
+    """
+    for key, predicate in predicates.items():
+        if _finite(row.get(key)) and predicate(_as_float(row[key])):
+            record[key] = _as_float(row[key])
+
+
+_ANCHOR_SCALAR_PREDICATES = {
+    **{key: lambda value: True for key in ("fiberflux_g", "fiberflux_r", "fiberflux_z")},
+    # ivar-like depth: log10(1+x) needs x >= 0, and 0 means no coverage
+    **{key: lambda value: value > 0 for key in ("psfdepth_g", "psfdepth_r", "psfdepth_z")},
+}
+
+
 def _attach_image(record: dict, row) -> None:
+    bands = [str(b) for b in row["image"]["band"]]
     record["image"] = {
         "flux": _image_flux(row["image"]["flux"]),
-        "band": [str(b) for b in row["image"]["band"]],
+        "band": bands,
     }
     for key in _IMAGE_SCALARS:
         if _finite(row.get(key)):
             record[key] = _as_float(row[key])
+    _attach_free_scalars(record, row, _ANCHOR_SCALAR_PREDICATES)
+    # A8: seeing, one value per band, keyed BY BAND NAME rather than by
+    # position — the record already carries the band list, and a positional
+    # assumption would silently mis-key if a survey ever reorders its cube.
+    fwhm = row["image"].get("psf_fwhm")
+    if fwhm is not None and len(fwhm) == len(bands):
+        for band, value in zip(bands, fwhm):
+            if _finite(value) and 0 < _as_float(value) < 5:
+                record[f"psf_fwhm_{band}"] = _as_float(value)
+
+
+_HSC_MAX_MAGERR = 0.1
+
+
+def _attach_hsc_free_scalars(record: dict, row) -> None:
+    """ADR 0014 A8: HSC scalars from the partner row we already fetched.
+
+    ``cmodel_magerr`` is fetched but NEVER stored as a target — its median is
+    0.004-0.013 mag, so it is the measurement noise, not a property of the
+    object. It earns its bytes as the magnitude's quality predicate instead.
+    """
+    for band in "grizy":
+        mag, err = f"{band}_cmodel_mag", f"{band}_cmodel_magerr"
+        if (
+            _finite(row.get(mag))
+            and 10 < _as_float(row[mag]) < 30
+            and _finite(row.get(err))
+            and _as_float(row[err]) < _HSC_MAX_MAGERR
+        ):
+            record[f"hsc_{mag}"] = _as_float(row[mag])
+    extendedness = row.get("i_extendedness_value")
+    if _finite(extendedness) and _as_float(extendedness) in (0.0, 1.0):
+        record["hsc_extendedness"] = _as_float(extendedness)
+    for moment in _HSC_SHAPE_MOMENTS:
+        for prefix in ("sdssshape_shape", "sdssshape_psf_shape"):
+            key = f"i_{prefix}{moment}"
+            if _finite(row.get(key)):
+                record[f"hsc_{key}"] = _as_float(row[key])
 
 
 def attach_source(record: dict, source: str, row) -> None:
@@ -237,6 +345,7 @@ def attach_source(record: dict, source: str, row) -> None:
                 "flux": _image_flux(image["flux"], HSC_IMAGE_SHAPE),
                 "band": [str(b) for b in image["band"]],
             }
+        _attach_hsc_free_scalars(record, row)
         return
     if source == "provabgs":
         if not (_finite(row.get("TSNR2_BGS")) and _as_float(row["TSNR2_BGS"]) > 0):
