@@ -1,15 +1,9 @@
 """Offline checks for the shared ADR 0013 match-index builder."""
 
-import importlib.util
+from mmu_stream import build_match_index as builder
 from pathlib import Path
 
 import pytest
-
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts/build_match_index.py"
-SPEC = importlib.util.spec_from_file_location("build_match_index", SCRIPT)
-assert SPEC and SPEC.loader
-builder = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(builder)
 
 
 def test_index_schema_and_row_building():
@@ -150,14 +144,7 @@ def test_wide_index_matches_the_edge_list(tmp_path):
     import pyarrow.parquet as pq
 
     from astropt3.data.match_index import load_source_graph
-
-    spec = importlib.util.spec_from_file_location(
-        "merge_match_index",
-        Path(__file__).resolve().parents[1] / "scripts/merge_match_index.py",
-    )
-    assert spec and spec.loader
-    merger = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(merger)
+    from mmu_stream import merge_match_index as merger
 
     common = {
         "index_schema_version": 2,

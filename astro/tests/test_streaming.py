@@ -570,7 +570,9 @@ def test_unmatched_buffer_budget_reorders_but_never_drops_records(monkeypatch):
     records within a cell, so the guarantee is on the multiset, not the order.
     """
     baseline = sorted(record["object_id"] for record in fake_open_stream(seed=0))
-    monkeypatch.setattr("astropt3.data.streaming.UNMATCHED_BUFFER_BYTES", 0)
+    # the constant lives in the package now: patch the module global the
+    # generator actually reads, not the astropt3 shim re-export
+    monkeypatch.setattr("mmu_stream.streaming.UNMATCHED_BUFFER_BYTES", 0)
     starved = [record["object_id"] for record in fake_open_stream(seed=0)]
     assert sorted(starved) == baseline
     assert len(starved) == len(set(starved)), "a record was emitted twice"

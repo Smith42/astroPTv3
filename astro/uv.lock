@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12' and sys_platform == 'win32'",
@@ -188,6 +188,7 @@ dependencies = [
     { name = "einops" },
     { name = "hats" },
     { name = "huggingface-hub" },
+    { name = "mmu-stream" },
     { name = "nested-pandas" },
     { name = "numpy" },
     { name = "pyarrow" },
@@ -199,7 +200,7 @@ dependencies = [
 
 [package.optional-dependencies]
 data = [
-    { name = "lsdb" },
+    { name = "mmu-stream", extra = ["index"] },
 ]
 dev = [
     { name = "matplotlib" },
@@ -219,9 +220,10 @@ requires-dist = [
     { name = "flash-attn", marker = "extra == 'train'" },
     { name = "hats" },
     { name = "huggingface-hub" },
-    { name = "lsdb", marker = "extra == 'data'" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.8" },
     { name = "matplotlib", marker = "extra == 'train'", specifier = ">=3.8" },
+    { name = "mmu-stream", git = "https://github.com/Smith42/mmu-stream?rev=132eacf2da1a57b82c657cd9ca5e67df9ac94477" },
+    { name = "mmu-stream", extras = ["index"], marker = "extra == 'data'", git = "https://github.com/Smith42/mmu-stream?rev=132eacf2da1a57b82c657cd9ca5e67df9ac94477" },
     { name = "nanotron", marker = "extra == 'train'", editable = "../nanotron" },
     { name = "nested-pandas" },
     { name = "numpy", specifier = ">=1.26" },
@@ -1497,6 +1499,25 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
+name = "mmu-stream"
+version = "0.0.0"
+source = { git = "https://github.com/Smith42/mmu-stream?rev=132eacf2da1a57b82c657cd9ca5e67df9ac94477#132eacf2da1a57b82c657cd9ca5e67df9ac94477" }
+dependencies = [
+    { name = "datasets" },
+    { name = "fsspec" },
+    { name = "hats" },
+    { name = "numpy" },
+    { name = "pyarrow" },
+]
+
+[package.optional-dependencies]
+index = [
+    { name = "dask" },
+    { name = "lsdb" },
+    { name = "pandas" },
 ]
 
 [[package]]

@@ -25,13 +25,17 @@ dependencies = [
     "pyarrow",
     "huggingface-hub",
     "nested-pandas",
+    # the hub-and-spoke stream core, extracted from this repo's data layer at
+    # b4559cbd — stream assembly, decode, split/shuffle, match-index readers
+    "mmu-stream",
 ]
 
 [project.optional-dependencies]
 # Offline prep (login node): building the ADR 0006 match-index is the only
 # thing that still needs lsdb.
 data = [
-    "lsdb",
+    # brings lsdb/dask/pandas for the offline spoke-index builders
+    "mmu-stream[index]",
 ]
 # Training machine only: the nanotron fork (../nanotron git submodule,
 # editable) plus flash-attn (needs a CUDA toolchain or a matching prebuilt
@@ -49,6 +53,7 @@ dev = [
 
 [tool.uv.sources]
 nanotron = { path = "../nanotron", editable = true }
+mmu-stream = { git = "https://github.com/Smith42/mmu-stream", rev = "132eacf2da1a57b82c657cd9ca5e67df9ac94477" }
 
 [build-system]
 requires = ["hatchling"]
