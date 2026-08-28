@@ -9,16 +9,19 @@ semantics.
 from itertools import islice
 from pathlib import Path
 
+import mmu_stream.streaming as streaming
 import pytest
 import torch
+from fake_mmu import fake_open_stream
 
-from astropt3.data import nanotron_loader, streaming
+from astropt3.data import nanotron_loader
 from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
+)
+from astropt3.data.nanotron_loader import (
     regroup_micro_batch as regroup,
 )
 from astropt3.tokenization import BOS_ID, modality_token_ids
-from fake_mmu import fake_open_stream
 
 MBS = 2
 SEQ_LEN = 896
@@ -100,7 +103,7 @@ def test_deterministic_across_instances(tiny_config):
 def test_mmu_stream_loops_epochs(tiny_config, monkeypatch):
     # the fake sources hold 24 records each: pulling many batches must cross
     # an epoch boundary without exhausting the endless stream
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
+    monkeypatch.setattr("mmu_stream.streaming.open_stream", fake_open_stream)
     stream = PackedMicroBatches(
         tiny_config, MBS, SEQ_LEN, data_root="mmu", match_index="present"
     )
@@ -114,11 +117,13 @@ def test_more_workers_than_partitions_raises_a_named_error(tiny_config, monkeypa
     # datasets only WARNS and stops the surplus workers, so an over-subscribed
     # run trains on a fraction of its loaders. The fake corpus has 3 train
     # cells, so 4 workers must fail loudly with the remedy in the message.
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
+    monkeypatch.setattr("mmu_stream.streaming.open_stream", fake_open_stream)
     stream = PackedMicroBatches(
         tiny_config, MBS, SEQ_LEN, data_root="mmu", match_index="present"
     )
-    loader = torch.utils.data.DataLoader(stream, batch_size=None, num_workers=4)
+    loader = torch.utils.data.DataLoader(
+        stream, batch_size=None, num_workers=4, multiprocessing_context="fork"
+    )
     with pytest.raises(ValueError, match="reduce num_loading_workers"):
         next(iter(loader))
 
@@ -191,7 +196,7 @@ def test_transient_error_rebuilds_and_reclaims(tiny_config, monkeypatch):
         collects["n"] += 1
         return real_collect(*a, **k)
 
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", flaky)
+    monkeypatch.setattr("mmu_stream.streaming.open_stream", flaky)
     monkeypatch.setattr(nanotron_loader.time, "sleep", lambda *_: None)
     monkeypatch.setattr(nanotron_loader.gc, "collect", spy_collect)
 

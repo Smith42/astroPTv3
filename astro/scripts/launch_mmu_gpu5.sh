@@ -9,7 +9,7 @@
 #   NPROC=1 bash astro/scripts/launch_mmu_gpu5.sh <run>   # single-GPU box
 set -euo pipefail
 
-RUN=${1:-astropt3-70m-jetformer-north-5spoke-replay4}
+RUN=${1:-astropt3-70m-jetformer-north-5spoke-replay2}
 
 REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$REPO_ROOT"

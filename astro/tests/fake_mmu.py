@@ -1,11 +1,11 @@
-"""An offline stand-in for :func:`astropt3.data.streaming.open_stream`.
+"""An offline stand-in for :func:`mmu_stream.streaming.open_stream`.
 
 Writes synthetic records to local parquet in the hub's nested schema, then
 drives the real crossmatch-only generator over them. Only the partition paths
 differ from production, so joins, ownership, node splitting, resume, and decode
 are exercised offline.
 
-Monkeypatch ``astropt3.data.streaming.open_stream`` with
+Monkeypatch ``mmu_stream.streaming.open_stream`` with
 :func:`fake_open_stream`; the loader imports it at call time.
 """
 
@@ -16,7 +16,7 @@ from typing import Optional
 import numpy as np
 from datasets import Array3D, Dataset, Features, Sequence, Value
 
-from astropt3.data.streaming import (
+from mmu_stream.streaming import (
     _spectrum_owners,
     owned_by_rank,
     crossmatch_dataset,

@@ -33,8 +33,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from mmu_stream.streaming import IMAGES_CATALOG, SOURCE_CATALOGS
+
 from ..tokenization import PAD_ID
-from .streaming import IMAGES_CATALOG, SOURCE_CATALOGS
 
 TELEMETRY_DIR_ENV = "ASTROPT3_TELEMETRY_DIR"
 

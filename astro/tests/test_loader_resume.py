@@ -23,16 +23,16 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from fake_mmu import fake_open_stream
 
 from astropt3.data.nanotron_loader import (
+    LOADER_STATE_FORMAT,
     STATE_FILE_TEMPLATE,
     STATE_SUBDIR,
-    LOADER_STATE_FORMAT,
     PackedMicroBatches,
     build_astropt3_dataloader,
     loader_state_dict,
 )
-from fake_mmu import fake_open_stream
 
 MBS = 2
 # two whole objects per row (objects are 180/147 tokens post-crop), so the
@@ -45,7 +45,8 @@ N_AFTER = 4  # micro-batches compared after resume
 @pytest.fixture(autouse=True)
 def stub_mmu(monkeypatch):
     """Every ``data_root="mmu"`` stream draws from the offline fake."""
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
+    fake_open_stream()  # stable parquet paths inherited by forked workers
+    monkeypatch.setattr("mmu_stream.streaming.open_stream", fake_open_stream)
 
 
 def flat_equal(a: dict, b: dict) -> bool:
@@ -158,6 +159,9 @@ def build_loader(tiny_config, root, num_workers, resume_state_dir=None):
         dp_size=1,
         num_workers=num_workers,
         resume_state_dir=resume_state_dir,
+        # The fake opener is an in-memory monkeypatch. macOS spawn workers
+        # re-import the real package; fork preserves the test seam.
+        multiprocessing_context="fork" if root == "mmu" and num_workers else None,
     )
 
 
@@ -244,7 +248,7 @@ def test_mmu_stream_survives_a_transient_network_error(monkeypatch, tiny_config,
     """A transient network failure mid-stream must not kill the loader: it
     rebuilds the stream from the last per-record snapshot and the micro-batch
     sequence is bit-identical to the unflaky reference."""
-    from astropt3.data import streaming
+    import mmu_stream.streaming as streaming
 
     class FlakyStream:
         """Delegates state_dict/load_state_dict; iteration dies after k records."""

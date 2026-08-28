@@ -91,7 +91,7 @@ Facts to know:
   it the stream raises:
 
   ```bash
-  uv run --extra data python scripts/build_match_index.py --out match_index.parquet
+  uv run --extra data python -m mmu_stream.build_match_index --out match_index.parquet
   ```
 
   The published index is

@@ -335,7 +335,7 @@ schema and three-place dataset-onboarding this ADR removes.
 - **Aggregate throughput at realistic worker counts** is unmeasured; the spike
   extrapolated from one worker on a network-bound stage. Measure before
   trusting any figure above ~40 workers.
-- ~~**Match-index build**~~ — **built** (`scripts/build_match_index.py`), schema
+- ~~**Match-index build**~~ — **built** (`mmu_stream.build_match_index`), schema
   `(image_partition, image_id, spectrum_partition, spectrum_id)` where the
   partition columns are HEALPix `(order, pixel)` cells, so the artifact
   survives MMU adding or dropping partitions. Partition-locality **confirmed**: every image partition in
@@ -376,7 +376,7 @@ changed once the code met the real API; the rest landed as written.
 **Superseded by the Performance revision:** the first implementation used
 lsdb's `CatalogStream` at train time and buffered whole partitions. Both are
 gone — train-time streaming is `pyarrow` + `hats` over row groups, and lsdb
-runs only in `scripts/build_match_index.py`. Notes 1-3 below still hold.
+runs only in `mmu_stream.build_match_index`. Notes 1-3 below still hold.
 
 1. **Weights apply per record, not per partition draw** (§2). Partitions hold
    wildly unequal row counts — measured on the real catalogs: ~5100 rows in a

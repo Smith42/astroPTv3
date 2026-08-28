@@ -1,7 +1,7 @@
 """Adapter: astro data pipeline -> nanotron ``astropt3_streaming`` micro-batches.
 
-Turns the record sources (:func:`~astropt3.data.streaming.open_stream` over
-the live MMU catalogs, or the synthetic stream) into an endless stream of
+Turns the record sources (:func:`mmu_stream.streaming.open_stream` over the
+live MMU catalogs, or the synthetic stream) into an endless stream of
 fixed-shape micro-batch dicts for the nanotron fork's ``AstroPT3ForTraining``:
 
 - ``input_ids``      long  [micro_batch_size, sequence_length]
@@ -65,10 +65,10 @@ from typing import Any, cast
 
 import httpx
 import torch
+from mmu_stream.streaming import assembly_and_revisions
 
 from ..configuration_astropt3 import AstroPT3Config
 from .band_registry import _DIV_FACTOR
-from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
 from .packing import (
     IMAGE_CROP,
     SPAN_ORDER_VERSION,
@@ -76,14 +76,12 @@ from .packing import (
     PackedCollator,
     span_order,
 )
-from .streaming import (
-    MMU_ROOT,
-    SYNTHETIC_ROOT,
-    assembly_and_revisions,
-)
-from .telemetry import install_byte_probe, instrument
+from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
 from .synthetic import make_record
+from .telemetry import install_byte_probe, instrument
 
+MMU_ROOT = "mmu"
+SYNTHETIC_ROOT = "synthetic"
 STATE_FILE_TEMPLATE = "dp_{rank}.pt"
 STATE_SUBDIR = "dataset_state"
 LOADER_STATE_FORMAT = "stateful_dataloader"
@@ -138,8 +136,8 @@ def sequence_fingerprint(
         "span_order": SPAN_ORDER_VERSION,
         "replica_policy": REPLICA_POLICY_VERSION,
         "replica_placement": replica_placement,
-        "ar_replicas": int(ar_replicas),
-        "seq_len": int(seq_len),
+        "ar_replicas": ar_replicas,
+        "seq_len": seq_len,
     }
     canonical = json.dumps(payload, sort_keys=True, default=str)
     digest = hashlib.sha256(canonical.encode()).hexdigest()[:12]
@@ -383,7 +381,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         """Repeat finite crossmatch-only epochs and restore their exact state."""
         import itertools
 
-        from .streaming import open_stream
+        from mmu_stream.streaming import open_stream
 
         for epoch in itertools.count(start_epoch):
             self._epoch = epoch  # seeds the ADR 0008 span shuffle
@@ -714,7 +712,8 @@ def build_astropt3_dataloader(
     num_workers: int = 0,
     seed: int = 0,
     resume_state_dir: str | Path | None = None,
-) -> torch.utils.data.DataLoader:
+    multiprocessing_context: str | None = None,
+) -> Any:
     """Entry point called by the fork's ``run_train.py`` (astropt3_streaming).
 
     ``dataset_args`` is nanotron's ``AstroPT3StreamingDatasetsArgs`` and
@@ -784,6 +783,7 @@ def build_astropt3_dataloader(
         batch_size=None,  # items are already whole micro-batches
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
+        multiprocessing_context=multiprocessing_context,
     )
     if resume_state_dir is not None:
         state_file = Path(resume_state_dir) / STATE_FILE_TEMPLATE.format(rank=dp_rank)

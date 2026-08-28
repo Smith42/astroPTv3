@@ -1,16 +1,17 @@
-# ADR 0014 §3 frozen benchmark, arm B0: replicas 1 — the reference MFU everything else is measured against
-#
-# Short repeated WINDOWS, not a training run. Pinned index and source
-# revisions, fixed dp=2 x 8 workers, fixed seed and starting state, so the
-# only difference between arms is the one variable named above. Report with
-# scripts/bench_report.py: bytes by source, p50/p95/p99, stall share,
-# decomposed MFU (never headline MFU — §11), E_values, E_AR, composition.
-#
-# Derived from astropt3-70m-jetformer-north-5spoke-replay2.yaml, which is a
-# RUNNING job and is deliberately left untouched.
+# Canonical five-spoke North run (ADR 0013 source graph: 2,182,875 anchors,
+# 5,488 cells). AR span-order replay x2, decorrelated placement (ADR 0014 §7):
+# the measured best arm — B1-D beat B0 on step time, MFU and slow-step count,
+# with E_values flat and exactly-once intact. Replicas land in different packed
+# rows so the MFU gain is honest. The arms this was chosen against (no-replay
+# baseline, adjacent replay2, prefetch, block-shuffle, x4) were deleted
+# 2026-08-06: configs in git history, results in ADR 0014.
+# First long run on the complete five-spoke ADR 0013 North source graph
+# (2,182,875 anchors, 5,488 cells, built 2026-08-06 04:47). dp=2 over both
+# A100s. 20000 steps; the pythia schedule plus checkpoint_interval 1000 means
+# it can be stopped anytime.
 general:
   project: astropt3
-  run: bench-north-5spoke-b0
+  run: astropt3-70m-jetformer-north-5spoke-replay2
   seed: 42
   step: null
   consumed_train_samples: null
@@ -906,9 +907,10 @@ data_stages:
     data:
       dataset:
         data_root: mmu
-        ar_replicas: 1
+        ar_replicas: 2
+        replica_placement: decorrelated
         match_index: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_index/north-v2-merged-5spoke
-        object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/bench-north-5spoke-b0/objects.log
+        object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-north-5spoke-replay2/objects.log
       seed: 42
       num_loading_workers: 8
 optimizer:
@@ -916,7 +918,7 @@ optimizer:
   clip_grad: 100.0
   learning_rate_scheduler:
     learning_rate: 0.001
-    lr_warmup_steps: 120
+    lr_warmup_steps: 200
     lr_warmup_style: linear
     lr_decay_style: cosine
     lr_decay_steps: null
@@ -935,18 +937,18 @@ optimizer:
   zero_stage: 1
 tokens:
   sequence_length: 4096
-  train_steps: 120
+  train_steps: 20000
   micro_batch_size: 16
   batch_accumulation_per_replica: 1
   val_check_interval: 20000
   limit_val_batches: 0
   limit_test_batches: 0
 checkpoints:
-  checkpoints_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/bench-north-5spoke-b0
-  resume_checkpoint_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/bench-north-5spoke-b0
-  checkpoint_interval: 120
+  checkpoints_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-north-5spoke-replay2
+  resume_checkpoint_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-north-5spoke-replay2
+  checkpoint_interval: 1000
   save_initial_state: false
-  save_final_state: false
+  save_final_state: true
   checkpoint_schedule: pythia
 tokenizer:
   tokenizer_name_or_path: null

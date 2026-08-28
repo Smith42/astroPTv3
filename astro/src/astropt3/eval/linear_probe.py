@@ -39,7 +39,7 @@ def _val_records(data_root, seed=0):
     else:
         # ADR 0006: the reserved val partitions, streamed live. Deterministic
         # given the seed, so every checkpoint is probed on the same records.
-        from ..data.streaming import open_stream
+        from mmu_stream.streaming import open_stream
 
         yield from open_stream(split="val", seed=seed)
 
@@ -159,8 +159,10 @@ def _read_probe_cache(path: Path):
             objects.append(
                 ObjectSeq(
                     input_ids=torch.from_numpy(arrays[f"o{i}_input_ids"].copy()),
+                    masks=sections["masks"],
+                    values=sections["values"],
+                    positions=sections["positions"],
                     object_id=item["object_id"],
-                    **sections,
                 )
             )
         return metadata["key"], objects, arrays["targets"].copy()
@@ -310,9 +312,9 @@ def probe_checkpoint(
     ``(objects, targets)`` pair from :func:`collect_probe_objects` — the
     probe set depends only on the data stream, not on checkpoint weights,
     so sweeps should collect once and reuse it for every step."""
-    import astropt3  # noqa: F401  -- registers the Auto classes
-
     from transformers import AutoModel
+
+    import astropt3  # noqa: F401  -- registers the Auto classes
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"

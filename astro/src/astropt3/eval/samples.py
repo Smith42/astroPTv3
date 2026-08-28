@@ -96,7 +96,7 @@ def load_template_record(
     # endless and deterministic, so the n-th record matching a predicate is
     # stable across checkpoints; the three sources interleave, so a
     # spectrum-only or paired record always arrives within a few draws.
-    from ..data.streaming import open_stream
+    from mmu_stream.streaming import open_stream
 
     if spectrum_only:
         want = lambda r: "spectrum" in r and "image" not in r  # noqa: E731

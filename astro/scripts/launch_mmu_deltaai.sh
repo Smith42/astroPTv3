@@ -12,7 +12,7 @@
 #   WORKERS=8 bash astro/scripts/launch_mmu_deltaai.sh      # override per-rank loaders
 set -euo pipefail
 
-RUN=${1:-astropt3-70m-jetformer-north-5spoke-replay4}
+RUN=${1:-astropt3-70m-jetformer-north-5spoke-replay2}
 WORKERS=${WORKERS:-12} # per-rank loading workers; DP=2 -> 24 total on 32 cores
 
 REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -27,7 +27,10 @@ source .venv-train/bin/activate
 
 # DP=2 needs both GPUs; DeltaAI sometimes exposes only 1 per Slurm step.
 NGPU=$(nvidia-smi -L | wc -l)
-[ "$NGPU" -ge 2 ] || { echo "need 2 GPUs for DP=2, see $NGPU"; exit 1; }
+[ "$NGPU" -ge 2 ] || {
+	echo "need 2 GPUs for DP=2, see $NGPU"
+	exit 1
+}
 
 CKROOT=/work/nvme/bfvh/msmith10/astroPTv3_checkpoints
 CK=$CKROOT/$RUN
@@ -37,8 +40,8 @@ mkdir -p "$CK"
 # writing a machine-local config so the canonical one stays the source of truth.
 CFG=$CK/$RUN.deltaai.yaml
 sed -e "s#/beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints#$CKROOT#g" \
-    -e "s#num_loading_workers: .*#num_loading_workers: $WORKERS#" \
-    "astro/configs/nanotron/$RUN.yaml" > "$CFG"
+	-e "s#num_loading_workers: .*#num_loading_workers: $WORKERS#" \
+	"astro/configs/nanotron/$RUN.yaml" >"$CFG"
 
 export CUDA_DEVICE_MAX_CONNECTIONS=1 # required by nanotron's comm overlap
 export WANDB_MODE=${WANDB_MODE:-online}

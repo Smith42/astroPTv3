@@ -55,7 +55,7 @@ Reads are `hats` (partition enumeration) + `pyarrow` (row groups); lsdb runs
 only offline, to build the match index:
 
 ```bash
-uv run --extra data python scripts/build_match_index.py --out match_index.parquet
+uv run --extra data python -m mmu_stream.build_match_index --out match_index.parquet
     # ~200 crossmatch partitions, ~1h; ids only (tens of MB, no pixels copied)
 uv run pytest tests/test_streaming.py    # cursor logic offline + one live check
 ```

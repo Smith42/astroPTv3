@@ -50,7 +50,7 @@ def test_probe_objects_carry_target(tiny_config):
 
 def test_probe_skips_records_without_pool_modality(tiny_config, monkeypatch):
     # spectrum-only rows carry Z but have no image tokens to pool
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", fixed_records)
+    monkeypatch.setattr("mmu_stream.streaming.open_stream", fixed_records)
 
     objects, targets = linear_probe.collect_probe_objects(
         tiny_config, "mmu", "Z", 6, pool_modality="images"
@@ -70,7 +70,7 @@ def test_probe_degrades_when_scan_budget_runs_out(tiny_config, monkeypatch):
     # the streams are endless (ADR 0006), so the scan is bounded rather than
     # exhausted: too few qualifying records inside the budget degrades to all
     # of them, deterministically, instead of streaming the hub forever
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", fixed_records)
+    monkeypatch.setattr("mmu_stream.streaming.open_stream", fixed_records)
 
     with pytest.warns(UserWarning, match=r"/2048"):
         objects, targets = linear_probe.collect_probe_objects(

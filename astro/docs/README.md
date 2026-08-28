@@ -59,7 +59,7 @@ Spectra unchanged. Additive; gated on `uv run pytest` + the
 
 The five-spoke North graph is built (2,182,875 anchors, 5,488 cells) and the
 canonical run config is
-[`../configs/nanotron/astropt3-70m-jetformer-north-5spoke-replay4.yaml`](../configs/nanotron/astropt3-70m-jetformer-north-5spoke-replay4.yaml);
+[`../configs/nanotron/astropt3-70m-jetformer-north-5spoke-replay2.yaml`](../configs/nanotron/astropt3-70m-jetformer-north-5spoke-replay2.yaml);
 build a new one with [`../scripts/build_remaining_spokes.sh`](../scripts/build_remaining_spokes.sh).
 The expansion plan, its test plan, the crossmatch research and the per-run
 handoff notes were deleted 2026-08-06 once ADRs 0011–0014 carried their

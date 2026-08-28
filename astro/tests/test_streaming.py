@@ -7,7 +7,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
-from astropt3.data.streaming import (
+from mmu_stream.streaming import (
     _SOURCE_COLUMNS,
     _SPECTRUM_LEAVES,
     _partition_owner,
@@ -142,7 +142,7 @@ def test_hsc_image_projection_drops_ivar_and_decodes_identically(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from astropt3.data.streaming import HSC_IMAGE_SHAPE
+    from mmu_stream.streaming import HSC_IMAGE_SHAPE
 
     flux = np.arange(np.prod(HSC_IMAGE_SHAPE), dtype=np.float32).reshape(
         HSC_IMAGE_SHAPE
@@ -590,7 +590,7 @@ def test_spectrum_only_rows_are_disjoint_between_train_and_val():
 
 
 def test_crossmatch_only_requires_an_index(monkeypatch):
-    from astropt3.data.streaming import MATCH_INDEX_ENV, open_stream
+    from mmu_stream.streaming import MATCH_INDEX_ENV, open_stream
 
     monkeypatch.delenv(MATCH_INDEX_ENV, raising=False)
     with pytest.raises(ValueError, match="requires match_index"):
@@ -603,7 +603,7 @@ def test_crossmatch_only_requires_an_index(monkeypatch):
 def test_match_index_resolution_prefers_the_explicit_argument(monkeypatch):
     """Training passes the index from the nanotron config; eval falls back to
     the env var so every eval entry point avoids a pass-through parameter."""
-    from astropt3.data.streaming import MATCH_INDEX_ENV, resolve_match_index
+    from mmu_stream.streaming import MATCH_INDEX_ENV, resolve_match_index
 
     monkeypatch.delenv(MATCH_INDEX_ENV, raising=False)
     assert resolve_match_index() is None
@@ -623,7 +623,7 @@ def test_match_index_round_trips(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from astropt3.data.streaming import load_match_index
+    from mmu_stream.streaming import load_match_index
 
     path = tmp_path / "index.parquet"
     pq.write_table(
@@ -653,9 +653,10 @@ def test_live_mmu_rows_decode_and_sequence():
 
     Deselect with ``-m 'not network'`` when the hub is down.
     """
+    from mmu_stream.streaming import open_stream, resolve_match_index
+
     from astropt3.config_io import load_model_config
     from astropt3.data.packing import ObjectSequencer
-    from astropt3.data.streaming import open_stream, resolve_match_index
 
     match_index = resolve_match_index()
     if match_index is None:

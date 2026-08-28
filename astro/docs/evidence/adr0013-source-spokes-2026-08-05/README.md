@@ -24,7 +24,7 @@ The byte gate instruments `HfFileSystemFile._fetch_range` and sums returned payl
 
 ## Reproduction
 
-The positional artifacts were built with `scripts/build_match_index.py --cell` using the cells shown in `evidence.json`; PROVABGS used `--join-kind lineage` through the pinned DESI schema-v2 index. Raw smoke artifacts remain under `tmp/adr0013-source-index-v2-smoke/` and are identified by SHA-256 in `evidence.json` rather than committed as corpus data.
+The positional artifacts were built with the match-index builder (now `python -m mmu_stream.build_match_index`) using the cells shown in `evidence.json`; PROVABGS used `--join-kind lineage` through the pinned DESI schema-v2 index. Raw smoke artifacts remain under `tmp/adr0013-source-index-v2-smoke/` and are identified by SHA-256 in `evidence.json` rather than committed as corpus data.
 
 CPU tests cover reciprocal/cardinality logic, schema/lineage validation, source projections, fetched-only unmatched policy, spatial split/ownership, stream state tags, transforms/inverses, all 47 modalities, token-map parity with the Nanotron check config, and a complete tiny-model family-loss forward pass.
 

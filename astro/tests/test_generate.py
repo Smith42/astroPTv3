@@ -227,7 +227,7 @@ def test_sequencer_rejects_spiral_override(jet_config):
 
 def test_load_template_record_picks_by_shape_from_the_stream(monkeypatch):
     """Templates are selected by modality shape out of the live val stream."""
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", fixed_records)
+    monkeypatch.setattr("mmu_stream.streaming.open_stream", fixed_records)
 
     assert "spectrum" in load_template_record("mmu", 1, prefer_spectrum=True)
     assert "image" in load_template_record("mmu", 1, prefer_spectrum=False)
@@ -235,7 +235,7 @@ def test_load_template_record_picks_by_shape_from_the_stream(monkeypatch):
 
 def test_spectrum_only_template_selects_imageless_records(monkeypatch):
     """spectrum_only is a hard requirement: there is no image to fall back to."""
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", fixed_records)
+    monkeypatch.setattr("mmu_stream.streaming.open_stream", fixed_records)
 
     record = load_template_record("mmu", 1, prefer_spectrum=True, spectrum_only=True)
     assert "image" not in record and "spectrum" in record
@@ -250,7 +250,7 @@ def test_template_selection_is_bounded(monkeypatch):
     def images_only(**_):
         return iter(make_record(i, image_only_fraction=1.0) for i in range(10_000))
 
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", images_only)
+    monkeypatch.setattr("mmu_stream.streaming.open_stream", images_only)
 
     with pytest.raises(ValueError, match="val draws"):
         load_template_record("mmu", 0, prefer_spectrum=True, spectrum_only=True)
