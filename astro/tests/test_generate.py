@@ -9,15 +9,13 @@ import torch
 
 from astropt3.config_io import load_model_config
 from astropt3.data.packing import ObjectSequencer
-from astropt3.data.synthetic import make_record
 from astropt3.eval.samples import (
-    load_template_record,
     render_sampled_tokens,
     sample_checkpoint,
     sample_template,
 )
 from astropt3.generation import generate, reconstruct, sample_gmm
-from fake_mmu import fixed_records
+from legacy_fixture import make_record
 
 CONFIG = (
     Path(__file__).resolve().parents[1]
@@ -38,15 +36,28 @@ def smoke_model(jet_config, tmp_path_factory):
     """A briefly-trained tiny jetformer model, save/load-roundtripped."""
     from transformers import AutoModel
 
-    from astropt3.train_smoke import configure_optimizer, make_batches
+    from astropt3.config_io import load_model_config as _load
     from astropt3.modeling_astropt3 import AstroPT3Model
+    from astropt3.data.packing import ObjectSequencer, PackedCollator
+    from legacy_fixture import record_stream
 
     torch.manual_seed(0)
     model = AstroPT3Model(jet_config)
     model.train()
-    opt = configure_optimizer(model, lr=1e-3)
-    for batch in make_batches(
-        jet_config, n_objects=10, objects_per_batch=2, seq_len=896
+    decay = [p for p in model.parameters() if p.requires_grad and p.dim() >= 2]
+    no_decay = [p for p in model.parameters() if p.requires_grad and p.dim() < 2]
+    opt = torch.optim.AdamW(
+        [
+            {"params": decay, "weight_decay": 0.1},
+            {"params": no_decay, "weight_decay": 0.0},
+        ],
+        lr=1e-3,
+        betas=(0.9, 0.95),
+    )
+    sequencer = ObjectSequencer(jet_config)
+    collator = PackedCollator(jet_config, seq_len=896)
+    for batch in (
+        collator([sequencer.build(r) for r in record_stream(2)]) for _ in range(5)
     ):
         out = model(**batch)
         opt.zero_grad(set_to_none=True)
@@ -223,37 +234,6 @@ def test_sequencer_rejects_spiral_override(jet_config):
     with pytest.raises(TypeError):
         cast(Any, ObjectSequencer)(jet_config, spiral=True)
     assert ObjectSequencer(jet_config).spiral is jet_config.spiral
-
-
-def test_load_template_record_picks_by_shape_from_the_stream(monkeypatch):
-    """Templates are selected by modality shape out of the live val stream."""
-    monkeypatch.setattr("mmu_stream.streaming.open_stream", fixed_records)
-
-    assert "spectrum" in load_template_record("mmu", 1, prefer_spectrum=True)
-    assert "image" in load_template_record("mmu", 1, prefer_spectrum=False)
-
-
-def test_spectrum_only_template_selects_imageless_records(monkeypatch):
-    """spectrum_only is a hard requirement: there is no image to fall back to."""
-    monkeypatch.setattr("mmu_stream.streaming.open_stream", fixed_records)
-
-    record = load_template_record("mmu", 1, prefer_spectrum=True, spectrum_only=True)
-    assert "image" not in record and "spectrum" in record
-    # deterministic across calls, so a sweep's panels stay on fixed templates
-    again = load_template_record("mmu", 1, prefer_spectrum=True, spectrum_only=True)
-    assert again["object_id"] == record["object_id"]
-
-
-def test_template_selection_is_bounded(monkeypatch):
-    """A shape the corpus never yields raises instead of streaming forever."""
-
-    def images_only(**_):
-        return iter(make_record(i, image_only_fraction=1.0) for i in range(10_000))
-
-    monkeypatch.setattr("mmu_stream.streaming.open_stream", images_only)
-
-    with pytest.raises(ValueError, match="val draws"):
-        load_template_record("mmu", 0, prefer_spectrum=True, spectrum_only=True)
 
 
 def test_sample_checkpoint_end_to_end(smoke_model, tmp_path):

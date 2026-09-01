@@ -1,7 +1,6 @@
-"""Deterministic synthetic records matching the verified MMU pilot schemas.
+"""Deterministic offline records matching the verified MMU schemas.
 
-Every test and CPU smoke run uses these — no network, no real data. The
-records mimic:
+Unit fixture for tests — NOT a training source (ADR 0015). The records mimic:
 
 - ``UniverseTBD/mmu_ssl_legacysurvey_north``: ``image.flux`` float32
   (3, 152, 152) in LegacySurvey nanomaggies (galaxy cores ~0.1 nMgy, sky
@@ -147,3 +146,37 @@ def record_stream(
             image_only_fraction=image_only_fraction,
             spectrum_only_fraction=spectrum_only_fraction,
         )
+
+
+def legacy_row(index: int) -> dict:
+    """One raw uncrossmatched LegacySurvey row, column-shaped like a
+    HATS/``InfiniteStream`` pandas row (nested ``image`` dict, one scalar
+    column per catalog field, derived keys absent).
+
+    ADR 0015 interim check: this is what
+    ``nanotron_loader.decode_legacy_row`` must decode back to the
+    ``make_record`` image-side contract.
+    """
+    record = make_record(index, image_only_fraction=1.0)
+    return {
+        "object_id": record["object_id"],
+        "ra": record["ra"],
+        "dec": record["dec"],
+        "_healpix_29": record["_healpix_29"],
+        "image": {
+            "band": list(record["image"]["band"]),
+            "flux": record["image"]["flux"].tolist(),
+            "psf_fwhm": record["image"]["psf_fwhm"],
+        },
+        "ebv": record["ebv"],
+        "flux_g": record["flux_g"],
+        "flux_r": record["flux_r"],
+        "flux_z": record["flux_z"],
+        "fiberflux_g": record["fiberflux_g"],
+        "fiberflux_r": record["fiberflux_r"],
+        "fiberflux_z": record["fiberflux_z"],
+        "psfdepth_g": record["psfdepth_g"],
+        "psfdepth_r": record["psfdepth_r"],
+        "psfdepth_z": record["psfdepth_z"],
+        "z_spec": record["z_spec"],
+    }

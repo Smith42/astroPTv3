@@ -28,8 +28,8 @@ if [[ "$NVIS" -lt 1 ]]; then
     exit 1
 fi
 
-export CUDA_DEVICE_MAX_CONNECTIONS=1   # required by nanotron's comm overlap
-export HF_DATASETS_OFFLINE=1           # data is local parquet
+export CUDA_DEVICE_MAX_CONNECTIONS=1 # required by nanotron's comm overlap
+# the corpus streams from the HF hub at train time (ADR 0015)
 export WANDB_MODE=${WANDB_MODE:-online}
 
 # python -m, not the torchrun entry point: torch lives in the module's

@@ -7,23 +7,20 @@ Covers the jetformer plan's J3 gates (astro/docs/jetformer_plan.md):
 2. TP=2: flow + GMM-head gradients bit-identical across ranks, with the
    noise curriculum ACTIVE (drawn under the tp_synced random state);
 3. 50-step CUDA smoke — the likelihood loss (NLL - logdet, may be negative)
-   decreases; the final checkpoint converts to HF and reproduces the loss;
-4. kill/resume with a jetformer config reproduces the exact object stream
-   (the loss path is orthogonal to stream state — cheap regression guard;
-   no per-step loss overlay: RNG states are not restored on resume, so the
-   resumed run draws fresh curriculum noise, and the tiny-run likelihood
-   loss is tens of nats noisy around its zero crossing).
+   decreases; the final checkpoint converts to HF and reproduces the loss.
+
+Kill/resume with exact object-stream reproduction is retired with the old
+dataset-checkpoint state (ADR 0015): an LSDB stream restarts fresh on every
+resume, so there is no stream position to verify a replay-free continuation
+against.
 
 Run (reserved GPU node, [train] env):
     pytest -m gpu tests/test_jetformer_gpu.py -v
 """
 
-import math
 import os
-import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -33,12 +30,13 @@ import yaml
 from test_nanotron_gpu import (
     REL_TOL,
     build_nt_model,
+    losses_from,
     make_nt,
     micro_batch,
     regroup,
+    run_train,
     tiny_nt_config,
 )
-from test_phase4_gpu import losses_from, run_train
 
 pytestmark = pytest.mark.gpu
 
@@ -192,105 +190,3 @@ def test_50step_synthetic_run_and_checkpoint_conversion(nt, tmp_path_factory):
         nt_loss = nt_model(**flat)["loss"].item()
         hf_loss = hf_model(**regroup(flat, names)).loss.item()
     assert hf_loss == pytest.approx(nt_loss, rel=REL_TOL), (nt_loss, hf_loss)
-
-
-def _jet_run_config(base_dir: Path, log_name: str, train_steps: int, interval: int) -> dict:
-    config = yaml.safe_load(JET_YAML.read_text())
-    config["tokens"]["train_steps"] = train_steps
-    config["checkpoints"].update(
-        {
-            "checkpoints_path": str(base_dir / "checkpoints"),
-            "checkpoint_interval": interval,
-            "save_final_state": False,
-        }
-    )
-    config["optimizer"]["learning_rate_scheduler"]["lr_decay_steps"] = train_steps - 10
-    config["data_stages"][0]["data"]["dataset"]["object_id_log"] = str(base_dir / log_name)
-    return config
-
-
-def test_kill_resume_reproduces_object_stream(tmp_path_factory):
-    """Kill after checkpoint 60 (the only interval multiple < 100), resume to 100."""
-    workdir = tmp_path_factory.mktemp("jet_kill_resume")
-
-    # reference: uninterrupted run, for the stream-continuation ledger
-    ref_dir = workdir / "ref"
-    ref_dir.mkdir()
-    run_train(_jet_run_config(ref_dir, "objects_a.log", 100, interval=1000), ref_dir, "ref-100")
-
-    # interrupted: checkpoint at 60 (the 2nd multiple, 120, exceeds the step
-    # budget so latest.txt cannot advance past 60 before the kill), SIGKILL later
-    kill_dir = workdir / "killed"
-    kill_dir.mkdir()
-    config_b = _jet_run_config(kill_dir, "objects_b1.log", 100, interval=60)
-    config_path = kill_dir / "killed.yaml"
-    config_path.write_text(yaml.safe_dump(config_b))
-    out_file = open(kill_dir / "stdout.log", "w")
-    proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "torch.distributed.run",
-            "--nproc_per_node=1",
-            "--rdzv-backend=c10d",
-            "--rdzv-endpoint=localhost:0",
-            str(NANOTRON_DIR / "run_train.py"),
-            "--config-file",
-            str(config_path),
-        ],
-        cwd=REPO_ROOT,
-        env={**os.environ, "CUDA_DEVICE_MAX_CONNECTIONS": "1"},
-        stdout=out_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    latest = kill_dir / "checkpoints" / "latest.txt"
-    deadline = time.time() + 3600
-    try:
-        while time.time() < deadline:
-            done_steps = len(losses_from((kill_dir / "stdout.log").read_text()))
-            if latest.exists() and latest.read_text().strip() == "60" and done_steps >= 68:
-                break
-            if proc.poll() is not None:
-                assert proc.returncode == 0 and latest.exists() and latest.read_text().strip() == "60", (
-                    f"run died before checkpoint 60: {(kill_dir / 'stdout.log').read_text()[-4000:]}"
-                )
-                break
-            time.sleep(0.5)
-        else:
-            pytest.fail("timed out waiting for checkpoint 60")
-    finally:
-        if proc.poll() is None:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=60)
-        out_file.close()
-
-    assert (kill_dir / "checkpoints" / "60" / "dataset_state" / "dp_0.pt").exists()
-
-    # resume from 60 and finish
-    config_c = _jet_run_config(kill_dir, "objects_b2.log", 100, interval=1000)
-    config_c["checkpoints"]["resume_checkpoint_path"] = str(kill_dir / "checkpoints")
-    stdout_c = run_train(config_c, kill_dir, "resumed")
-    losses_c = losses_from(stdout_c)
-    assert len(losses_c) == 40, f"expected steps 61..100, got {len(losses_c)} loss lines"
-
-    # exact object-stream continuation: the resumed log is exactly the
-    # uninterrupted log's tail, with no replay and no gap
-    lines_a = (ref_dir / "objects_a.log.dp0").read_text().splitlines()
-    lines_b2 = (kill_dir / "objects_b2.log.dp0").read_text().splitlines()
-    assert 0 < len(lines_b2) < len(lines_a)
-    assert lines_a[-len(lines_b2) :] == lines_b2, "resumed stream != uninterrupted continuation"
-    assert not set(lines_a[: len(lines_a) - len(lines_b2)]) & set(lines_b2), "resume replayed objects"
-
-    # no per-step loss overlay: RNG states are not restored on resume (fresh
-    # curriculum noise) and the tiny-run likelihood loss swings tens of nats
-    # step-to-step around its zero crossing, so per-step comparison carries no
-    # signal. The stream check above is the exact gate; here only assert the
-    # resumed trajectory is finite and coarsely trained (well below the
-    # early-run loss scale).
-    losses_b1 = losses_from((kill_dir / "stdout.log").read_text())
-    assert all(math.isfinite(loss) for loss in losses_c)
-    early = sum(losses_b1[:10]) / 10
-    late = sum(losses_c) / len(losses_c)
-    assert late < early - 10.0, f"resumed losses not trained: early {early:.1f} vs resumed {late:.1f}"
-    print(f"jetformer kill/resume: stream exact; resumed mean loss {late:.1f} (early {early:.1f})")

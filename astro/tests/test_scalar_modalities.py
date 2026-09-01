@@ -5,7 +5,7 @@ import torch
 
 from astropt3 import AstroPT3Config
 from astropt3.data.scalar_registry import scalar_inverse, scalar_normalize
-from astropt3.data.synthetic import make_record
+from legacy_fixture import make_record
 from astropt3.modalities import gmm_nll
 
 
@@ -167,11 +167,25 @@ def test_unconditional_generation_covers_scalars(tiny_config):
 
 
 def test_scalar_head_metrics(tiny_model):
-    from astropt3.eval.scalar_head import collect_scalar_objects, scalar_head_metrics
+    """Model-side: given objects whose Z span is pinned last, score the head."""
+    from astropt3.data.packing import ObjectSequencer
+    from astropt3.eval.scalar_head import scalar_head_metrics
+    from legacy_fixture import record_stream
 
-    objects, targets = collect_scalar_objects(
-        tiny_model.config, "synthetic", "Z", n_objects=16
-    )
+    sequencer = ObjectSequencer(tiny_model.config)
+    objects, targets = [], []
+    for record in record_stream(64):
+        if record.get("Z") is None or "spectrum" not in record:
+            continue
+        built = sequencer.build(record)
+        others = sorted(m for m in built.masks if m != "Z")
+        if not others:
+            continue
+        obj = sequencer.build(record, modality_order=others + ["Z"])
+        objects.append(obj)
+        targets.append(float(obj.values["Z"][0, 0]))
+        if len(objects) >= 16:
+            break
     assert len(objects) == 16
     # the target span is pinned last so every observation conditions it
     for obj in objects:

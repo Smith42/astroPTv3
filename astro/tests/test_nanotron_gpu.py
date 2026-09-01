@@ -46,6 +46,37 @@ SEQ_LEN = 896
 # bf16 forward parity: different-but-equivalent RoPE position conventions and
 # flash-attn vs sdpa kernels bound the achievable agreement
 REL_TOL = 3e-2
+LOSS_RE = re.compile(r"lm_loss: ([0-9.eE+-]+)")
+
+
+def run_train(config: dict, workdir: Path, name: str, timeout: int = 5400) -> str:
+    """torchrun a nanotron config to completion; shared with test_jetformer_gpu.py."""
+    config_path = workdir / f"{name}.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--nproc_per_node=1",
+            "--rdzv-backend=c10d",
+            "--rdzv-endpoint=localhost:0",
+            str(NANOTRON_DIR / "run_train.py"),
+            "--config-file",
+            str(config_path),
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "CUDA_DEVICE_MAX_CONNECTIONS": "1"},
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout[-4000:]}\nstderr:\n{result.stderr[-4000:]}"
+    return result.stdout
+
+
+def losses_from(stdout: str) -> list[float]:
+    return [float(m) for m in LOSS_RE.findall(stdout)]
 
 
 def _load_yaml(path: Path) -> dict:

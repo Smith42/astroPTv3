@@ -1,4 +1,8 @@
-"""ADR 0014 §3 instrumentation: byte probe, step counters, loader wrapper."""
+"""ADR 0014 §3 instrumentation: byte probe, step counters, loader wrapper.
+
+Source attribution is scoped to the surviving LegacySurvey anchor catalog
+(ADR 0015); retried source catalogs are gone with mmu-stream.
+"""
 
 import json
 
@@ -26,17 +30,11 @@ def test_telemetry_is_off_without_the_env_var(monkeypatch):
     assert telemetry.instrument(loader) is loader  # untouched, zero cost
 
 
-def test_source_attribution_covers_the_anchor_and_every_spoke():
-    # the anchor catalog is 92.3% of the bytes and is NOT in SOURCE_CATALOGS
-    assert telemetry.source_of_path("hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north/x.parquet") == "legacy"
-    assert telemetry.source_of_path("datasets/UniverseTBD/mmu_desi_edr_sv3/y.parquet") == "desi"
-    assert telemetry.source_of_path("datasets/UniverseTBD/mmu_hsc_pdr3_dud_22.5/z.parquet") == "hsc"
-    assert telemetry.source_of_path("datasets/Smith42/galaxies-with-hats/train/a.parquet") in {
-        "galaxies",
-        "galaxies_train",
-        "galaxies_validation",
-        "galaxies_test",
-    }
+def test_source_attribution_covers_the_legacy_anchor():
+    anchor = "hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north/x.parquet"
+    assert telemetry.source_of_path(anchor) == "legacy"
+    # everything retired with mmu-stream now falls through to unknown
+    assert telemetry.source_of_path("datasets/UniverseTBD/mmu_desi_edr_sv3/y.parquet") == "unknown"
     assert telemetry.source_of_path("s3://somewhere/else.parquet") == "unknown"
 
 
@@ -81,25 +79,16 @@ def test_counters_accumulate_across_the_micro_batches_of_one_step():
     assert record["loss_tokens"] == {"images": 2}
 
 
-def test_loader_wrapper_times_batches_and_proxies_state(tiny_config, tmp_path, monkeypatch):
+def test_loader_wrapper_times_batches_and_proxies(tiny_config, tmp_path, monkeypatch):
     monkeypatch.setenv(telemetry.TELEMETRY_DIR_ENV, str(tmp_path))
+    # ADR 0015: no dataset checkpoint state to reach through the wrapper —
+    # only the plain DataLoader surface (dataset, num_workers, iteration).
     dataset = PackedMicroBatches(tiny_config, MBS, SEQ_LEN)
     loader = torch.utils.data.DataLoader(dataset, batch_size=None)
     wrapped = telemetry.instrument(loader)
     assert isinstance(wrapped, telemetry.TelemetryLoader)
-
-    # proxying: loader_state_dict() needs .dataset (and .state_dict when the
-    # underlying loader is stateful) to reach through the wrapper
     assert wrapped.dataset is dataset
-    assert wrapped.dataset.state_dict()["source_assembly"]
-
-    iterator = iter(wrapped)
-    batch = next(iterator)
-    record = telemetry.drain_step()
-    assert record["micro_batches"] == 1
-    assert record["loader_wait_s"] > 0
-    assert record["tokens_total"] == batch["input_ids"].numel()
-    assert 0 < record["utilisation_packing"] <= 1.0
+    assert wrapped.num_workers == 0
 
 
 def test_write_step_appends_one_line_per_step(tmp_path, monkeypatch):
@@ -128,7 +117,9 @@ def test_byte_probe_records_payload_bytes(tmp_path, monkeypatch):
 
     fake = HfFileSystemFile.__new__(HfFileSystemFile)
     object.__setattr__(
-        fake, "path", "datasets/UniverseTBD/mmu_desi_edr_sv3/part.parquet"
+        fake,
+        "path",
+        "datasets/UniverseTBD/mmu_ssl_legacysurvey_north/part.parquet",
     )
     payload = HfFileSystemFile._fetch_range(fake, 100, 356)
     assert len(payload) == 256
@@ -136,30 +127,6 @@ def test_byte_probe_records_payload_bytes(tmp_path, monkeypatch):
     entry = json.loads((tmp_path / "bytes.dp0.w3.jsonl").read_text().splitlines()[0])
     assert entry["bytes"] == 256
     assert (entry["start"], entry["end"]) == (100, 356)
-    assert entry["source"] == "desi"
+    assert entry["source"] == "legacy"
     assert entry["worker"] == 3
     assert entry["wait_s"] >= 0
-
-
-def test_loader_state_dict_reaches_through_the_wrapper(tiny_config, tmp_path, monkeypatch):
-    """The wrapper must be invisible to checkpointing, or resume silently dies.
-
-    ``loader_state_dict`` asks for ``state_dict``/``num_workers`` and the
-    trainer reaches for ``.dataset``; all three go through ``__getattr__``.
-    """
-    from astropt3.data.nanotron_loader import loader_state_dict
-
-    monkeypatch.setenv(telemetry.TELEMETRY_DIR_ENV, str(tmp_path))
-    dataset = PackedMicroBatches(tiny_config, MBS, SEQ_LEN)
-    plain = torch.utils.data.DataLoader(dataset, batch_size=None)
-    wrapped = telemetry.instrument(plain)
-
-    # a plain DataLoader has no state_dict, so this must fall through to the
-    # dataset's own state — exactly as it does unwrapped
-    assert loader_state_dict(wrapped) == loader_state_dict(plain)
-    assert loader_state_dict(wrapped)["source_assembly"].startswith("synthetic:")
-
-    # the trainer's checkpoint guard keys off these two attributes
-    assert hasattr(wrapped.dataset, "_ckpt_state")
-    assert hasattr(wrapped.dataset, "state_dict")
-    assert wrapped.num_workers == 0

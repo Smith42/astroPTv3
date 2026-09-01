@@ -1,6 +1,6 @@
 import torch
 
-from astropt3.data.synthetic import record_stream
+from legacy_fixture import record_stream
 
 
 def test_save_load_roundtrip(tmp_path, tiny_model, sequencer, collator):

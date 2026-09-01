@@ -16,9 +16,11 @@ Two halves, because the numbers live in different processes:
   packing utilisation) plus the measured wait on ``next()``.
 
 The two halves are joined offline by ``scripts/bench_report.py`` on
-(rank, wall-clock window). Distinct base objects and replica counts come from
-the ``object_id_log`` the loader already writes — ``#n`` suffixes make them
-countable without a third instrument.
+(rank, wall-clock window). Its optional ``--object-log`` join (distinct base
+objects and replica counts via ``#n`` suffixes) needs a per-object log the
+loader no longer writes (ADR 0015 dropped ``object_id_log`` with the rest of
+the dataset-checkpoint machinery); byte and step-counter telemetry are
+unaffected.
 
 Everything here is a no-op unless ``$ASTROPT3_TELEMETRY_DIR`` is set, so
 production runs pay nothing and the benchmark opts in.
@@ -33,23 +35,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from mmu_stream.streaming import IMAGES_CATALOG, SOURCE_CATALOGS
-
 from ..tokenization import PAD_ID
 
 TELEMETRY_DIR_ENV = "ASTROPT3_TELEMETRY_DIR"
 
-# anchor catalog first: it is not in SOURCE_CATALOGS (it is the thing the
-# sources hang off), and it is 92.3% of the bytes we are trying to price
+# ADR 0015: the legacy anchor catalog is the only surviving source
 _CATALOG_SOURCES = {
-    "legacy": IMAGES_CATALOG,
-    **SOURCE_CATALOGS,
+    "legacy": "hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north",
 }
 _REPO_TO_SOURCE = {
     catalog.split("hf://datasets/")[-1].split("@")[0]: source
-    # ponytail: the four galaxies_* keys share one repo, so the last write
-    # wins and they all report as one source. They ARE one source on the
-    # wire; split them only if a per-split byte figure is ever wanted.
     for source, catalog in _CATALOG_SOURCES.items()
 }
 
@@ -102,6 +97,7 @@ def install_byte_probe(rank: int = 0, worker: int = 0) -> bool:
     except ImportError:  # hub not installed (synthetic-only runs)
         return False
 
+    # pi-lens-ignore: unchecked-throwing-call-python
     log = open(directory / f"bytes.dp{rank}.w{worker}.jsonl", "a", buffering=1)
     original = HfFileSystemFile._fetch_range
 
@@ -163,11 +159,14 @@ def observe_micro_batch(flat: dict, wait_s: float) -> None:
         return
     _counters["micro_batches"] += 1
     _counters["loader_wait_s"] += wait_s
+    # pi-lens-ignore: unchecked-throwing-call-python
     _counters["tokens_total"] += int(input_ids.numel())
+    # pi-lens-ignore: unchecked-throwing-call-python
     _counters["tokens_nonpad"] += int((input_ids != PAD_ID).sum().item())
     for key, value in flat.items():
         if key.endswith("_mask"):
             name = key[: -len("_mask")]
+            # pi-lens-ignore: unchecked-throwing-call-python
             count = int(value.sum().item())
             if count:
                 _counters["loss_tokens"][name] = (
@@ -175,6 +174,7 @@ def observe_micro_batch(flat: dict, wait_s: float) -> None:
                 )
         elif key.endswith("_values"):
             name = key[: -len("_values")]
+            # pi-lens-ignore: unchecked-throwing-call-python
             count = int(value.numel())
             if count:
                 _counters["target_values"][name] = (
@@ -203,6 +203,7 @@ def write_step(step: int, record: dict, rank: int = 0) -> None:
     directory = telemetry_dir()
     if directory is None:
         return
+    # pi-lens-ignore: unchecked-throwing-call-python
     with open(directory / f"steps.dp{rank}.jsonl", "a") as log:
         log.write(json.dumps({"step": step, **record}) + "\n")
 

@@ -5,7 +5,7 @@ import torch
 
 from astropt3 import AstroPT3Config
 from astropt3.data.packing import ObjectSequencer, PackedCollator
-from astropt3.data.synthetic import make_record
+from legacy_fixture import make_record
 from astropt3.tokenization import _MODALITY_ID_BLOCKS, modality_token_ids
 
 

@@ -906,11 +906,9 @@ data_stages:
     start_training_step: 1
     data:
       dataset:
-        data_root: mmu
+        is_astropt3_streaming: true
         ar_replicas: 2
         replica_placement: decorrelated
-        match_index: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_index/north-v2-merged-5spoke
-        object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-north-5spoke-replay2/objects.log
       seed: 42
       num_loading_workers: 8
 optimizer:

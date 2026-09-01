@@ -1,111 +1,19 @@
-"""Ridge linear probe: mean-pooled central hidden states -> redshift ``Z``.
+"""Ridge linear probe on mean-pooled hidden states — model-side functions.
 
-Streams validation records (val shards, or held-out synthetic indices),
-keeps those carrying the target scalar, embeds each object by mean-pooling
-the model's CENTRAL layer state (layer ``num_hidden_layers // 2`` — the
-astroPT convention; mid-depth decoder states probe better than the final
-layer, whose job is next-token emission) over one modality's patch tokens,
-and fits
-a closed-form ridge regression (numpy, no sklearn). The regularizer is
-chosen on an inner validation split; the reported R^2 is on a held-out test
-split. Fully deterministic for a given checkpoint.
-
-Usage:
-    python -m astropt3.eval.linear_probe --checkpoint <hf_dir> \
-        --data-root <val_shards_dir|synthetic> --target Z --n-objects 2048
+Consumes already-built :class:`ObjectSeq` probe objects and targets
+(ADR 0015 §6); collecting probe objects from a record source is deferred to
+a future LSDB-backed evaluation seam.
 """
 
-import argparse
 import json
 import math
-import warnings
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from ..data.packing import ObjectSeq, ObjectSequencer, PackedCollator
-from ..data.synthetic import make_record
+from ..data.packing import ObjectSeq, PackedCollator
 from ..tokenization import BOS_ID, PAD_ID
-from .val_loss import SYNTHETIC_VAL_OFFSET
-
-
-def _val_records(data_root, seed=0):
-    if data_root == "synthetic":
-        i = SYNTHETIC_VAL_OFFSET
-        while True:
-            yield make_record(i)
-            i += 1
-    else:
-        # ADR 0006: the reserved val partitions, streamed live. Deterministic
-        # given the seed, so every checkpoint is probed on the same records.
-        from mmu_stream.streaming import open_stream
-
-        yield from open_stream(split="val", seed=seed)
-
-
-# record key that feeds each poolable modality (mirrors ObjectSequencer)
-_POOL_RECORD_KEY = {"images": "image", "spectra": "spectrum"}
-
-
-def collect_probe_objects(
-    config,
-    data_root,
-    target,
-    n_objects,
-    *,
-    seed=0,
-    pool_modality="images",
-    max_scan=None,
-):
-    """First ``n_objects`` val objects that carry a finite ``target`` scalar.
-
-    Objects lacking the ``pool_modality`` are skipped — spectrum-only DESI
-    rows carry ``Z`` but have no image tokens to pool over. Both record
-    sources are endless (ADR 0006 streams the val partitions in a loop), so
-    the scan is bounded by ``max_scan`` records; if fewer than ``n_objects``
-    qualify within it, all qualifying objects are used (with a warning). The
-    stream is deterministic, so every checkpoint in a sweep probes the same
-    set — collect once and pass it to :func:`probe_checkpoint` as
-    ``probe_set``.
-    """
-    sequencer = ObjectSequencer(config)
-    source_key = _POOL_RECORD_KEY.get(pool_modality)
-    objects, targets = [], []
-    budget = max_scan if max_scan is not None else 50 * n_objects
-    for record, _ in zip(_val_records(data_root, seed=seed), range(budget)):
-        value = record.get(target)
-        if value is None:
-            continue
-        try:
-            numeric_value = _float_value(value)
-        except ValueError:
-            continue
-        if not math.isfinite(numeric_value):
-            continue
-        if source_key is not None and record.get(source_key) is None:
-            continue
-        # scalar-free sequences (ADR 0008): a Z span in the pooled sequence
-        # would turn probe R^2 into a copying metric and break comparability
-        # with every pre-0008 run
-        obj = sequencer.build(record, include_scalars=False)
-        if pool_modality not in obj.masks:
-            continue
-        objects.append(obj)
-        targets.append(numeric_value)
-        if len(objects) >= n_objects:
-            break
-    if not objects:
-        raise ValueError(
-            f"no records carry target {target!r} with {pool_modality!r} tokens"
-        )
-    if len(objects) < n_objects:
-        warnings.warn(
-            f"val scan budget reached: probing {len(objects)}/{n_objects} records that "
-            f"carry target {target!r} with {pool_modality!r} tokens",
-            stacklevel=2,
-        )
-    return objects, np.asarray(targets, dtype=np.float64)
 
 
 def _float_value(value) -> float:
@@ -166,42 +74,6 @@ def _read_probe_cache(path: Path):
                 )
             )
         return metadata["key"], objects, arrays["targets"].copy()
-
-
-def load_or_collect_probe_objects(
-    cache_path, config, data_root, target, n_objects, *, seed=0, pool_modality="images"
-):
-    """Disk-cached :func:`collect_probe_objects` (atomic tmp+rename write).
-
-    The collection scan can read the whole val split, so sweeps persist its
-    result under their out dir and every restart reloads it in seconds. The
-    cache is keyed on the collection arguments; a mismatch re-collects and
-    overwrites (delete the file to force a refresh after regenerating data).
-    """
-    key = {
-        "data_root": str(data_root),
-        "target": target,
-        "n_objects": n_objects,
-        "seed": seed,
-        "pool_modality": pool_modality,
-    }
-    cache_path = Path(cache_path)
-    if cache_path.exists():
-        cached_key, objects, targets = _read_probe_cache(cache_path)
-        if cached_key == key:
-            return objects, targets
-        warnings.warn(
-            f"probe cache {cache_path} was built with {cached_key}, "
-            f"not {key}; re-collecting",
-            stacklevel=2,
-        )
-    objects, targets = collect_probe_objects(
-        config, data_root, target, n_objects, seed=seed, pool_modality=pool_modality
-    )
-    tmp = cache_path.with_name(cache_path.name + ".tmp")
-    _write_probe_cache(tmp, key, objects, targets)
-    tmp.rename(cache_path)
-    return objects, targets
 
 
 @torch.no_grad()
@@ -297,21 +169,16 @@ def ridge_r2(X, y, *, seed=0, lambdas=(1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0)):
 
 def probe_checkpoint(
     checkpoint,
-    data_root,
     *,
     target="Z",
-    n_objects=2048,
     seq_len=896,
     objects_per_batch=8,
     pool_modality="images",
     device=None,
     seed=0,
-    probe_set=None,
+    probe_set,
 ):
-    """Probe one checkpoint; ``probe_set`` is an optional pre-collected
-    ``(objects, targets)`` pair from :func:`collect_probe_objects` — the
-    probe set depends only on the data stream, not on checkpoint weights,
-    so sweeps should collect once and reuse it for every step."""
+    """Probe one checkpoint against a pre-collected ``(objects, targets)`` set."""
     from transformers import AutoModel
 
     import astropt3  # noqa: F401  -- registers the Auto classes
@@ -321,15 +188,6 @@ def probe_checkpoint(
     dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
     model = AutoModel.from_pretrained(checkpoint).to(device=device, dtype=dtype).eval()
 
-    if probe_set is None:
-        probe_set = collect_probe_objects(
-            model.config,
-            data_root,
-            target,
-            n_objects,
-            seed=seed,
-            pool_modality=pool_modality,
-        )
     objects, targets = probe_set
     X = embed_objects(
         model,
@@ -349,41 +207,3 @@ def probe_checkpoint(
         }
     )
     return result
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--data-root", required=True)
-    parser.add_argument("--target", default="Z")
-    parser.add_argument("--n-objects", type=int, default=2048)
-    parser.add_argument("--seq-len", type=int, default=896)
-    parser.add_argument("--objects-per-batch", type=int, default=8)
-    parser.add_argument("--pool-modality", default="images")
-    parser.add_argument("--device", default=None)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--out", default=None)
-    args = parser.parse_args()
-
-    result = probe_checkpoint(
-        args.checkpoint,
-        args.data_root,
-        target=args.target,
-        n_objects=args.n_objects,
-        seq_len=args.seq_len,
-        objects_per_batch=args.objects_per_batch,
-        pool_modality=args.pool_modality,
-        device=args.device,
-        seed=args.seed,
-    )
-    print(json.dumps(result, indent=2))
-    if args.out:
-        try:
-            with open(args.out, "w") as f:
-                json.dump(result, f, indent=2)
-        except OSError as error:
-            raise RuntimeError(f"cannot write probe result to {args.out}") from error
-
-
-if __name__ == "__main__":
-    main()

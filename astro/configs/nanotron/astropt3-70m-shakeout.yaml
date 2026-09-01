@@ -23,22 +23,22 @@ model:
   model_config:
     is_astropt3_config: true
     modalities:
-    - name: images
-      input_size: 192
-      patch_size: 8
-      pos_type: index
-      pos_input_size: 1
-      max_positions: 361
-      loss_weight: 1.0
-    - name: spectra
-      input_size: 256
-      patch_size: 256
-      pos_type: continuous
-      pos_input_size: 1
-      max_positions: 1024
-      loss_weight: 1.0
+      - name: images
+        input_size: 192
+        patch_size: 8
+        pos_type: index
+        pos_input_size: 1
+        max_positions: 361
+        loss_weight: 1.0
+      - name: spectra
+        input_size: 256
+        patch_size: 256
+        pos_type: continuous
+        pos_input_size: 1
+        max_positions: 1024
+        loss_weight: 1.0
     tokeniser: affine
-    spiral: true  # center-outward image patch order (ADR 0004)
+    spiral: true # center-outward image patch order (ADR 0004)
     huber_delta: 1.0
     hidden_size: 512
     num_hidden_layers: 23
@@ -76,14 +76,13 @@ parallelism:
   tp_linear_async_communication: false
   recompute_layer: false
 data_stages:
-- name: real-shakeout
-  start_training_step: 1
-  data:
-    dataset:
-      data_root: mmu
-      match_index: hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
-    seed: 42
-    num_loading_workers: 8
+  - name: real-shakeout
+    start_training_step: 1
+    data:
+      dataset:
+        is_astropt3_streaming: true
+      seed: 42
+      num_loading_workers: 8
 optimizer:
   accumulate_grad_in_fp32: true
   clip_grad: 1.0
@@ -103,8 +102,8 @@ optimizer:
     torch_adam_is_fused: true
   weight_decay: 0.1
   weight_decay_exclude_named_params:
-  - .*layernorm.*
-  - .*layer_norm.*
+    - .*layernorm.*
+    - .*layer_norm.*
   zero_stage: 1
 tokens:
   sequence_length: 4096

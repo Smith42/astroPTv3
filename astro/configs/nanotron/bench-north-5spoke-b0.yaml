@@ -905,10 +905,8 @@ data_stages:
     start_training_step: 1
     data:
       dataset:
-        data_root: mmu
+        is_astropt3_streaming: true
         ar_replicas: 1
-        match_index: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_index/north-v2-merged-5spoke
-        object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/bench-north-5spoke-b0/objects.log
       seed: 42
       num_loading_workers: 8
 optimizer:

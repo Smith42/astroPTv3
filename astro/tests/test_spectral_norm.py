@@ -75,7 +75,7 @@ def test_unknown_grid_raises():
 
 def test_synthetic_tokens_land_in_the_o1_regime():
     """Synthetic DESI-unit flux must produce O(1) tokens (ADR 0007 regime)."""
-    from astropt3.data.synthetic import make_record
+    from legacy_fixture import make_record
 
     record = make_record(3, image_only_fraction=0.0)
     flux = torch.as_tensor(record["spectrum"]["flux"])
@@ -90,7 +90,7 @@ def test_sequencer_uses_config_divisor(tiny_config):
     """config.spectra_norm_divisor must reach the sequencer's normalization."""
     from astropt3 import AstroPT3Config
     from astropt3.data.packing import ObjectSequencer
-    from astropt3.data.synthetic import make_record
+    from legacy_fixture import make_record
     from astropt3.tokenization import patchify_spectrum
 
     record = make_record(3, image_only_fraction=0.0, spectrum_only_fraction=1.0)

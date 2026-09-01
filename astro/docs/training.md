@@ -1,143 +1,96 @@
 # Training AstroPTv3 models with nanotron
 
-*The operational guide: environments, data, launching, checkpoint/resume,
-evaluation, and the traps we already hit so you don't hit them again.
-Background on the model itself is in [`architecture.md`](architecture.md).*
-
-## 0. TL;DR — a complete tiny run
-
-```bash
-# from the repo root, in a GPU env (see §1)
-CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --nproc_per_node=1 \
-    nanotron/run_train.py --config-file astro/configs/nanotron/astropt3-test-tiny.yaml
-```
-
-That trains a 4-layer toy on synthetic (offline, schema-identical) data for
-50 steps and writes a checkpoint. Everything below is the same thing with
-real data, real sizes, and more GPUs.
+*The operational guide: environments, data, launching, checkpoint/resume.
+Background on the model is in [`architecture.md`](architecture.md). The
+current record-source decision is
+[`adr/0015-lsdb-infinite-stream-training.md`](adr/0015-lsdb-infinite-stream-training.md)
+— **experimental/incomplete**: the old contract's `train_smoke` gate is
+absent on this branch.*
 
 ## 1. Environments
 
-Three distinct environments; do not mix them.
-
 | env | where | contents | used for |
 |-----|-------|----------|----------|
-| `uv sync --extra dev` | anywhere | torch (CPU ok), torchdata, transformers, datasets | unit tests, CPU smoke, eval code |
-| `uv sync --extra data` | machine with network | + lsdb | match-index build only (ADR 0006) |
-| GPU venv | training machine | torch + **flash-attn** + nanotron (editable `nanotron/`) + astro (editable `astro/`) + psutil + torchdata | training, GPU tests, conversion |
+| `uv sync --extra dev` | anywhere | torch (CPU ok), transformers, lsdb | unit tests |
+| GPU venv | training machine | torch + **flash-attn** + nanotron (editable `nanotron/`) + astro (editable `astro/`) + psutil | training, GPU tests, conversion |
 
 flash-attn wheels are the constraint for the GPU venv: pick a torch version
 with a prebuilt wheel for your CUDA (never compile it on a shared box).
-Known-good recipe (A100, 2026-07):
 
 ```bash
 uv venv gpuenv --python 3.13
 uv pip install torch==2.8.0 \
-  <flash_attn-2.8.3.post1+cu12torch2.8cxx11abiTRUE-cp313 wheel from GitHub releases> \
+  <flash_attn wheel from GitHub releases> \
   -e nanotron -e astro psutil
 ```
 
-Verify the env with the GPU test suite (one GPU, ~20 min; TP=2 test wants two):
+Verify the env on a GPU box: `pytest -m gpu tests/test_nanotron_gpu.py`.
 
-```bash
-pytest -m gpu astro/tests/test_nanotron_gpu.py astro/tests/test_phase4_gpu.py
+## 2. Data (LSDB InfiniteStream — ADR 0015)
+
+There is **no prep step** and no local corpus. Each DataLoader worker opens
+
+```
+lsdb.open_catalog("hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north", columns=<active registry projection>)
+→ lsdb.streams.InfiniteStream(client=None, partitions_per_chunk=1, seed)
 ```
 
-## 2. Data
-
-### 2.1 The corpus is streamed (ADR 0006)
-
-There is one small prep step (the match index, below) and no local copy of
-the corpus: `data/streaming.py` opens the MMU HATS catalogs on the HF hub at
-train time via `hats` + `pyarrow`. The match index **defines** the corpus
-(ADR 0011 as amended 2026-08-04): one pass over its LegacySurvey cells emits
-matched image x spectrum pairs, the unmatched images it passes, and the
-globally unmatched DESI spectra of the cells it owns. One source, one pass,
-no weighting — the modality mix follows the data. Set `data_root: mmu` in the
-nanotron config (`synthetic` for smoke runs); a path to the retired local
-corpus raises.
+decodes rows, sequences/packs them, and feeds nanotron through a plain
+`DataLoader(batch_size=None)`.
 
 Facts to know:
 
-- **Network is a hard dependency.** Hub downtime or rate-limiting stalls
-  training with no local fallback. Budget for it.
-- **Resume is exact and cheap.** The checkpoint holds the `datasets`
-  generator's own position (shard + example index) plus the epoch, so a kill
-  replays nothing and skipped partitions are never downloaded. No RNG state
-  is saved, because there is no sampler — one source, one pass. The state is
-  tagged `source_assembly`, bumped whenever record ORDER changes (now
-  `crossmatch_only_v3`); a stale state is rejected rather than resumed onto
-  the wrong row, and weights still load.
-- **Train/val split is whole HEALPix partitions** (the first
-  `streaming.VAL_PARTITIONS` cells), so it is spatially disjoint and cannot
-  leak. Val is streamed fresh each eval and is deterministic, so every
-  checkpoint in a sweep is scored on identical records.
-- **Sharding is by partition, dealt to DP ranks** (`owned_by_rank`,
-  `files[rank::dp]`), then split across loader workers by `datasets` itself.
-  The corpus is the match index's 173 cells (165 train), so a rank owns
-  `floor(165 / dp)` and **`num_loading_workers` cannot exceed that** — the
-  loader raises, because `datasets` alone would only warn and silently stop
-  the surplus workers. At dp=2 that ceiling is 82; at dp=64 it is 2.
-- **Prefetch is the DataLoader worker queue** (`num_workers` /
-  `prefetch_factor`); nothing custom is built and there is no dask client on
-  this path. Synchronous per-worker reads are accepted while training is
-  link-bound — at 1 Gbit the link saturates around 1.8 s/step against a
-  0.55 s/step compute demand, so overlapping I/O cannot buy what the NIC will
-  not deliver. Revisit at ≥ 10 Gbit.
-- Revisions float to latest upstream, so a long run can see the corpus
-  change if MMU pushes.
-- **The match index is mandatory and defines the corpus.** Build it once
-  (~1 hour, login node, `[data]` env) or point at the published one; without
-  it the stream raises:
+- **Network is a hard dependency.** Hub downtime stalls training with no
+  local fallback.
+- **Image only, uncrossmatched.** Records carry the image cube and the
+  catalog's image-side scalars (`ebv`, `flux_g/r/z`, optionally fiber/psf
+  fields when active). The multimodal model shape is retained so future
+  crossmatches don't need an architecture migration; spectra stay allocated
+  but untrained (rates, losses read as `spectra: 0.0`).
+- **Concurrency is the DataLoader's.** LSDB runs synchronously
+  (`client=None`) — do not create a Dask client. `num_loading_workers` is
+  6–8 per rank. Seeds are `(run seed, dp rank, worker id, retry generation)`.
+- **No cursors, no coverage guarantee.** Overlap between consumers,
+  repeated records, and revisits after retries/resumes are accepted.
+- **Memory risk.** `InfiniteStream` can hold ~2 whole pandas partitions
+  (~1.5 GiB) per worker. If RSS overflows, lower `num_loading_workers` —
+  this is runbook, not a preflight gate.
+- **Floating revisions.** LSDB and the catalog float; `uv.lock` records
+  what's installed in a checkout, and `[data]` startup lines log the
+  resolved LSDB version per worker.
 
-  ```bash
-  uv run --extra data python -m mmu_stream.build_match_index --out match_index.parquet
-  ```
+Streaming specifics:
 
-  The published index is
-  `hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet`
-  and every `data_root: mmu` config points at it; `$ASTROPT3_MATCH_INDEX`
-  overrides it. Partitions are streamed a row group at a time (~56 MB), so a
-  worker holds ~56 MB of images rather than a whole 774 MB partition, plus at
-  most `UNMATCHED_BUFFER_BYTES` (256 MiB) of a cell's unmatched spectra.
-
-### 2.2 Image normalization (no calibration step)
-
-Image flux is normalized physically, keyed on each record's band names
-(`data/band_registry.py`): rescale to LegacySurvey nanomaggies → clamp
-survey-flagged bright pixels → `arcsinh(flux/0.01)` — tokens are flux in
-knee units (0.01 nMgy = 10 picomaggies), O(1) values. The constants come
-from the surveys' own documentation, so there is nothing to calibrate per
-corpus — unknown bands raise `NotImplementedError` (add them to
-`BAND_REGISTRY`).
-
-### 2.2b Gate the data before burning GPU-hours
-
-`scripts/check_pilot_data.py` went with the reshard. The equivalent check is
-the live streaming test, which decodes real hub rows through the sequencer
-and asserts the token shapes:
-
-```bash
-uv run pytest tests/test_streaming.py -k live
-```
-
-Throughput is now a property of the hub and your link rather than of a local
-corpus — watch the trainer's own step time. On a 1 Gbit box expect a ~3.2 s
-mean step with ~17% of iterations ≥ 5 s against a 0.59 s compute floor; that
-gap is the NIC, not the loader.
+- **Resume is fresh.** Checkpoints restore weights/optimizer/scheduler/RNG;
+  the record stream is cursorless and restarts on resume. Old checkpoint
+  `dataset_state/` files are ignored.
+- **Transient failures rebuild.** Recognized transport/storage errors
+  (HTTP, OS, the hub's closed-client RuntimeError) discard the iterator and
+  reopen with bounded exponential backoff (60 retries, ≤120 s cap,
+  `gc.collect()` before reopening). Decode/validation/unknown errors fail
+  immediately.
 
 ## 3. Configs
 
-Full nanotron run configs live in `astro/configs/nanotron/`:
+Full nanotron run configs live in `astro/configs/nanotron/`. The dataset
+block is minimal:
 
-- `astropt3-test-tiny.yaml` — 4-layer toy, synthetic data, 1 GPU, 50 steps.
-- `astropt3-{70m,160m,410m,1b,1p4b,2p8b,6p9b,12b}.yaml` — the pilot recipes
-  for all eight sizes (dims from the PLAN size table, parallelism + peak LR
-  from the recipe table below, GBS 512×4096 everywhere).
-- `astropt3-70m-shakeout.yaml` — the 70M model on 2 GPUs (DP=2), real
-  day-one data; the template for "I have a small box, not a cluster".
+```yaml
+data_stages:
+- data:
+    dataset:
+      is_astropt3_streaming: true   # the only source (ADR 0015)
+      # ar_replicas: 1              # optional: distinct AR factorisations
+      # replica_placement: decorrelated
+    num_loading_workers: 8          # concurrent LSDB readers per DP rank
+    seed: 42
+```
 
-The interesting knobs, top to bottom:
+Everything else — catalog, columns, stream policy — is fixed in
+`astropt3.data.nanotron_loader`. The old knobs (`data_root`,
+`match_index`, synthetic fractions, `object_id_log`) are gone.
+
+Governing knobs, top to bottom:
 
 ```yaml
 general:
@@ -146,252 +99,89 @@ general:
 model:
   model_config:
     is_astropt3_config: true   # dispatches to AstroPT3ForTraining
-    # modalities: omitted -> pinned pilot defaults (images 144x192 patch 8,
-    #                        spectra 31x256 continuous-λ positions)
-    tokeniser: affine          # or "aim" (MLP)
+    tokeniser: affine          # or "aim"/"jetformer"
     _use_doc_masking: true     # position_ids restarts = document boundaries
 parallelism:
-  pp: 1                        # asserted by the model — do not change
-  tp_mode: ALL_REDUCE          # asserted — modality modules are TP-replicated
-  dp: <n>                      # main scaling axis
-data_stages:
-- data:
-    dataset:
-      data_root: mmu           # or the literal string "synthetic"
-      # object_id_log: <path>  # audit trail: one object_id/line as trained
-    num_loading_workers: 8     # resume-exact at any value (torchdata
-                               # StatefulDataLoader); keep it FIXED per run
-optimizer:
-  zero_stage: 1                # ZeRO-1 everywhere per the recipe table
+  pp: 1                        # asserted — do not change
+  tp_mode: ALL_REDUCE          # modality modules are TP-replicated
+  dp: <n>
 tokens:
   sequence_length: 4096
-  micro_batch_size: 16         # 70M/A100-80GB: peak ~32GiB — headroom to raise
-  batch_accumulation_per_replica: 1  # raise to hit GBS on fewer GPUs
+  micro_batch_size: 16
+  batch_accumulation_per_replica: 1
 checkpoints:
   checkpoint_schedule: pythia  # steps 1,2,4,...,512 + every interval
   checkpoint_interval: 1000
   resume_checkpoint_path: null # set to the checkpoints dir to resume
 ```
 
-To adapt a recipe to fewer GPUs: reduce `dp`, raise
-`batch_accumulation_per_replica` to keep the global batch size, and leave
-everything else alone. Model-size hyperparameters for all eight sizes are in
-`astro/configs/model/*.yaml` and the table in `architecture.md` — copy the
-70M nanotron yaml and swap the `model_config` block.
-
-### Per-size recipe (Ultra-Scale Playbook; 80GB GPUs, seq 4096, GBS 2M tokens)
-
-| Size | GPUs | TP | DP | ZeRO | recompute | peak LR |
-|------|------|----|----|------|-----------|---------|
-| 70M–410M | 32 | 1 | 32 | 1 | none | 1e-3 / 6e-4 / 3e-4 |
-| 1B–1.4B  | 64 | 1 | 64 | 1 | selective | 3e-4 / 2e-4 |
-| 2.8B     | 64 | 2 | 32 | 1 | selective | 1.6e-4 |
-| 6.9B     | 128 | 4 | 32 | 1 | selective/full | 1.2e-4 |
-| 12B      | 256 | 8 | 32 | 1 | full | 1.2e-4 |
-
-TP never crosses the node boundary; no PP at any size. Warmup
-min(2000 steps, 1%), cosine to 0.1× peak.
+Per-size recipes are unchanged (the PLAN table in
+[`docs/adr/0014-byte-efficiency-and-mfu-programme.md`](adr/0014-byte-efficiency-and-mfu-programme.md)
+and `architecture.md`).
 
 ## 4. Launching
 
-Single node:
+Single node (from the repo root):
 
 ```bash
-HF_DATASETS_OFFLINE=1 CUDA_DEVICE_MAX_CONNECTIONS=1 \
+CUDA_DEVICE_MAX_CONNECTIONS=1 \
 torchrun --nproc_per_node=<gpus> --rdzv-backend=c10d --rdzv-endpoint=localhost:0 \
     nanotron/run_train.py --config-file astro/configs/nanotron/<config>.yaml
 ```
 
-(`--rdzv-endpoint=localhost:0` auto-picks a free port — handy when several
-runs share a box. `HF_DATASETS_OFFLINE=1` keeps `datasets` from touching the
-network on compute nodes.)
-
-Multi-node goes through the launcher (from the repo root):
+Multi-node via slurm:
 
 ```bash
 sbatch --nodes=<N> astro/scripts/launch_slurm.sbatch astro/configs/nanotron/<config>.yaml
-# dry run (100 steps, checkpoints redirected to *-dryrun):
-sbatch --nodes=<N> --export=ALL,DRY_RUN_STEPS=100 astro/scripts/launch_slurm.sbatch <config>
+# dry run: sbatch --nodes=<N> --export=ALL,DRY_RUN_STEPS=100 astro/scripts/launch_slurm.sbatch <config>
 ```
 
-It sources `$ASTROPT3_ENV` (default `../astroPTv3_gpuenv`), rendezvous on
-the first node, and runs one `torchrun` per node via `srun`; node counts per
-size are in its header. The config's `dp*tp` must equal the allocated GPU
-count.
+The launcher sources `$ASTROPT3_ENV` (default `../astroPTv3_gpuenv`) and
+rendezvous on the first node. **Always dry-run first**, checking
+tokens/s/GPU, MFU, and memory, before committing a real run.
 
-**Always dry-run first** (playbook rule): run ~100 steps at the target
-topology and check tokens/s/GPU, MFU, and memory before committing
-node-hours. Reference points measured on 2×A100-80GB, DP=2, mbs 16,
-seq 4096, real data, 8 workers/rank:
+**Notes after the ADR 0015 cutover:**
 
-- 70M: ~0.6 s/step at GBS 131k tokens → ~240k tokens/s total,
-  **123 model TFLOPs/GPU (~39% MFU)**, peak 31.7 GiB. Loss 0.46 → 0.26 in
-  100 steps from scratch.
-- Target MFU band across sizes: ~30–45%. If you're far under, suspect the
-  dataloader (see §7).
-
-What to watch in the logs: `lm_loss` (total), per-modality `images_loss` /
-`spectra_loss` (should sit within ~5× of each other after warmup — if not,
-revisit `loss_weight`), `tokens_per_sec_per_gpu`, `model_tflops_per_gpu`,
-and the memory lines from the first steps.
+- `HF_DATASETS_OFFLINE=1` must NOT be set — the stream needs the hub.
+- The eval sidecar (`run_probe_sweep.py`) and the `EVAL_GPU` co-launch hook
+  are removed; §Evaluation is deferred to a future LSDB-backed seam.
 
 ## 5. Checkpoints and resume
 
-With `checkpoint_schedule: pythia` you get dirs
-`{1,2,4,...,512,1000,2000,...}` under `checkpoints_path`, each containing
-model weights (bf16), optimizer + LR-scheduler state, RNG states,
-`model_config.json`, and `dataset_state/dp_{rank}.pt` — the data-stream
-position. `latest.txt` is written last, so any step dir it covers is
-complete (the eval sweep keys off this).
+Checkpoint dirs `{1,2,4,...,512,1000,...}` hold model weights (bf16),
+optimizer + LR-scheduler state, RNG states, `model_config.json`;
+`latest.txt` is written last, so any step dir it covers is complete.
 
-To resume after a crash or kill:
+Resume:
 
 ```yaml
 checkpoints:
   resume_checkpoint_path: <checkpoints dir>   # reads latest.txt
 ```
 
-and relaunch the same command. The run restores weights/optimizer/RNG *and*
-the stream position, then continues with **exactly the micro-batch sequence
-an uninterrupted run would have consumed** — no replayed samples, no gap.
-Constraints and semantics:
+The run restores model/optimizer/scheduler/RNG **and nothing else**. The
+LSDB stream is cursorless: resume opens a fresh stream and records may be
+revisited immediately. There is no exact-sequence continuation, no replay
+audit, and no worker-count constraint on resume.
 
-- Exact stream resume works at **any** `num_loading_workers`: with workers
-  the stream position lives in the worker processes, so the loader is
-  torchdata's `StatefulDataLoader` and the checkpoint stores its per-worker
-  snapshots (torchdata must be installed in the GPU env — without it,
-  workers > 0 refuses to start rather than train unresumably, which is how
-  the 20k real-data shakeouts silently lost their stream state). The saved
-  state maps per-worker, so **resume with the same `num_loading_workers`
-  as the saving run** — a mismatch is rejected at load. Checkpoints written
-  before this change (dataset-format) still resume, at workers 0 only.
-- The MMU stream replays nothing: each source checkpoints its row offset
-  into a whole-buffered partition, so resume re-fetches that partition but
-  re-trains none of it.
-- Set `dataset.object_id_log` to get a per-rank file with one `object_id`
-  per trained object — the audit trail we use to *prove* no-replay in the
-  GPU tests.
-- When comparing a resumed run's losses to something, compare to **its own
-  pre-kill trajectory**, not an independent run: two identical runs drift a
-  few percent within ~100 steps from nondeterministic flash-attn backwards.
+Watch the logs: `lm_loss`, per-modality `images_loss` (spectra_loss stays
+untrained), `tokens_per_sec_per_gpu`, `model_tflops_per_gpu`, memory lines.
 
-## 6. Evaluation (never blocks training)
+## 6. Evaluation status
 
-The sweep runs as a separate process, ideally pinned to a spare GPU:
+Deferred. `astropt3.eval` keeps pure model-side functions — `evaluate`
+(mean loss over provided batches), `embed_objects` + `ridge_r2` (linear
+probe on objects you supply), `scalar_head_metrics`, sampling/rendering —
+that callers drive with their own records or batches. The source-backed
+CLIs (`val_loss`, `linear_probe`, `scalar_head` mains, run_probe_sweep,
+generate) and their GPU sweep tests are removed until an LSDB-backed
+evaluation seam is designed.
 
-```bash
-CUDA_VISIBLE_DEVICES=<spare> python astro/scripts/run_probe_sweep.py \
-  --checkpoints-dir <run's checkpoints_path> \
-  --out-dir <eval dir> \
-  --data-root <val shard dir> \
-  --seq-len 4096 --val-batches 512 --probe-objects 2048 \
-  --watch --until-step <train_steps> --wandb
-```
-
-(Or let the launcher start it for you: `EVAL_GPU=<spare id>` on the launch
-scripts backgrounds exactly this, deriving the paths from the training
-config.)
-
-For each completed checkpoint it: converts to HF (`{out}/hf/{step}`), scores
-a **fixed deterministic set of validation batches** (val loss comparable
-across steps), ridge-probes redshift `Z` from mean-pooled hidden states
-(test-split R²), renders fixed-template sample panels — an output image and
-spectrum per mode, same record + seed every step so the panels show model
-evolution (ADR 0003; `--sample-*` flags, `--sample-records none` to
-disable) — into `{out}/samples/{step}`, and appends one JSON line to
-`{out}/probe_results.jsonl`. With `--wandb` the scalars and panels also land
-in the sweep's own wandb run (`eval-<run>`, plotted against
-`checkpoint_step`; deliberately not the trainer's run, whose monotonic
-internal step a lagging sidecar would fight).
-Healthy runs show monotone-ish falling val loss and rising probe R² across
-the Pythia checkpoints (the tiny reference run went val 0.456→0.051,
-R² 0.42→0.79 over 1000 steps).
-
-The pieces also run standalone against any converted checkpoint:
-
-```bash
-python -m astropt3.eval.val_loss    --checkpoint <hf_dir> --data-root <val dir> --seq-len 4096
-python -m astropt3.eval.linear_probe --checkpoint <hf_dir> --data-root <val dir> --target Z
-```
-
-Note: the probe needs objects that *carry* the target — early partial
-corpora may have very few spectra in val, in which case probe against a
-spectra-rich train subset and treat R² as relative, not absolute.
-
-Manual conversion, if you need just one checkpoint:
-
-```bash
-torchrun --nproc_per_node=1 nanotron/tools/astropt3/convert_nanotron_to_hf.py \
-    --checkpoint_path=<checkpoints>/<step> --save_path=<hf_dir>
-# then:  import astropt3; AutoModel.from_pretrained(<hf_dir>)
-```
-
-## 7. Troubleshooting / hard-won facts
-
-**Crashes at the first backward with `NotImplementedError` in
-`fp32_accum_hook`** — you are on a nanotron without fork commit `0668f369`.
-Upstream's DDP + fp32-grad-accumulation + ZeRO-1 path routes into an
-unfinished reduce-scatter branch; the fork forces the all-reduce path.
-
-**Crashes at import with "Grouped GEMM is not available"** — upstream
-`nn/moe.py` demanded `grouped_gemm` at import time even for dense models;
-the fork defers it to MoE construction. If it reappears after an upstream
-sync, re-apply (fork commit `831045ff`).
-
-**`TypeError: RotaryEmbedding.__init__` takes 2 to 6 args** — flash-attn
-≥2.8 dropped `pos_idx_in_fp32` from its rotary constructor; the fork's
-`nn/rotary.py` passes the survivors by keyword. Historically reverted once
-by an upstream merge — check after every sync.
-
-**Crash on resume: "Mismatch between the total consumed tokens…"** —
-`TrainingMetadata` asserts the per-stage token ledger matches the global
-counter *at load time*; only BlendableDataset updated the ledger upstream.
-The fork's trainer syncs it for astropt3 streams.
-
-**DP>1 crashes in a sanity check about differing tensor shapes** — set
-`general.ignore_sanity_checks: true` (required; see §3).
-
-**Throughput far below the reference numbers** — almost always the
-dataloader, and with the streamed corpus usually the link rather than the
-code. Raise `num_loading_workers` (exact resume survives workers now, and a
-resumed run must keep the SAME count) up to `floor(165 / dp)` — past that the
-loader raises, because a rank cannot have more workers than partitions. Keep
-`pin_memory` on (default). Before blaming the loader, check the fast-step
-floor: if some steps hit the compute-bound time and the mean is several times
-worse, you are NIC-bound and no worker count fixes it. The synthetic generator
-is CPU-bound too — don't benchmark compute with `data_root: synthetic` and 0
-workers.
-
-**"dp rank N owns M crossmatch train partitions but num_loading_workers is
-…"** — the corpus has fewer partitions than the run has loaders. Reduce
-`num_loading_workers` to the number in the message, or reduce `dp`. Not a
-machine limit: it lifts when the corpus grows past LegacySurvey North ×
-DESI.
-
-**Loss stuck ≈1.0 on synthetic-looking data** — per-patch standardization
-turned structureless patches into irreducible N(0,1) targets. Check that the
-data's bands are in `band_registry.BAND_REGISTRY` (so the physical
-normalization applies at the right flux scale) and that the data has
-patch-scale structure.
-
-**Shuffling is partition-order, not row-order**: `MMUStream` permutes each
-source's partition list per epoch from `(seed, epoch)` — identical on every
-rank, so the modulo shard split stays disjoint — which breaks the spatial
-clustering of HEALPix-ordered partitions without any cross-rank
-coordination and without a shuffle buffer to checkpoint.
-
-**BeeGFS/checkpoint pressure**: a 70M checkpoint dir is ~1GB (weights +
-ZeRO-1 optimizer state); the Pythia schedule to 20k steps is ~30 dirs.
-Prune non-schedule intermediates and convert+upload scheduled checkpoints
-as they land at larger sizes.
-
-## 8. Verification gates before calling a run "real"
+## 7. Verification gates
 
 1. `uv run pytest` (CPU suite) green in `astro/`.
-2. `pytest -m gpu astro/tests/test_nanotron_gpu.py astro/tests/test_phase4_gpu.py`
-   green in the GPU env.
-3. `uv run pytest tests/test_streaming.py -k live` — real hub rows decode
-   and sequence, and the cursor round-trips against live partitions.
-4. 100-step dry run at the target topology: tokens/s/GPU + MFU logged and
-   sane, memory has headroom, per-modality losses within ~5×.
-5. Then launch, with the probe sweep watching from a spare GPU.
+2. `uv run python scripts/count_params.py` green.
+3. The synthetic-dependent `train_smoke` gate is suspended (see top note).
+
+A bounded live check exists for hub outages:
+`uv run pytest -m network tests/test_lsdb_stream.py`.

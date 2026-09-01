@@ -196,10 +196,11 @@ flat because nanotron's device mover only transfers top-level tensors).
   rank* (different objects → different patch counts), which is why
   `general.ignore_sanity_checks: true` is required — nanotron's DP
   input-difference check all-gathers tensors assuming equal shapes.
-- **Data sharding**: the object stream splits by DP rank
-  (`split_dataset_by_node`, identical within a TP group) and then across
-  DataLoader workers (HF datasets assigns each worker a disjoint subset of
-  the rank's parquet shards).
+- **Stream concurrency (ADR 0015)**: torch DataLoader workers own parallelism;
+  LSDB's `InfiniteStream` runs synchronously (`client=None`) inside each
+  worker over the uncrossmatched LegacySurvey North catalog. Seeds derive
+  from (run seed, DP rank, worker id, retry generation); overlap and repeats
+  are accepted — there is no cross-rank ownership.
 
 ## Training routine
 
@@ -216,14 +217,12 @@ Pythia-style, adapted to a smaller corpus:
 - **Checkpointing**: `checkpoint_schedule: pythia` saves at steps
   1, 2, 4, …, 512 and then every `checkpoint_interval` (1000) — the log2-
   spaced early checkpoints are what make learning-dynamics studies possible.
-  Each checkpoint carries the data-stream position (`dataset_state/`), so a
-  resumed run continues the *exact* micro-batch sequence with no replay.
-- **Evaluation never blocks training**: `scripts/run_probe_sweep.py` runs in
-  a separate process (spare GPU), converting each checkpoint to HF and
-  computing (a) a fixed-batch validation loss and (b) a ridge linear probe
-  of redshift `Z` from mean-pooled hidden states. Val/train splits are
-  **spatially disjoint** (whole order-7 HEALPix tiles hash to one split), so
-  near-duplicates cannot leak.
+  Checkpoints hold model/optimizer/scheduler/RNG weight state only (ADR
+  0015): the cursorless LSDB stream restarts fresh on resume.
+- **Evaluation (deferrred, ADR 0015)**: `astropt3.eval` retains only pure
+  model-side functions over provided records/objects/batches (`evaluate`,
+  `embed_objects`, `ridge_r2`, `scalar_head_metrics`, sampling/rendering);
+  source-backed collection reconnects at a future LSDB evaluation seam.
 
 ## Roadmap context
 

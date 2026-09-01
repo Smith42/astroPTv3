@@ -1,10 +1,10 @@
 """Fixed-template sample rendering for converted HF checkpoints.
 
-Shared by ``scripts/generate.py`` (one-off, any checkpoint) and
-``scripts/run_probe_sweep.py`` (per-checkpoint evolution panels — see ADR
-0003). The template record fixes the token skeleton and positions; keeping
-the record(s) and the sampling seed fixed across a run's checkpoints means
-the rendered panels differ only through the model weights.
+The template record fixes the token skeleton and positions; keeping the
+record(s) and the sampling seed fixed across a run's checkpoints means the
+rendered panels differ only through the model weights. Model-side only
+(ADR 0015 §6): template RECORDS are provided by the caller; the source-
+backed ``load_template_record`` is deferred to a future LSDB evaluation seam.
 
 Modes:
 - ``unconditional``:      sample every span the template has (jetformer only).
@@ -28,7 +28,6 @@ qualitative for affine ones (their sequencer's per-patch standardization
 discards each patch's mean/std).
 """
 
-import itertools
 import math
 from pathlib import Path
 from typing import Optional
@@ -62,62 +61,6 @@ def build_template(sequencer, record: dict, mode: str):
     if mode == "spectra-to-images":
         present = list(reversed(present))
     return sequencer.build(record, modality_order=present, include_scalars=False)
-
-
-def load_template_record(
-    data_root: str,
-    record_index: int,
-    prefer_spectrum: bool,
-    spectrum_only: bool = False,
-) -> dict:
-    """The ``record_index``-th usable template record.
-
-    ``prefer_spectrum`` is a preference, not a requirement: a corpus whose
-    crossmatch kept the redshift labels but not the spectrum arrays (or one
-    with no spectroscopic overlap at all, like ``shakeout_mix2``) carries
-    none, and an image-only template still renders every mode except
-    ``image-to-spectra``, which ``sample_checkpoint`` skips.
-
-    ``spectrum_only=True`` selects spectrum-only rows (no image) so a sweep
-    can track pure-spectrum generation panels; unlike ``prefer_spectrum``
-    this is a hard requirement — there is no image to fall back to.
-    """
-    if data_root == "synthetic":
-        from ..data.synthetic import make_record
-
-        if spectrum_only:
-            return make_record(
-                record_index, image_only_fraction=0.0, spectrum_only_fraction=1.0
-            )
-        return make_record(
-            record_index, image_only_fraction=0.0 if prefer_spectrum else 0.3
-        )
-    # ADR 0006: the reserved val partitions, streamed live. The stream is
-    # endless and deterministic, so the n-th record matching a predicate is
-    # stable across checkpoints; the three sources interleave, so a
-    # spectrum-only or paired record always arrives within a few draws.
-    from mmu_stream.streaming import open_stream
-
-    if spectrum_only:
-        want = lambda r: "spectrum" in r and "image" not in r  # noqa: E731
-        missing = "spectrum-only records"
-    elif prefer_spectrum:
-        want = lambda r: "spectrum" in r  # noqa: E731
-        missing = "spectrum-bearing records"
-    else:
-        want = lambda r: "image" in r  # noqa: E731
-        missing = "records"
-
-    # bounded: a fixed budget of draws, so a corpus that genuinely lacks the
-    # shape raises instead of streaming the hub forever
-    budget = 200 * (record_index + 1)
-    wanted = (r for r, _ in zip(open_stream(split="val"), range(budget)) if want(r))
-    record = next(itertools.islice(wanted, record_index, None), None)
-    if record is None:
-        raise ValueError(
-            f"fewer than {record_index + 1} {missing} in {budget} val draws"
-        )
-    return record
 
 
 def save_image_png(

@@ -32,7 +32,7 @@ model:
     # spectra 31x256 patch 256 with continuous wavelength positions)
     tokeniser: affine
     loss_aggregation: family
-    spiral: true  # center-outward image patch order (ADR 0004)
+    spiral: true # center-outward image patch order (ADR 0004)
     huber_delta: 1.0
     hidden_size: 64
     num_hidden_layers: 4
@@ -66,16 +66,15 @@ parallelism:
   context_parallel_size: 1
   expert_parallel_size: 1
   pp_engine: 1f1b
-  tp_mode: ALL_REDUCE            # required: modality modules are TP-replicated
+  tp_mode: ALL_REDUCE # required: modality modules are TP-replicated
   tp_linear_async_communication: false
   recompute_layer: false
 data_stages:
-  - name: synthetic-smoke
+  - name: lsdb-experimental
     start_training_step: 1
     data:
       dataset:
-        data_root: synthetic       # offline synthetic MMU-schema records
-        synthetic_image_only_fraction: 0.3
+        is_astropt3_streaming: true
       seed: 42
       num_loading_workers: 0
 optimizer:

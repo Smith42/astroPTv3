@@ -33,22 +33,22 @@ model:
     # pinned pilot modalities (verified MMU schemas); written out explicitly
     # here for the record — these match the dataclass defaults
     modalities:
-    - name: images
-      input_size: 192
-      patch_size: 8
-      pos_type: index
-      pos_input_size: 1
-      max_positions: 361
-      loss_weight: 1.0
-    - name: spectra
-      input_size: 256
-      patch_size: 256
-      pos_type: continuous
-      pos_input_size: 1
-      max_positions: 1024
-      loss_weight: 1.0
+      - name: images
+        input_size: 192
+        patch_size: 8
+        pos_type: index
+        pos_input_size: 1
+        max_positions: 361
+        loss_weight: 1.0
+      - name: spectra
+        input_size: 256
+        patch_size: 256
+        pos_type: continuous
+        pos_input_size: 1
+        max_positions: 1024
+        loss_weight: 1.0
     tokeniser: affine
-    spiral: true  # center-outward image patch order (ADR 0004)
+    spiral: true # center-outward image patch order (ADR 0004)
     huber_delta: 1.0
     hidden_size: 4096
     num_hidden_layers: 38
@@ -77,42 +77,32 @@ model:
     log_attn_probs: false
 parallelism:
   dp: 32
-  pp: 1                          # PP=1 everywhere by design
-  tp: 4                          # inside the NVLink node only
+  pp: 1 # PP=1 everywhere by design
+  tp: 4 # inside the NVLink node only
   context_parallel_size: 1
   expert_parallel_size: 1
   pp_engine: 1f1b
-  tp_mode: ALL_REDUCE            # required: modality modules are TP-replicated
+  tp_mode: ALL_REDUCE # required: modality modules are TP-replicated
   tp_linear_async_communication: false
   recompute_layer: true
 data_stages:
-- name: pilot-stable
-  start_training_step: 1
-  data:
-    dataset:
-      # streamed live from the HF hub (ADR 0006). The match index defines
-      # the crossmatch-only corpus and is mandatory; $ASTROPT3_MATCH_INDEX
-      # overrides it when pointing at a locally built index
-      data_root: mmu
-      match_index: hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
-    seed: 42
-    # resume-exact with workers via torchdata's StatefulDataLoader; a resumed
-    # run must use the SAME worker count as the run that saved the checkpoint
-    # dp x num_loading_workers must fit the 165 crossmatch
-    # train partitions or datasets silently stops the surplus
-    # workers (streaming.py n_shards); dp=32 caps this at 5.
-    # Corpus-limited, not machine-limited — it lifts when the
-    # corpus grows past LegacySurvey North x DESI.
-    num_loading_workers: 5
+  - name: pilot-stable
+    start_training_step: 1
+    data:
+      dataset:
+        is_astropt3_streaming: true # fixed LSDB InfiniteStream (ADR 0015)
+      seed: 42
+      # DataLoader workers are the only source concurrency; LSDB is synchronous.
+      num_loading_workers: 8
 optimizer:
   accumulate_grad_in_fp32: true
   clip_grad: 1.0
   learning_rate_scheduler:
-    learning_rate: 0.00012        # Pythia 6.9B peak LR
-    lr_warmup_steps: 2000        # min(2000, 1% of train_steps)
+    learning_rate: 0.00012 # Pythia 6.9B peak LR
+    lr_warmup_steps: 2000 # min(2000, 1% of train_steps)
     lr_warmup_style: linear
-    lr_decay_style: cosine       # cosine to 0.1x peak
-    lr_decay_steps: null         # defaults to train_steps - warmup
+    lr_decay_style: cosine # cosine to 0.1x peak
+    lr_decay_steps: null # defaults to train_steps - warmup
     lr_decay_starting_step: null
     min_decay_lr: 0.000012
   optimizer_factory:
@@ -121,23 +111,24 @@ optimizer:
     adam_eps: 1.0e-08
     name: adamW
     torch_adam_is_fused: true
-  weight_decay: 0.1              # on >=2D params; norms excluded below
+  weight_decay: 0.1 # on >=2D params; norms excluded below
   weight_decay_exclude_named_params:
-  - .*layernorm.*
-  - .*layer_norm.*
+    - .*layernorm.*
+    - .*layer_norm.*
   zero_stage: 1
 tokens:
   sequence_length: 4096
-  train_steps: 10000             # placeholder ~21B tokens (~4 pilot epochs);
-                                 # token budget finalized at launch (Phase 5)
+  train_steps:
+    10000 # placeholder ~21B tokens (~4 pilot epochs);
+    # token budget finalized at launch (Phase 5)
   micro_batch_size: 4
   batch_accumulation_per_replica: 4
   val_check_interval: 100
-  limit_val_batches: 0           # eval never runs in the trainer: use
-  limit_test_batches: 0          # scripts/run_probe_sweep.py on a spare GPU
+  limit_val_batches: 0 # eval never runs in the trainer (ADR 0015 defers
+  limit_test_batches: 0 # source-backed val/probe sweeps)
 checkpoints:
   checkpoints_path: ../astroPTv3_checkpoints/astropt3-6p9b
-  checkpoint_schedule: pythia    # steps 1,2,4,...,512 + every interval
+  checkpoint_schedule: pythia # steps 1,2,4,...,512 + every interval
   checkpoint_interval: 1000
   save_initial_state: false
   save_final_state: true

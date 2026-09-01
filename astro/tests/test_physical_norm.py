@@ -85,7 +85,7 @@ def test_sequencer_uses_config_divisor(tiny_config):
     """config.image_norm_divisor must reach the sequencer's normalization."""
     from astropt3 import AstroPT3Config
     from astropt3.data.packing import IMAGE_CROP, ObjectSequencer
-    from astropt3.data.synthetic import make_record
+    from legacy_fixture import make_record
     from astropt3.tokenization import antispiralise, patchify_image
 
     record = make_record(3)

@@ -7,7 +7,7 @@ import torch
 
 from astropt3.config_io import load_model_config
 from astropt3.data.packing import ObjectSequencer, PackedCollator
-from astropt3.data.synthetic import record_stream
+from legacy_fixture import record_stream
 from astropt3.modalities import GMMHead, TinyFlow1D, gmm_nll
 
 CONFIG = Path(__file__).resolve().parents[1] / "configs" / "model" / "test-tiny-jetformer.yaml"
@@ -102,7 +102,7 @@ def test_forward_backward(jet_config, jet_batch):
 
 
 def test_pad_invariance(jet_model, jet_config):
-    from astropt3.data.synthetic import make_record
+    from legacy_fixture import make_record
 
     record = make_record(3)
     obj = ObjectSequencer(jet_config).build(record)
@@ -137,7 +137,7 @@ def test_jetformer_skips_per_patch_standardization(jet_config):
     """jetformer tokens must invert back to flux: no per-patch standardization."""
     from astropt3 import AstroPT3Config
     from astropt3.data.band_registry import physical_normalize
-    from astropt3.data.synthetic import make_record
+    from legacy_fixture import make_record
     from astropt3.tokenization import antispiralise, patchify_image
 
     record = make_record(3, image_only_fraction=0.0)
@@ -213,9 +213,36 @@ def test_noise_curriculum_perturbs_train_only(jet_config, jet_batch):
 
 
 def test_smoke_training_learns():
-    from astropt3.train_smoke import run
+    """Local AdamW loop (astropt3.train_smoke is retired, ADR 0015)."""
+    from astropt3.modeling_astropt3 import AstroPT3Model
 
-    losses = run(str(CONFIG), steps=40, objects_per_batch=2, seq_len=896, lr=1e-3)
+    config, _ = load_model_config(CONFIG)
+    torch.manual_seed(0)
+    model = AstroPT3Model(config)
+    model.train()
+    decay, no_decay = [], []
+    for p in model.parameters():
+        (decay if p.requires_grad and p.dim() >= 2 else no_decay).append(p)
+    opt = torch.optim.AdamW(
+        [
+            {"params": decay, "weight_decay": 0.1},
+            {"params": no_decay, "weight_decay": 0.0},
+        ],
+        lr=1e-3,
+        betas=(0.9, 0.95),
+    )
+    sequencer = ObjectSequencer(config)
+    collator = PackedCollator(config, seq_len=896)
+    losses = []
+    for step in range(40):
+        batch = collator([sequencer.build(r) for r in record_stream(2)])
+        model.set_jet_noise_frac(step / 40)
+        out = model(**batch)
+        opt.zero_grad(set_to_none=True)
+        out.loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+        losses.append(out.loss.item())
     # Likelihood loss (NLL - logdet) can cross zero, so assert an absolute
     # drop rather than the affine gate's ratio check.
     assert losses[-1] < losses[0] - 10.0, f"{losses[0]:.4f} -> {losses[-1]:.4f}"
