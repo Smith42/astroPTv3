@@ -42,14 +42,12 @@ model:
         pos_input_size: 1
         max_positions: 1024
         loss_weight: 1.0
-    tokeniser: jetformer
     spiral: true # center-outward image patch order (ADR 0004)
     jetformer_flow_steps: 4
     jetformer_flow_hidden: 128
     jetformer_gmm_k: 4
     jetformer_noise_max: 0.1
     jetformer_noise_min: 0.0
-    huber_delta: 1.0
     hidden_size: 512
     num_hidden_layers: 23
     num_attention_heads: 8
@@ -117,14 +115,14 @@ optimizer:
   zero_stage: 1
 tokens:
   sequence_length: 4096
-  train_steps: 20000
+  train_steps: 60000
   micro_batch_size: 16
   batch_accumulation_per_replica: 1
   val_check_interval: 100
   limit_val_batches: 0
   limit_test_batches: 0
 checkpoints:
-  checkpoints_path: /work/nvme/bfvh/msmith10/astroPTv3_checkpoints/astropt3-70m-jetformer
+  checkpoints_path: ../astroPTv3_checkpoints/astropt3-70m-jetformer
   checkpoint_interval: 1000
   save_initial_state: false
   save_final_state: true

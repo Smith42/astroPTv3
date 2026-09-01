@@ -3,7 +3,6 @@
 import pytest
 import torch
 
-from astropt3 import AstroPT3Config
 from astropt3.data.scalar_registry import scalar_inverse, scalar_normalize
 from legacy_fixture import make_record
 from astropt3.modalities import gmm_nll
@@ -130,18 +129,15 @@ def test_scalar_loss_matches_manual_gmm_nll(
             assert torch.allclose(out.modality_losses[name], manual, atol=1e-6), name
 
 
-def test_scalar_heads_under_both_tokenisers(tiny_config):
+def test_scalar_heads_are_gmm_and_never_flow(tiny_config):
     from astropt3 import AstroPT3Model
     from astropt3.modalities import GMMHead
 
-    jet_config = AstroPT3Config(**{**tiny_config.to_dict(), "tokeniser": "jetformer"})
-    for config in (tiny_config, jet_config):
-        model = AstroPT3Model(config)
-        for name in ("Z", "ebv", "photometry"):
-            assert isinstance(model.decoders[name], GMMHead)
-            assert model.decoders[name].k == config.scalar_gmm_k
-            if config.tokeniser == "jetformer":
-                assert name not in model.flows  # scalars never flow
+    model = AstroPT3Model(tiny_config)
+    for name in ("Z", "ebv", "photometry"):
+        assert isinstance(model.decoders[name], GMMHead)
+        assert model.decoders[name].k == tiny_config.scalar_gmm_k
+        assert name not in model.flows  # scalars never flow
 
 
 def test_unconditional_generation_covers_scalars(tiny_config):
@@ -149,7 +145,7 @@ def test_unconditional_generation_covers_scalars(tiny_config):
     from astropt3.data.packing import ObjectSequencer
     from astropt3.generation import generate
 
-    config = AstroPT3Config(**{**tiny_config.to_dict(), "tokeniser": "jetformer"})
+    config = tiny_config
     torch.manual_seed(0)
     model = AstroPT3Model(config).eval()
     template = ObjectSequencer(config).build(make_record(3, image_only_fraction=0.0))

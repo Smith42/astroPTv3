@@ -55,7 +55,6 @@ from ..tokenization import (
 from .band_registry import _DIV_FACTOR, physical_normalize
 from .scalar_registry import scalar_normalize
 from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR, spectral_normalize
-from .transforms import per_patch_standardize
 
 # side of the central image crop applied before patchify, in pixels
 IMAGE_CROP = 96
@@ -99,7 +98,13 @@ class ObjectSeq:
 
 
 class ObjectSequencer:
-    """Turn an MMU-schema record into an :class:`ObjectSeq`."""
+    """Turn an MMU-schema record into an :class:`ObjectSeq`.
+
+    The jetformer tokeniser models an exact likelihood in patch space, so the
+    record -> token map must stay invertible: no per-patch standardization
+    (which would discard each patch's mean/std) is ever applied — tokens are
+    the asinh-stretched (images) / raw (spectra) patch values.
+    """
 
     def __init__(self, config: AstroPT3Config):
         self.registry = config.modality_registry()
@@ -108,11 +113,6 @@ class ObjectSequencer:
         # path keys off the same field — a caller-supplied override would
         # reopen the silent-scramble mismatch, so there deliberately isn't one
         self.spiral = getattr(config, "spiral", True)
-        # jetformer models an exact likelihood in patch space, so the record
-        # -> token map must stay invertible: per-patch standardization
-        # (which discards each patch's mean/std) is skipped — tokens are the
-        # asinh-stretched (images) / raw (spectra) patch values.
-        self.standardize = getattr(config, "tokeniser", "affine") != "jetformer"
         # arcsinh knee of the physical image normalization; carried on the
         # config so checkpoints are self-describing and the inverse
         # (scripts/generate.py) uses the divisor the model trained with
@@ -142,8 +142,6 @@ class ObjectSequencer:
         if mod.channel_tokenization == "per_band":
             return self._per_band_tokens(mod, flux, bands)
         patches = patchify_image(flux, mod.patch_size)
-        if self.standardize:
-            patches = per_patch_standardize(patches)
         if self.spiral:
             patches = spiralise(patches)
         positions = torch.arange(len(patches), dtype=torch.long)
@@ -172,8 +170,6 @@ class ObjectSequencer:
         for band in mod.band_order:
             channel = flux[bands.index(band)].unsqueeze(0)
             patches = patchify_image(channel, mod.patch_size)
-            if self.standardize:
-                patches = per_patch_standardize(patches)
             if self.spiral:
                 patches = spiralise(patches)
             per_band.append(patches)
@@ -192,8 +188,6 @@ class ObjectSequencer:
             flux, lam, divisor=self.spectra_norm_divisor, source=mod.source or ""
         )
         patches, lam_mean = patchify_spectrum(flux, lam, mod.patch_size)
-        if self.standardize:
-            patches = per_patch_standardize(patches)
         positions = normalize_wavelength(lam_mean).unsqueeze(-1)
         return patches, positions
 

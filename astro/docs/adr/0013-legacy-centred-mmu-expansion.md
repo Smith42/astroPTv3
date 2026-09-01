@@ -1,6 +1,10 @@
 # ADR 0013: Expand MMU through a Legacy-centred attachment graph
 
-- **Status:** Proposed
+- **Status:** **Superseded by ADR 0015** (2026-09-01) — [ADR 0015](0015-lsdb-infinite-stream-training.md)
+  retires the source graph this ADR built (the North five-spoke run configs
+  and the match-index assembly it depended on) in favor of a single
+  uncrossmatched catalog. Kept as the historical record of the expansion
+  work below; it was never formally accepted before the cutover.
 - **Supersedes:** the sequencing and topology recommendations in
   `mmu_modality_expansion_plan.md` (deleted 2026-08-06; in git history)
 - **References:** [ADR 0006](0006-stream-mmu-upstream.md),

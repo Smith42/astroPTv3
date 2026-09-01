@@ -46,7 +46,7 @@ Spectra unchanged. Additive; gated on `uv run pytest` + the
 
 | Entry | Kind | Status |
 |-------|------|--------|
-| [`physical_norm_plan.md`](physical_norm_plan.md) | Plan (chunked, dependency-ordered) | Plan only; not yet implemented. Source of truth `../galactiktok` branch `feat/norm`. |
+| [`physical_norm_plan.md`](physical_norm_plan.md) | Plan (chunked, dependency-ordered) | Implemented — see `data/band_registry.py` and `docs/architecture.md`. Source of truth was `../galactiktok` branch `feat/norm`. |
 
 ---
 
@@ -74,15 +74,15 @@ conclusions — recover them from git history if a derivation is needed.
 | ADR | Status |
 | ----- | -------- |
 | [`adr/0001-jetformer-inverse-variance-loss.md`](adr/0001-jetformer-inverse-variance-loss.md) | Rejected — ivar-weighted loss does not transfer to the jetformer likelihood head. |
-| [`adr/0002-ivar-weighted-huber-loss.md`](adr/0002-ivar-weighted-huber-loss.md) | Proposed (Parked) — ivar-weighted Huber for the affine tokeniser. |
+| [`adr/0002-ivar-weighted-huber-loss.md`](adr/0002-ivar-weighted-huber-loss.md) | Proposed (Parked), moot — ivar-weighted Huber for the affine tokeniser, which is since removed. |
 | [`adr/0003-checkpoint-samples-in-eval-sidecar.md`](adr/0003-checkpoint-samples-in-eval-sidecar.md) | Accepted — sample panels render in the eval sweep, never in the trainer. |
 | [`adr/0004-spiral-token-order-for-imagery.md`](adr/0004-spiral-token-order-for-imagery.md) | Accepted — centre-out spiral patch order for images (default on). |
 | [`adr/0005-include-spectra-from-non-crossmatched-desi.md`](adr/0005-include-spectra-from-non-crossmatched-desi.md) | Accepted — ZWARN==0 spectrum-only rows train too; generalised by ADR 0008's span order. |
 | [`adr/0006-stream-mmu-upstream.md`](adr/0006-stream-mmu-upstream.md) | Accepted (closed 2026-08-04) — stream MMU live from the hub; the local reshard is deleted. |
 | [`adr/0007-physical-spectra-normalization.md`](adr/0007-physical-spectra-normalization.md) | Accepted — DESI spectra → AB nanomaggies, `arcsinh(f_ν/10 nMgy)` (`data/spectral.py`), the symmetric counterpart of `band_registry.py`. |
 | [`adr/0008-scalar-modalities.md`](adr/0008-scalar-modalities.md) | Accepted — one-token scalar modalities (`Z`, `ebv`, `photometry`) with GMM heads and the uniform random span order. |
-| [`adr/0011-skim-crossmatch-scans.md`](adr/0011-skim-crossmatch-scans.md) | Accepted (amended 2026-08-04 to crossmatch-only) — the match index defines the corpus: one source, one pass, no weights or governor. |
+| [`adr/0011-skim-crossmatch-scans.md`](adr/0011-skim-crossmatch-scans.md) | Accepted (amended 2026-08-04 to crossmatch-only), retired by ADR 0015 — the match index it defined is deleted; kept as the historical record. |
 | [`adr/0012-gate-mmu-streaming-throughput.md`](adr/0012-gate-mmu-streaming-throughput.md) | Closed by ADR 0014 — gated throughput work on measured byte economics. |
-| [`adr/0013-legacy-centred-mmu-expansion.md`](adr/0013-legacy-centred-mmu-expansion.md) | Proposed — prototype one Legacy anchor, retain the second when marginal evidence warrants it, then add ordered source spokes. |
+| [`adr/0013-legacy-centred-mmu-expansion.md`](adr/0013-legacy-centred-mmu-expansion.md) | Superseded by ADR 0015 — the source graph it built is retired; never formally accepted before the cutover. |
 | [`adr/0014-byte-efficiency-and-mfu-programme.md`](adr/0014-byte-efficiency-and-mfu-programme.md) | Accepted — the gated byte-efficiency + MFU programme: replay (built, ~3x) gated for production, per-band A/B, projection shipped, cache conversation opened, concurrency fixes rejected. |
 | [`adr/0015-lsdb-infinite-stream-training.md`](adr/0015-lsdb-infinite-stream-training.md) | Accepted for an experimental branch — hard cutover to `lsdb.streams.InfiniteStream` over a single uncrossmatched catalog; retires the match index, mmu-stream, and the ADR 0013 source graph. |

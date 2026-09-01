@@ -148,7 +148,6 @@ def test_per_band_is_band_major_in_the_configured_order(image_only_record):
     """Band-major, fixed order: band g's 144 patches, then r, then z."""
     from astropt3.data.band_registry import physical_normalize
     from astropt3.tokenization import patchify_image, spiralise
-    from astropt3.data.transforms import per_patch_standardize
     from astropt3.data.packing import IMAGE_CROP
 
     config = _per_band_config()
@@ -162,9 +161,7 @@ def test_per_band_is_band_major_in_the_configured_order(image_only_record):
     flux = physical_normalize(flux, bands)
 
     for index, band in enumerate(["des-g", "des-r", "des-z"]):
-        expected = spiralise(
-            per_patch_standardize(patchify_image(flux[bands.index(band)][None], 8))
-        )
+        expected = spiralise(patchify_image(flux[bands.index(band)][None], 8))
         assert torch.allclose(tokens[index * 144 : (index + 1) * 144], expected)
 
 

@@ -47,9 +47,7 @@ model:
         pos_input_size: 1
         max_positions: 1024
         loss_weight: 1.0
-    tokeniser: affine
     spiral: true # center-outward image patch order (ADR 0004)
-    huber_delta: 1.0
     hidden_size: 512
     num_hidden_layers: 23
     num_attention_heads: 8

@@ -35,13 +35,10 @@ _MAX_NET_RETRY_WAIT = 120
 _MAX_REPLICA_ATTEMPTS = 32
 
 
-def hf_config_from_modalities(
-    modalities, tokeniser: str = "affine", **extra
-) -> AstroPT3Config:
+def hf_config_from_modalities(modalities, **extra) -> AstroPT3Config:
     """Build the HF-side config used by the shared sequencer and collator."""
     return AstroPT3Config(
         modalities=[dict(modality) for modality in modalities],
-        tokeniser=tokeniser,
         **extra,
     )
 
@@ -440,7 +437,6 @@ def build_astropt3_dataloader(
     """Build the plain DataLoader used by nanotron's astropt3 dataset type."""
     config = hf_config_from_modalities(
         model_config.modalities,
-        getattr(model_config, "tokeniser", "affine"),
         **{
             field: getattr(model_config, field, default)
             for field, default in [

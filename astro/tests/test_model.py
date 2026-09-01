@@ -118,24 +118,25 @@ def test_legacy_loss_mode_stays_checkpoint_compatible(
 
 
 def test_loss_matches_manual_computation(tiny_model, sequencer, collator, full_record):
-    """outputs.loss must equal the Huber losses recomputed from predictions.
+    """outputs.loss must equal NLL_GMM(z) - logdet recomputed from the
+    model's own flow + GMM head, for each patch modality.
 
     Scalar-free build: the scalar spans' GMM NLL terms are covered by
     test_scalar_modalities' manual-loss check.
     """
-    import torch.nn.functional as F
+    from astropt3.modalities import gmm_nll
+    from astropt3.modeling_astropt3 import left_shift_mask
 
     batch = collator([sequencer.build(full_record, include_scalars=False)])
     with torch.no_grad():
         out = tiny_model(**batch)
-    manual = []
-    for m in ("images", "spectra"):
-        manual.append(
-            F.huber_loss(
-                out.predictions[m],
-                batch["modality_values"][m],
-                delta=tiny_model.config.huber_delta,
-            )
-        )
+        manual = []
+        for m in ("images", "spectra"):
+            mask = batch["modality_masks"][m]
+            hidden = out.last_hidden_state[left_shift_mask(mask)]
+            z, logdet = tiny_model.flows[m](batch["modality_values"][m])
+            logits_pi, mu, log_sigma = tiny_model.decoders[m](hidden)
+            nll = gmm_nll(z, logits_pi, mu, log_sigma)
+            manual.append((nll - logdet).mean())
     expected = torch.stack(manual).mean()
     assert torch.allclose(out.loss, expected, atol=1e-6)

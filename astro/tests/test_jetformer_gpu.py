@@ -44,7 +44,7 @@ ASTRO_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = ASTRO_DIR.parent
 NANOTRON_DIR = REPO_ROOT / "nanotron"
 TOOLS_DIR = NANOTRON_DIR / "tools" / "astropt3"
-JET_YAML = ASTRO_DIR / "configs" / "nanotron" / "astropt3-test-tiny-jetformer.yaml"
+JET_YAML = ASTRO_DIR / "configs" / "nanotron" / "astropt3-test-tiny.yaml"
 
 
 @pytest.fixture(scope="session")
@@ -53,7 +53,7 @@ def nt():
 
 
 def tiny_jet_config(nt):
-    return tiny_nt_config(nt, tokeniser="jetformer", jetformer_flow_hidden=32)
+    return tiny_nt_config(nt, jetformer_flow_hidden=32)
 
 
 @pytest.fixture(scope="session")
@@ -65,7 +65,6 @@ def matched_jet_models(nt):
 
     nt_config = tiny_jet_config(nt)
     hf_config = nt.to_hf.get_hf_config(nt_config)
-    assert hf_config.tokeniser == "jetformer"
     assert hf_config.jetformer_flow_hidden == 32
     torch.manual_seed(0)
     hf_model = AstroPT3Model(hf_config)
@@ -121,7 +120,6 @@ def test_tp2_replicated_module_gradients_with_noise(nt):
             "--rdzv-backend=c10d",
             "--rdzv-endpoint=localhost:0",
             str(ASTRO_DIR / "scripts" / "tp2_grad_check.py"),
-            "--tokeniser=jetformer",
         ],
         cwd=REPO_ROOT,
         env={**os.environ, "CUDA_DEVICE_MAX_CONNECTIONS": "1"},
@@ -130,7 +128,7 @@ def test_tp2_replicated_module_gradients_with_noise(nt):
         timeout=600,
     )
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert "TP2 GRAD CHECK PASS (jetformer" in result.stdout
+    assert "TP2 GRAD CHECK PASS (" in result.stdout
 
 
 def test_50step_synthetic_run_and_checkpoint_conversion(nt, tmp_path_factory):
@@ -175,7 +173,6 @@ def test_50step_synthetic_run_and_checkpoint_conversion(nt, tmp_path_factory):
     from transformers import AutoModel
 
     hf_model = AutoModel.from_pretrained(save_path).cuda().to(torch.bfloat16).eval()
-    assert hf_model.config.tokeniser == "jetformer"
 
     with open(checkpoint / "model_config.json") as f:
         nt_config = nt.config_cls(**json.load(f))

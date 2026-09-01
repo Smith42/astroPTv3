@@ -2,13 +2,16 @@
 
 - **Status:** **Closed** (accepted 2026-07-17, implemented and closed
   2026-08-04). The decision — stream MMU's own catalogs at train time instead
-  of pre-resharding them locally — stands and is in production. Two revisions
-  reshaped *what* is streamed without reopening that choice:
+  of pre-resharding them locally — stood and was in production through two
+  revisions that reshaped *what* is streamed without reopening that choice:
   [ADR 0011](0011-skim-crossmatch-scans.md) (row-group streaming, a
   precomputed ids-only cell-keyed match index, the crossmatch-scan demux)
   and its 2026-08-04 amendment (**crossmatch-only**: the match index defines
-  the corpus, one scan, no weights). Remaining open items are listed at the
-  bottom with owners; none of them block this ADR.
+  the corpus, one scan, no weights). **Retired 2026-09-01:**
+  [ADR 0015](0015-lsdb-infinite-stream-training.md) deletes `streaming.py`
+  and the whole match-index mechanism in favor of `lsdb.streams.InfiniteStream`
+  over a single uncrossmatched catalog; this ADR is now the historical record
+  of the streaming decision it made, not a description of current code.
 - **Date:** 2026-07-17
 - **References:**
   - `astro/PLAN.md` "Data pipeline" — the local-shard + `HF_DATASETS_OFFLINE=1`

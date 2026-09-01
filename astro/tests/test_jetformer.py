@@ -10,13 +10,12 @@ from astropt3.data.packing import ObjectSequencer, PackedCollator
 from legacy_fixture import record_stream
 from astropt3.modalities import GMMHead, TinyFlow1D, gmm_nll
 
-CONFIG = Path(__file__).resolve().parents[1] / "configs" / "model" / "test-tiny-jetformer.yaml"
+CONFIG = Path(__file__).resolve().parents[1] / "configs" / "model" / "test-tiny.yaml"
 
 
 @pytest.fixture(scope="module")
 def jet_config():
     config, _ = load_model_config(CONFIG)
-    assert config.tokeniser == "jetformer"
     return config
 
 
@@ -123,7 +122,6 @@ def test_save_load_roundtrip(tmp_path, jet_model, jet_batch):
     jet_model.save_pretrained(save_dir)
 
     config = AutoConfig.from_pretrained(save_dir)
-    assert config.tokeniser == "jetformer"
     assert config.jetformer_gmm_k == 4
 
     reloaded = AutoModel.from_pretrained(save_dir)
@@ -135,7 +133,6 @@ def test_save_load_roundtrip(tmp_path, jet_model, jet_batch):
 
 def test_jetformer_skips_per_patch_standardization(jet_config):
     """jetformer tokens must invert back to flux: no per-patch standardization."""
-    from astropt3 import AstroPT3Config
     from astropt3.data.band_registry import physical_normalize
     from legacy_fixture import make_record
     from astropt3.tokenization import antispiralise, patchify_image
@@ -167,14 +164,6 @@ def test_jetformer_skips_per_patch_standardization(jet_config):
         jet_seq.values["spectra"].flatten()[: len(sflux)],
         spectral_normalize(sflux, lam),
     )
-
-    # the affine sequencer still standardizes
-    affine_config = AstroPT3Config(**{**jet_config.to_dict(), "tokeniser": "affine"})
-    affine_seq = ObjectSequencer(affine_config).build(record)
-    assert torch.allclose(
-        affine_seq.values["images"].mean(dim=-1), torch.zeros(144), atol=1e-5
-    )
-    assert not torch.allclose(jet_seq.values["images"], affine_seq.values["images"])
 
 
 def test_noise_curriculum_sigma_endpoints(jet_config):

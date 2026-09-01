@@ -40,14 +40,12 @@ model:
         pos_input_size: 1
         max_positions: 1024
         loss_weight: 1.0
-    tokeniser: jetformer
     spiral: true # center-outward image patch order (ADR 0004)
     jetformer_flow_steps: 4
     jetformer_flow_hidden: 128
     jetformer_gmm_k: 4
     jetformer_noise_max: 0.1
     jetformer_noise_min: 0.0
-    huber_delta: 1.0
     hidden_size: 512
     num_hidden_layers: 23
     num_attention_heads: 8

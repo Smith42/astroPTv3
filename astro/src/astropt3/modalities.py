@@ -1,12 +1,12 @@
 """Modality registry and the modules that move data in and out of embedding space.
 
-Ported from astroPT (src/astropt/model.py) with the affine tokeniser as the
-default. Each modality contributes three modules to the model:
+Ported from astroPT (src/astropt/model.py). Each modality contributes:
 
 - ``Encoder``:   data space  -> embedding space (one token per patch)
-- ``Decoder``:   embedding space -> data space (the regression head)
 - ``PositionEmbedder``: per-modality positional information, added to the
   input embeddings (SmolLM3's RoPE/NoPE over the flat sequence is unchanged).
+- a per-modality flow (``TinyFlow1D``) + ``GMMHead`` (embedding space -> data
+  space, the jetformer regression head; see below).
 """
 
 from __future__ import annotations
@@ -52,8 +52,8 @@ class ModalityConfig:
         ADR 0008 scalar modality — a one-token span holding a
             physical quantity (Z, ebv, photometry). Scalars bypass the
             jetformer flow (their dims are odd and a flow buys nothing on a
-            scalar) and are predicted by a ``GMMHead`` under BOTH tokenisers,
-            with ``gmm_nll`` on the raw normalized value as the loss.
+            scalar) and are predicted by a ``GMMHead`` directly, with
+            ``gmm_nll`` on the raw normalized value as the loss.
     """
 
     name: str
@@ -166,49 +166,16 @@ class ModalityRegistry:
 
 
 class Encoder(nn.Module):
-    """Data space -> embedding space.
+    """Data space -> embedding space: a single linear projection.
 
-    "affine" (default) and "jetformer" both use a single linear projection;
-    the flow that precedes jetformer lives on the model
-    (``AstroPT3Model.flows``).
+    The flow that precedes jetformer's latent space lives on the model
+    (``AstroPT3Model.flows``); this just projects the (possibly flowed)
+    patch value into embedding space.
     """
 
-    def __init__(
-        self,
-        hidden_size: int,
-        in_size: int,
-        tokeniser: str = "affine",
-        bias: bool = False,
-    ):
+    def __init__(self, hidden_size: int, in_size: int, bias: bool = False):
         super().__init__()
-        if tokeniser not in ("affine", "jetformer"):
-            raise ValueError(
-                f"unknown tokeniser {tokeniser!r} (expected 'affine' or 'jetformer')"
-            )
-        self.tokeniser = tokeniser
         self.c_fc = nn.Linear(in_size, hidden_size, bias=bias)
-
-    def forward(self, x):
-        return self.c_fc(x)
-
-
-class Decoder(nn.Module):
-    """Embedding space -> data space (the per-modality regression head)."""
-
-    def __init__(
-        self,
-        hidden_size: int,
-        out_size: int,
-        tokeniser: str = "affine",
-        bias: bool = False,
-    ):
-        super().__init__()
-        if tokeniser != "affine":
-            raise ValueError(
-                f"unknown tokeniser {tokeniser!r} (Decoder supports only 'affine')"
-            )
-        self.tokeniser = tokeniser
-        self.c_fc = nn.Linear(hidden_size, out_size, bias=bias)
 
     def forward(self, x):
         return self.c_fc(x)

@@ -61,10 +61,6 @@ def generate(
     every modality to sample unconditionally. Returns
     ``{name: [n, n_tokens, input_size]}`` in data (standardized-patch) space.
     """
-    if model.config.tokeniser != "jetformer":
-        raise ValueError(
-            "generate() samples from GMM heads; checkpoint is not jetformer"
-        )
     generate_modalities = set(generate_modalities)
     unknown = generate_modalities - set(template.masks)
     if unknown:
@@ -133,9 +129,8 @@ def generate(
 def reconstruct(model, template: ObjectSeq) -> dict:
     """One-step teacher-forced predictions for every span, in data space.
 
-    Works for affine checkpoints too (predictions are already data-space);
-    jetformer point predictions (z-space mixture means) go back through the
-    inverse flow. Returns ``{name: [n_tokens, input_size]}``.
+    Point predictions (z-space mixture means) go back through the inverse
+    flow. Returns ``{name: [n_tokens, input_size]}``.
     """
     model.eval()
     device = next(model.parameters()).device
@@ -151,7 +146,7 @@ def reconstruct(model, template: ObjectSeq) -> dict:
     out = model(**batch)
     preds = {}
     for m, pred in out.predictions.items():
-        if model.config.tokeniser == "jetformer" and m not in model.scalar_names:
+        if m not in model.scalar_names:
             pred, _ = model.flows[m](pred, reverse=True)
         preds[m] = pred
     return preds

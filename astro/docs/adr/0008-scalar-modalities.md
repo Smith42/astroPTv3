@@ -11,7 +11,7 @@
   - `astro/src/astropt3/tokenization.py` — `_MODALITY_ID_BLOCKS`, the frozen
     64-id reservation this ADR spends ids 8–16 of
   - `astro/src/astropt3/modalities.py` — `ModalityConfig`, `ModalityRegistry`,
-    `Encoder`/`Decoder`/`PositionEmbedder`, `GMMHead`, `gmm_nll`
+    `Encoder`/`PositionEmbedder`, `GMMHead`, `gmm_nll`
   - `astro/src/astropt3/data/packing.py` — `ObjectSequencer.build`, the
     modality-optional path and the span-order rule this ADR supersedes
   - `astro/src/astropt3/data/band_registry.py` — the normalization pattern

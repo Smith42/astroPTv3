@@ -1,18 +1,24 @@
 # JetFormer completion plan: noise curriculum, nanotron fork, generation
 
-Status: the `tokeniser: jetformer` option (per-modality `TinyFlow1D` +
-`GMMHead`, loss `mean(NLL_GMM(z) − logdet)`) is implemented and tested on the
-HF side (`astro-phase5`, see AGENTS.md §4). J1 (noise curriculum), J2
-(`astropt3.generation` + `scripts/generate.py`) and J3 (nanotron fork:
-flows/GMM heads/loss, TP-synced curriculum noise, conversion,
-`test_jetformer_gpu.py`) are implemented; J4 runs on the reserved GH200 node
-(GPU venv = `miniforge3_pytorch/2.12.0` module + `.venv-train` overlay —
-torch 2.12+cu130 with prebuilt sm_90 flash-attn; the PLAN Phase 3 x86 wheel
-recipe does not apply on aarch64). The test pretraining config is
-`astro/configs/nanotron/astropt3-70m-jetformer.yaml` against
-`/work/nvme/bfvh/msmith10/astroPTv3_data/shakeout_mix2/train`.
-Everything is additive — the affine path, the staged Phase 5 pilots, and all
-existing gates are untouched.
+Status: **J1–J4 are all done.** The `tokeniser: jetformer` option (per-modality
+`TinyFlow1D` + `GMMHead`, loss `mean(NLL_GMM(z) − logdet)`) is implemented and
+tested on the HF side. J1 (noise curriculum), J2 (`astropt3.generation` +
+`scripts/generate.py`) and J3 (nanotron fork: flows/GMM heads/loss, TP-synced
+curriculum noise, conversion, `test_jetformer_gpu.py`) are implemented; J4's
+test pretraining run (`astropt3-70m-jetformer`, wandb `17k4i9n1`) completed —
+results, red flags (grad-norm explosion), and the follow-up sampling
+diagnosis are in [`jetformer_run_guide.md`](jetformer_run_guide.md) and
+[`jetformer_noise_diagnosis.md`](jetformer_noise_diagnosis.md); this file is
+kept as the historical implementation plan, not a live task list.
+Everything was additive — the affine path, the staged Phase 5 pilots, and all
+existing gates stayed untouched.
+
+**2026-09-01 note:** J4's acceptance criteria below cite `ASTROPT3_DATA_ROOT`,
+`object_id_log`, and `run_probe_sweep` — all deleted by
+[ADR 0015](adr/0015-lsdb-infinite-stream-training.md)'s hard cutover to
+`lsdb.streams.InfiniteStream`. They describe how the already-completed J4 run
+was actually verified at the time, not a repeatable recipe against current
+infra.
 
 ## Phase J1 — noise curriculum (CPU, this machine)
 
@@ -111,7 +117,7 @@ Fork (`nanotron/` submodule, branch `main`), mirroring how affine is wired:
      (reuses the Phase 4 harness; the loss path is orthogonal to stream
      state, so this is a cheap regression guard).
 
-## Phase J4 — GPU session: verification + test pretraining run
+## Phase J4 — GPU session: verification + test pretraining run (done)
 
 Needs: leased box with **≥2 GPUs** (TP=2 parity test; everything else runs
 on one), A100/H100 class; venv per the PLAN Phase 3 recipe; pilot data via

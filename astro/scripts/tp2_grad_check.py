@@ -22,7 +22,6 @@ Re-run once; steady-state runs are bitwise stable (verified 4/4 on GH200).
 
 # Pyright runs in the CPU dev venv; these imports exist in the GPU Nanotron venv.
 # pyright: reportMissingImports=false
-import argparse
 import sys
 import zlib
 from pathlib import Path
@@ -53,7 +52,6 @@ MBS = 2
 SEQ_LEN = 896
 
 # nanotron parameter prefixes of the TP-replicated modality modules
-# (flows only exist under tokeniser: jetformer)
 REPLICATED_PREFIXES = (
     "model.token_position_embeddings.pp_block.encoders.",
     "model.token_position_embeddings.pp_block.pos_embeds.",
@@ -83,13 +81,7 @@ def gather_across_tp(tensor: torch.Tensor, tp_pg) -> list:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--tokeniser", default="affine", choices=["affine", "jetformer"]
-    )
-    args = parser.parse_args()
     config = AstroPT3Config(
-        tokeniser=args.tokeniser,
         hidden_size=64,
         num_hidden_layers=4,
         num_attention_heads=4,
@@ -146,9 +138,8 @@ def main():
     )
     mark_tied_parameters(model=model, parallel_context=parallel_context)
     deterministic_init(model)
-    if args.tokeniser == "jetformer":
-        # frac=0 -> sigma = noise_max: the noise path must stay TP-identical
-        model.set_jet_noise_frac(0.0)
+    # frac=0 -> sigma = noise_max: the noise path must stay TP-identical
+    model.set_jet_noise_frac(0.0)
 
     replicated = {
         name: param
@@ -165,7 +156,7 @@ def main():
             assert torch.equal(param.detach(), other), f"init drift across TP in {name}"
 
     # identical batch on every TP rank (same stream, rank/world untouched)
-    hf_config = hf_config_from_modalities(config.modalities, config.tokeniser)
+    hf_config = hf_config_from_modalities(config.modalities)
     flat = next(iter(PackedMicroBatches(hf_config, MBS, SEQ_LEN)))
     flat = {k: v.cuda() for k, v in flat.items()}
 
@@ -197,7 +188,7 @@ def main():
 
     if tp_rank == 0:
         print(
-            f"TP2 GRAD CHECK PASS ({args.tokeniser}, {checked} replicated params, loss {loss.item():.4f})"
+            f"TP2 GRAD CHECK PASS ({checked} replicated params, loss {loss.item():.4f})"
         )
 
 

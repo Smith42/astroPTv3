@@ -5,7 +5,10 @@
   *defines* the corpus and one scan emits everything. See
   §Revision 2026-08-04 at the bottom; everything above it is the skim design
   as adopted, kept because the byte model and the determinism argument still
-  hold.
+  hold. **Retired 2026-09-01:** [ADR 0015](0015-lsdb-infinite-stream-training.md)
+  deletes the match index this ADR defines, along with `mmu-stream` and its
+  builders — kept here as the historical record of the crossmatch-index
+  design, not as a description of the current corpus.
 - **Superseded status (2026-07-21):** Adopted — the A/B on DeltaAI passed (matched
   445-iteration fresh-start window vs `astropt3-70m-jetformer-mmu`: stalls
   ≥5 s 11.0% vs 12.1%, mean step 2897 vs 3178 ms, plus the structural halving
@@ -24,7 +27,7 @@
   - `astro/src/astropt3/data/streaming.py` — `_crossmatch_examples`,
     `owned_by_rank`, `open_stream` (the skim's `_paired_examples` and
     `interleaved` were deleted by the 2026-08-04 revision)
-  - [ADR 0014](0014-byte-efficiency-of-the-streamed-corpus.md) — measured
+  - [ADR 0014](0014-byte-efficiency-and-mfu-programme.md) — measured
     wire costs and byte economics (the 2026-07-21 throughput audit and
     shakeout handoff behind them were deleted 2026-08-06; git history)
 
@@ -371,5 +374,5 @@ load.
   weights rationale, match-index.
 - `astro/scripts/probe_stream_rss.py` — the rebuild-leak and per-cell-spike
   arms behind the 2026-08-04 revision's memory numbers.
-- [ADR 0014](0014-byte-efficiency-of-the-streamed-corpus.md) — ~250 KB/image,
+- [ADR 0014](0014-byte-efficiency-and-mfu-programme.md) — ~250 KB/image,
   incompressible flux, the 1 GbE ceiling, and the crop-waste lever.

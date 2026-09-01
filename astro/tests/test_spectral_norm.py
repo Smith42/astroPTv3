@@ -95,11 +95,7 @@ def test_sequencer_uses_config_divisor(tiny_config):
 
     record = make_record(3, image_only_fraction=0.0, spectrum_only_fraction=1.0)
     moved_config = AstroPT3Config(
-        **{
-            **tiny_config.to_dict(),
-            "tokeniser": "jetformer",
-            "spectra_norm_divisor": 3.16,
-        }
+        **{**tiny_config.to_dict(), "spectra_norm_divisor": 3.16}
     )
     seq = ObjectSequencer(moved_config).build(record)
     flux = torch.as_tensor(record["spectrum"]["flux"])
@@ -108,8 +104,6 @@ def test_sequencer_uses_config_divisor(tiny_config):
         spectral_normalize(flux, lam, divisor=3.16), lam, 256
     )
     assert torch.allclose(seq.values["spectra"], expected)
-    default_seq = ObjectSequencer(
-        AstroPT3Config(**{**tiny_config.to_dict(), "tokeniser": "jetformer"})
-    ).build(record)
+    default_seq = ObjectSequencer(tiny_config).build(record)
     assert not torch.allclose(seq.values["spectra"], default_seq.values["spectra"])
     assert _DIV_FACTOR == 10.0

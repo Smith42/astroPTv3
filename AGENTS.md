@@ -92,11 +92,10 @@ stages is implicit and easy to break, so understand it before editing:
    calibration; unknown bands raise; spectra get the symmetric ADR 0007
    treatment in `data/spectral.py`: DESI f_λ → AB nMgy via `f_ν = f_λ·λ²/c`
    on the fixed DESI grid, then `arcsinh(f_ν/10 nMgy)`, invertible with no
-   side info; unknown grids raise) + patchify (`tokenization.py`) + per-patch
-   standardization (`data/transforms.py`) per modality (jetformer configs
-   SKIP the standardization — the exact-likelihood loss needs an invertible
-   record -> token map, and standardization discards each patch's
-   mean/std), wrapped in frozen
+   side info; unknown grids raise) + patchify (`tokenization.py`) per
+   modality — no per-patch standardization: the jetformer tokeniser's
+   exact-likelihood loss needs an invertible record -> token map, and
+   standardization would discard each patch's mean/std — wrapped in frozen
    special tokens: `<|bos|> <|begin_m|> …placeholders… <|end_m|>` per
    modality, spans serialized in a **uniform random order seeded on
    `crc32(object_id) ^ epoch`** (resume-exact, always on — every
@@ -107,8 +106,8 @@ stages is implicit and easy to break, so understand it before editing:
    mean wavelength as a continuous position; ADR 0008 adds one-token
    **scalar modalities** (`Z` gated on ZWARN==0, `ebv`, joint 3-band
    `photometry`; `data/scalar_registry.py` fixed transforms, loss_weight
-   0.1) predicted by `GMMHead`s (`scalar_gmm_k`) under BOTH tokenisers —
-   no flow, no logdet, plain `gmm_nll` on the raw normalized value. The
+   0.1) predicted by `GMMHead`s (`scalar_gmm_k`) directly — no flow, no
+   logdet, plain `gmm_nll` on the raw normalized value. The
    linear probe builds scalar-free sequences (`include_scalars=False`)
    so R² stays a representation metric; `eval/scalar_head.py` is the
    ask-the-model metric (`nmad`/`outlier_frac`/`coverage_1sig`).
@@ -125,19 +124,22 @@ stages is implicit and easy to break, so understand it before editing:
 4. **`AstroPT3Model`** (`modeling_astropt3.py`): 64-id `embed_tokens` (no
    text vocab, no lm_head) + additive deltas
    `encoder_m(value) + pos_embed_m(position)` at placeholder slots →
-   `SmolLM3Model(inputs_embeds=…)` → per-modality `Decoder` heads. Loss is
-   Huber at positions one left of each modality token (`<|begin_m|>`
-   predicts patch 0 — astroPT's `starts-1` alignment), via
-   `left_shift_mask`; weighted mean over modalities present. The
-   `tokeniser: jetformer` option (JetFormer/GIVT, ported from astroPT v2's
-   sogol_branch) instead flows each modality's patch tokens through a
-   per-modality `TinyFlow1D` and predicts them with a per-modality `GMMHead`;
-   loss is exact patch-space likelihood `mean(NLL_GMM(z) - logdet)`, which
-   can go negative. A noise curriculum (`jetformer_noise_max` -> `_min`,
-   driven via `set_jet_noise_frac`) perturbs only the embedded z copy in
-   training mode. The nanotron fork mirrors all of it (flows/GMM heads on
-   the embedding/head blocks, z+logdet routed to the loss, TP-synced noise);
-   sampling lives in `astropt3.generation` + `scripts/generate.py`.
+   `SmolLM3Model(inputs_embeds=…)` → per-modality regression heads. The
+   jetformer tokeniser (JetFormer/GIVT, ported from astroPT v2's
+   sogol_branch) is the sole regression head: each patch modality's tokens
+   flow through a per-modality `TinyFlow1D` to a latent z that is both
+   embedded and predicted by a per-modality `GMMHead`, with loss the exact
+   patch-space likelihood `mean(NLL_GMM(z) - logdet)` at positions one left
+   of each modality token (`<|begin_m|>` predicts patch 0 — astroPT's
+   `starts-1` alignment), via `left_shift_mask`; the loss can go negative;
+   weighted mean over modalities present. A noise curriculum
+   (`jetformer_noise_max` -> `_min`, driven via `set_jet_noise_frac`)
+   perturbs only the embedded z copy in training mode. Scalar modalities
+   (`Z`, `ebv`, `photometry`) bypass the flow and go straight to a
+   `GMMHead` on the raw normalized value. The nanotron fork mirrors all of
+   it (flows/GMM heads on the embedding/head blocks, z+logdet routed to
+   the loss, TP-synced noise); sampling lives in `astropt3.generation` +
+   `scripts/generate.py`.
 5. **Config**: `AstroPT3Config(SmolLM3Config)` carries a `modalities` list
    of dicts; `import astropt3` registers the Auto classes, so it must be
    imported before `AutoModel.from_pretrained` on a checkpoint. Size YAMLs

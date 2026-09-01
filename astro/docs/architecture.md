@@ -4,6 +4,13 @@
 [`training.md`](training.md); the authoritative phase plan with all fixed
 decisions is [`../PLAN.md`](../PLAN.md).*
 
+**Note (2026-09-01):** the crossmatch corpus and `data/streaming.py` described
+below in "What this is" and step 1 of "From a galaxy to a token sequence" are
+retired by [ADR 0015](adr/0015-lsdb-infinite-stream-training.md); the corpus
+actually running today is the single uncrossmatched LegacySurvey catalog
+described later in this doc's "Parallelism semantics" / "Training routine"
+sections.
+
 ## What this is
 
 AstroPTv3 (NAIRR260009) is a from-scratch suite of **multimodal astronomical
@@ -13,8 +20,8 @@ the whole family. The recipe combines two lineages:
 
 - **AstroPT** (Smith et al.): autoregressive *next-token regression* over
   continuous embeddings of astronomical data — no quantization, no text
-  vocabulary. The model predicts the next image/spectrum patch directly and
-  is trained with a Huber loss.
+  vocabulary. The model predicts the next image/spectrum patch directly,
+  via the jetformer (JetFormer/GIVT-style) flow + GMM regression head.
 - **SmolLM3**: the transformer body — a modern decoder stack with grouped-
   query attention (GQA), RoPE with NoPE every 4th layer, RMSNorm, SwiGLU,
   and document-masked packed sequences.
@@ -118,14 +125,18 @@ reference):
   `embed(<|m|>) + encoder_m(value) + pos_embed_m(position)`. The placeholder
   embedding acts as a learned modality-type embedding; nothing is overwritten
   in place.
-- **Encoders/decoders** are per-modality affine maps (`tokeniser: affine`,
-  a single `nn.Linear` each way; an `aim` MLP variant is selectable in
-  config). Image positions go through an `nn.Embedding` (index type), spectra
-  positions through a small affine layer (continuous type).
+- **Encoders** are a single per-modality `nn.Linear` (data space -> embedding
+  space). Image positions go through an `nn.Embedding` (index type), spectra
+  positions through a small affine layer (continuous type). Each patch
+  modality also has a per-modality normalizing flow (`TinyFlow1D`) that maps
+  its raw patch value to a latent z — z is both what gets embedded and what
+  the `GMMHead` decoder predicts; scalar modalities (`Z`, `ebv`, `photometry`)
+  skip the flow and feed a `GMMHead` directly on the raw normalized value.
 - **Body**: the stock SmolLM3 decoder stack, consuming `inputs_embeds`.
   RoPE θ=100k, **NoPE every 4th layer** (`no_rope_layer: 4` /
   `no_rope_layer_interval: 4`), GQA, RMSNorm ε=1e-6, SwiGLU, bf16 training.
-- **Loss**: Huber (δ=1.0) computed at positions **one to the left** of each
+- **Loss**: the exact patch-space likelihood `mean(NLL_GMM(z) - logdet)`
+  (may be negative) computed at positions **one to the left** of each
   modality token — `<|begin_m|>` predicts patch 0, patch *i* predicts patch
   *i+1* (AstroPT's `starts−1` alignment, implemented via `left_shift_mask`).
   ADR 0013 configs average present modalities within image/spectrum/scalar,
@@ -158,7 +169,8 @@ small sizes gain a layer or two over Pythia to hit nominal totals.
   repo root `nanotron/`): the *training* implementation.
   `src/nanotron/models/astropt3.py` is the branch's Qwen2/SmolLM3 stack with
   the vocab-embedding block replaced by the 64-id + modality assembly, and
-  the lm_head + sharded-CE loss replaced by modality decoders + masked Huber.
+  the lm_head + sharded-CE loss replaced by modality flows/GMM heads +
+  masked exact-likelihood loss.
   `run_train.py` gains an `astropt3_streaming` dataset type that calls back
   into this package's `data/nanotron_loader.py`.
 - **transformers implementation** (`src/astropt3/`): the release/probing

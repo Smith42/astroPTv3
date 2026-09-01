@@ -135,9 +135,7 @@ def save_spectra_png(
 
 
 def default_modes(config) -> list[str]:
-    """The sampling modes a checkpoint supports (``generate`` is jetformer-only)."""
-    if config.tokeniser != "jetformer":
-        return ["reconstruct"]
+    """The sampling modes a checkpoint supports."""
     modes = ["unconditional"]
     if "spectra" in config.modality_registry().names():
         modes.extend(["image-to-spectra", "spectra-to-images"])

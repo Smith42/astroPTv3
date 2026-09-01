@@ -1,5 +1,13 @@
 # Implementation Plan: Port galactiktok `feat/norm` Physical Image Normalization
 
+**Status: done.** Shipped as `data/band_registry.py`; see
+[`architecture.md`](architecture.md) for the current description and
+[`README.md`](README.md) for this plan's status entry. Kept as the
+historical implementation plan, not a live task list — some referenced
+paths (`train_smoke.py`, `config_io.resolve_data_root`) were since removed
+by [ADR 0015](adr/0015-lsdb-infinite-stream-training.md) for unrelated
+reasons.
+
 Replace astroPTv3's data-driven Platonic Universe (PU) asinh stretch with
 galactiktok's physical, band-registry-keyed normalization for the image
 modality. Spectra are unchanged. Each chunk is independently verifiable and

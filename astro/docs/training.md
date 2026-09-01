@@ -99,7 +99,6 @@ general:
 model:
   model_config:
     is_astropt3_config: true   # dispatches to AstroPT3ForTraining
-    tokeniser: affine          # or "aim"/"jetformer"
     _use_doc_masking: true     # position_ids restarts = document boundaries
 parallelism:
   pp: 1                        # asserted — do not change

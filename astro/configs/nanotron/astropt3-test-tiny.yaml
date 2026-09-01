@@ -30,10 +30,8 @@ model:
     is_astropt3_config: true
     # modalities omitted -> pinned pilot defaults (images 361x192 patch 8,
     # spectra 31x256 patch 256 with continuous wavelength positions)
-    tokeniser: affine
     loss_aggregation: family
     spiral: true # center-outward image patch order (ADR 0004)
-    huber_delta: 1.0
     hidden_size: 64
     num_hidden_layers: 4
     num_attention_heads: 4

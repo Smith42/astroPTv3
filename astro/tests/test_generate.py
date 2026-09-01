@@ -17,12 +17,7 @@ from astropt3.eval.samples import (
 from astropt3.generation import generate, reconstruct, sample_gmm
 from legacy_fixture import make_record
 
-CONFIG = (
-    Path(__file__).resolve().parents[1]
-    / "configs"
-    / "model"
-    / "test-tiny-jetformer.yaml"
-)
+CONFIG = Path(__file__).resolve().parents[1] / "configs" / "model" / "test-tiny.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -117,15 +112,7 @@ def test_image_to_spectra_teacher_forces_images(smoke_model, template):
     assert out["spectra"].shape == (1, 31, 256)
 
 
-def test_generate_rejects_affine_and_missing_span(smoke_model, template, jet_config):
-    from astropt3 import AstroPT3Config, AstroPT3Model
-
-    affine = AstroPT3Model(
-        AstroPT3Config(**{**jet_config.to_dict(), "tokeniser": "affine"})
-    )
-    with pytest.raises(ValueError, match="not jetformer"):
-        generate(affine, template, {"images"})
-
+def test_generate_rejects_missing_span(smoke_model, jet_config):
     image_only = ObjectSequencer(jet_config).build(
         make_record(0, image_only_fraction=1.1)
     )

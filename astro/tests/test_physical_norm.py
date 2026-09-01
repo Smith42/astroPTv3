@@ -90,7 +90,7 @@ def test_sequencer_uses_config_divisor(tiny_config):
 
     record = make_record(3)
     moved_config = AstroPT3Config(
-        **{**tiny_config.to_dict(), "tokeniser": "jetformer", "image_norm_divisor": 0.5}
+        **{**tiny_config.to_dict(), "image_norm_divisor": 0.5}
     )
     seq = ObjectSequencer(moved_config).build(record)
     flux = torch.as_tensor(record["image"]["flux"])
@@ -107,7 +107,5 @@ def test_sequencer_uses_config_divisor(tiny_config):
         else seq.values["images"]
     )
     assert torch.allclose(actual, expected)
-    default_seq = ObjectSequencer(
-        AstroPT3Config(**{**tiny_config.to_dict(), "tokeniser": "jetformer"})
-    ).build(record)
+    default_seq = ObjectSequencer(tiny_config).build(record)
     assert not torch.allclose(seq.values["images"], default_seq.values["images"])

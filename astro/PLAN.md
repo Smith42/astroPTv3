@@ -29,8 +29,11 @@ using `<|begin_mod|>`/placeholder/`<|end_mod|>` special tokens;
 4. **Pilot data**: `UniverseTBD/mmu_ssl_legacysurvey_north` ×
    `UniverseTBD/mmu_desi_edr_sv3` via lsdb crossmatch (schemas verified below);
    time series + tabular later as config-only extensions.
-5. **Affine tokeniser default** (single `nn.Linear` per direction); aim MLP
-   selectable via config.
+5. **Jetformer tokeniser default and sole regression head** (flow + GMM head;
+   decision rewritten 2026-09-01 — it previously read "affine tokeniser
+   default, single `nn.Linear` per direction; aim MLP selectable via
+   config." Both the affine `Decoder` and the never-wired-into-HF `aim` MLP
+   variant are removed from the codebase).
 6. **uv** manages environments; new deps in `astro/pyproject.toml`; upgrading
    existing venv packages is fine.
 7. **GPU work and training runs are allowed on this machine** (2×A100 80GB
@@ -77,6 +80,16 @@ using `<|begin_mod|>`/placeholder/`<|end_mod|>` special tokens;
 
 ### Repo layout
 
+> **Superseded in part by [ADR 0015](docs/adr/0015-lsdb-infinite-stream-training.md)
+> (2026-09-01).** The listing below was written against the match-index/
+> `mmu-stream` corpus (ADR 0006/0011/0013). ADR 0015's hard cutover deleted
+> `data/streaming.py`, `data/match_index.py`, `data/synthetic.py`,
+> `train_smoke.py`, `scripts/build_match_index.py`, and
+> `scripts/run_probe_sweep.py` outright, and replaced the training-record path
+> with `lsdb.streams.InfiniteStream` over a single uncrossmatched catalog
+> feeding `data/nanotron_loader.py` directly. The listing has been updated to
+> the current tree; see the ADR for what changed and why.
+
 ```
 astroPTv3/
 ├── nanotron/                        # git submodule → Smith42/nanotron@astropt3
@@ -86,8 +99,7 @@ astroPTv3/
 │       tools/astropt3/convert_{nanotron_to_hf,hf_to_nanotron}.py
 ├── astro/
 │   ├── pyproject.toml               # uv project "astropt3": torch, transformers>=4.57,
-│   │                                # datasets>=4.3, einops, pyyaml, pytest, wandb
-│   │                                # [data]: lsdb, hats, nested-pandas   (prep env, login node)
+│   │                                # datasets>=4.3, einops, pyyaml, pytest, wandb, lsdb
 │   │                                # [train]: nanotron (editable ../nanotron), flash-attn (training machine)
 │   ├── src/astropt3/
 │   │   ├── __init__.py              # AutoConfig/AutoModel registration
@@ -95,39 +107,50 @@ astroPTv3/
 │   │   ├── modeling_astropt3.py     # HF release/probing model
 │   │   ├── modalities.py            # ModalityConfig/Registry, Encoder, Decoder, PositionEmbedder
 │   │   ├── tokenization.py          # patchify/unpatchify, normalization, SPECIAL_TOKENS (frozen)
+│   │   ├── generation.py            # jetformer/GIVT sampling
+│   │   ├── checkpoint_schedule.py   # Pythia checkpoint step schedule
 │   │   ├── data/
-│   │   │   ├── streaming.py         # live MMU stream off the hub (ADR 0006/0011/0013)
-│   │   │   ├── match_index.py       # precomputed crossmatch index the stream reads
+│   │   │   ├── nanotron_loader.py   # opens the LSDB InfiniteStream per worker, feeds the sequencer/packer
 │   │   │   ├── packing.py           # ObjectSequencer + PackedCollator (shared by HF & nanotron paths)
-│   │   │   ├── nanotron_loader.py   # adapter: PackedCollator batches → nanotron micro-batch dicts
-│   │   │   ├── synthetic.py         # network-free fixtures matching the verified MMU schemas
 │   │   │   ├── band_registry.py     # physical per-band normalization (rescale → clamp → arcsinh)
-│   │   │   └── transforms.py        # per-patch standardization
-│   │   ├── train_smoke.py           # tiny plain-torch CPU loop (validation only, NOT the trainer)
-│   │   └── eval/{val_loss.py,linear_probe.py}
+│   │   │   ├── spectral.py          # DESI spectral normalization (ADR 0007)
+│   │   │   ├── scalar_registry.py   # scalar-modality transforms (ADR 0008)
+│   │   │   ├── transforms.py        # per-patch standardization
+│   │   │   └── telemetry.py
+│   │   └── eval/{val_loss.py,linear_probe.py,scalar_head.py,samples.py}   # pure model-side functions (ADR 0015)
 │   ├── configs/
 │   │   ├── nanotron/astropt3-{70m,160m,410m,1b,1p4b,2p8b,6p9b,12b}.yaml   # full nanotron configs
 │   │   └── model/…yaml (HF-side mirrors + test-tiny)
 │   ├── scripts/
-│   │   ├── build_match_index.py     # offline lsdb crossmatch → match index (login node, [data] env)
 │   │   ├── count_params.py          # asserts each size within 10% of nominal
-│   │   ├── launch_slurm.sbatch      # torchrun → nanotron run_train.py, multi-node
-│   │   └── run_probe_sweep.py       # async linear probes over converted HF checkpoints
+│   │   └── launch_slurm.sbatch      # torchrun → nanotron run_train.py, multi-node
 │   └── tests/                       # CPU-only by default; @pytest.mark.gpu for nanotron parity
 └── text/, vision/, tools/           # upstream smollm, untouched (reference)
 ```
 
 ### Model (both implementations share this spec)
 
+> **Updated 2026-09-01.** The affine `Decoder`/Huber-loss regression head
+> this section originally described is removed: the jetformer flow + GMM
+> head (originally an alternative `tokeniser: jetformer` option) is now the
+> sole regression head, made the Pythia ladder's default. See
+> [`adr/0015-lsdb-infinite-stream-training.md`](docs/adr/0015-lsdb-infinite-stream-training.md)
+> for the corpus cutover in the same commit; the tokeniser change is
+> unrelated to that ADR but landed alongside it.
+
 Tiny 64-id special-token embedding + SmolLM3 decoder stack (GQA, NoPE every
-4th layer, RMSNorm, SwiGLU, doc masking) + per-modality affine
-Encoder/Decoder/PositionEmbedder dicts. No lm_head.
+4th layer, RMSNorm, SwiGLU, doc masking) + per-modality `Encoder` (a single
+`nn.Linear`) + per-modality `TinyFlow1D` + `GMMHead` + `PositionEmbedder`
+dicts. No lm_head.
 
 - Slot embedding is **additive**: `embed(<|m|>) + encoder_m(value) + pos_m(position)`
   (placeholder = learned modality-type embedding; no in-place overwrite).
-- Loss: Huber(delta=1.0) on each modality span, predictions taken one position
-  left of each modality token (`<|begin_m|>` predicts patch 0 — astroPT
-  `starts-1` semantics). ADR 0013 configs average modalities within each
+  Patch modalities embed the flow's latent z; scalar modalities (`Z`, `ebv`,
+  `photometry`) bypass the flow and embed the raw normalized value.
+- Loss: the exact patch-space likelihood `mean(NLL_GMM(z) - logdet)` (may be
+  negative) on each modality span, predictions taken one position left of
+  each modality token (`<|begin_m|>` predicts patch 0 — astroPT `starts-1`
+  semantics). ADR 0013 configs average modalities within each
   image/spectrum/scalar family and combine present family means at 1:1:0.1;
   historical configs retain the prior `loss_weight` mean. No loss on
   special/pad tokens (`special_token_ce_weight` hook kept for later
