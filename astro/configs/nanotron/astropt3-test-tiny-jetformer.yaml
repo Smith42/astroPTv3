@@ -1,4 +1,4 @@
-# Tiny AstroPT3 nanotron config, jetformer tokeniser: 50-step synthetic
+# Tiny AstroPT3 nanotron config, jetformer tokeniser: 50-step LSDB
 # smoke run on 1 GPU. Identical to astropt3-test-tiny.yaml except the
 # tokeniser block — loss is the exact patch-space likelihood
 # NLL_GMM(z) - logdet (negative values are correct), with the flow-noise

@@ -1,7 +1,8 @@
 # 70M JETFORMER test pretraining run (GH200 node, DP=2, ZeRO-1).
-# Identical to astropt3-70m-shakeout.yaml except tokeniser: jetformer (+ its
-# noise-curriculum fields) and this cluster's data/checkpoint paths, so the
-# loss/probe curves are directly comparable to the affine shakeout.
+# Identical to the retired astropt3-70m-shakeout.yaml except tokeniser:
+# jetformer (+ its noise-curriculum fields) and this cluster's data/
+# checkpoint paths, so the loss/probe curves are directly comparable to the
+# affine shakeout run (see PLAN.md 2026-07-08/09 for its results).
 # Loss is the exact patch-space likelihood NLL_GMM(z) - logdet — negative
 # values are correct; watch grad norms early (nats-scale loss vs Huber's
 # ~0.1 scale is the main hyperparameter unknown; knobs if unstable are

@@ -57,10 +57,12 @@ Spectra unchanged. Additive; gated on `uv run pytest` + the
 | [`evidence/adr0013-anchor-scout-2026-08-04/README.md`](evidence/adr0013-anchor-scout-2026-08-04/README.md) | Evidence | Pinned North/South scout; both capped inconclusive, owner selected North first and retained South. |
 | [`evidence/adr0013-source-spokes-2026-08-05/README.md`](evidence/adr0013-source-spokes-2026-08-05/README.md) | Evidence | Bounded schema-v2 index, live stream, transform, and transferred-byte smoke for all four North spokes. |
 
-The five-spoke North graph is built (2,182,875 anchors, 5,488 cells) and the
-canonical run config is
-[`../configs/nanotron/astropt3-70m-jetformer-north-5spoke-replay2.yaml`](../configs/nanotron/astropt3-70m-jetformer-north-5spoke-replay2.yaml);
-build a new one with [`../scripts/build_remaining_spokes.sh`](../scripts/build_remaining_spokes.sh).
+The five-spoke North graph and its match-index/source-graph run configs
+(`*-north-5spoke-*.yaml`, `bench-north-5spoke-b0.yaml`) are retired: ADR 0015
+is a hard cutover to `lsdb.streams.InfiniteStream` over a single uncrossmatched
+catalog, which has no source graph, no match index, and no five-spoke
+composition to run against. See
+[`adr/0015-lsdb-infinite-stream-training.md`](adr/0015-lsdb-infinite-stream-training.md).
 The expansion plan, its test plan, the crossmatch research and the per-run
 handoff notes were deleted 2026-08-06 once ADRs 0011–0014 carried their
 conclusions — recover them from git history if a derivation is needed.
@@ -83,3 +85,4 @@ conclusions — recover them from git history if a derivation is needed.
 | [`adr/0012-gate-mmu-streaming-throughput.md`](adr/0012-gate-mmu-streaming-throughput.md) | Closed by ADR 0014 — gated throughput work on measured byte economics. |
 | [`adr/0013-legacy-centred-mmu-expansion.md`](adr/0013-legacy-centred-mmu-expansion.md) | Proposed — prototype one Legacy anchor, retain the second when marginal evidence warrants it, then add ordered source spokes. |
 | [`adr/0014-byte-efficiency-and-mfu-programme.md`](adr/0014-byte-efficiency-and-mfu-programme.md) | Accepted — the gated byte-efficiency + MFU programme: replay (built, ~3x) gated for production, per-band A/B, projection shipped, cache conversation opened, concurrency fixes rejected. |
+| [`adr/0015-lsdb-infinite-stream-training.md`](adr/0015-lsdb-infinite-stream-training.md) | Accepted for an experimental branch — hard cutover to `lsdb.streams.InfiniteStream` over a single uncrossmatched catalog; retires the match index, mmu-stream, and the ADR 0013 source graph. |
