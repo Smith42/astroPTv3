@@ -180,3 +180,54 @@ def legacy_row(index: int) -> dict:
         "psfdepth_z": record["psfdepth_z"],
         "z_spec": record["z_spec"],
     }
+
+
+def crossmatch_row(index: int, matched: bool = True) -> dict:
+    """One DESI-left crossmatch row (``desi ⋈ legacy``, ADR 0015 spectra
+    test), column-shaped like the ``InfiniteStream`` pandas row
+    ``nanotron_loader.decode_crossmatch_row`` must decode: desi columns
+    unsuffixed, legacy columns suffixed ``_legacy`` (``suffixes=("",
+    "_legacy")``, DESI driving the ``how="left"`` join).
+    """
+    record = make_record(
+        index, image_only_fraction=0.0, spectrum_only_fraction=0.0 if matched else 1.0
+    )
+    row = {
+        "object_id": record["object_id"],
+        "ra": record["ra"],
+        "dec": record["dec"],
+        "spectrum": {
+            "flux": record["spectrum"]["flux"].tolist(),
+            "lambda": record["spectrum"]["lambda"].tolist(),
+            "ivar": record["spectrum"]["ivar"].tolist(),
+            "lsf_sigma": record["spectrum"]["lsf_sigma"].tolist(),
+            "mask": record["spectrum"]["mask"].tolist(),
+        },
+        "Z": record["Z"],
+        "ZWARN": record["ZWARN"],
+        "_dist_arcsec": None,
+        "object_id_legacy": None,
+        "ra_legacy": None,
+        "dec_legacy": None,
+        "image_legacy": None,
+    }
+    if not matched:
+        return row
+    row.update(
+        {
+            "_dist_arcsec": 0.3,
+            "object_id_legacy": f"legacy_{record['object_id']}",
+            "ra_legacy": record["ra"],
+            "dec_legacy": record["dec"],
+            "image_legacy": {
+                "band": list(record["image"]["band"]),
+                "flux": record["image"]["flux"].tolist(),
+                "psf_fwhm": record["image"]["psf_fwhm"],
+            },
+            "ebv_legacy": record["ebv"],
+            "flux_g_legacy": record["flux_g"],
+            "flux_r_legacy": record["flux_r"],
+            "flux_z_legacy": record["flux_z"],
+        }
+    )
+    return row

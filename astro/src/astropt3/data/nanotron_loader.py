@@ -29,10 +29,14 @@ from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
 from .telemetry import install_byte_probe, instrument
 
 LEGACY_CATALOG = "hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north"
+DESI_CATALOG = "hf://datasets/UniverseTBD/mmu_desi_edr_sv3"
 IMAGE_SHAPE = (3, 152, 152)
 _MAX_NET_RETRIES = 60
 _MAX_NET_RETRY_WAIT = 120
 _MAX_REPLICA_ATTEMPTS = 32
+# PLAN.md's pilot crossmatch radius (mmu_desi_edr_sv3 x mmu_ssl_legacysurvey_north).
+_CROSSMATCH_RADIUS_ARCSEC = 1.0
+_CROSSMATCH_LEGACY_SUFFIX = "_legacy"
 
 
 def hf_config_from_modalities(modalities, **extra) -> AstroPT3Config:
@@ -167,7 +171,7 @@ def decode_legacy_row(row: Mapping) -> dict:
     return record
 
 
-def _catalog_columns(config: AstroPT3Config) -> list[str]:
+def _catalog_columns(config: AstroPT3Config, *, include_position: bool = False) -> list[str]:
     """Project the fixed catalog to active Legacy image/scalar fields only."""
     columns = {"object_id"}
     has_image = False
@@ -187,7 +191,104 @@ def _catalog_columns(config: AstroPT3Config) -> list[str]:
                 columns.add("image" if key.startswith("psf_fwhm_") else key)
     if not has_image:
         raise ValueError("LSDB training requires an active Legacy image modality")
+    if include_position:
+        columns |= {"ra", "dec"}
     return ["object_id", "image", *sorted(columns - {"object_id", "image"})]
+
+
+def _desi_columns(config: AstroPT3Config) -> list[str] | None:
+    """Project the fixed DESI catalog to active desi-source fields.
+
+    Returns ``None`` when no modality sources from DESI (the crossmatch
+    stream is then skipped entirely).
+    """
+    columns = {"object_id", "ra", "dec"}
+    active = False
+    for name in config.modality_registry().names():
+        modality = config.modality_registry().get_config(name)
+        if modality.source != "desi":
+            continue
+        active = True
+        if modality.family == "spectrum":
+            if tuple(modality.record_keys) != ("spectrum",):
+                raise ValueError(
+                    f"DESI spectrum modality {name!r} must use record key 'spectrum'"
+                )
+            columns.add("spectrum")
+        elif modality.family == "scalar":
+            columns.update(modality.record_keys)
+            if name == "Z":
+                columns.add("ZWARN")
+    return sorted(columns) if active else None
+
+
+def _decode_spectrum(value: Any) -> dict:
+    spec = _as_mapping(value)
+    return {
+        "flux": _stack_nested(spec.get("flux")).astype(np.float32, copy=False),
+        "lambda": _stack_nested(spec.get("lambda")).astype(np.float32, copy=False),
+        "mask": _stack_nested(spec.get("mask")).astype(bool, copy=False),
+    }
+
+
+def decode_crossmatch_row(row: Mapping) -> dict:
+    """Decode one ``desi ⋈ legacy`` left-crossmatch row (ADR 0015 spectra test).
+
+    DESI drives the join, so every row carries a spectrum; the legacy image
+    and legacy-sourced scalars (suffixed ``_legacy`` by the crossmatch) are
+    present only when a LegacySurvey counterpart matched within the radius.
+    """
+    object_id = row.get("object_id")
+    if object_id is None:
+        raise ValueError("crossmatched row has no object_id")
+    record: dict = {"object_id": str(object_id)}
+
+    spectrum_value = row.get("spectrum")
+    if spectrum_value is not None:
+        record["spectrum"] = _decode_spectrum(spectrum_value)
+
+    image_key = f"image{_CROSSMATCH_LEGACY_SUFFIX}"
+    image_value = row.get(image_key)
+    fwhm_value = None
+    if image_value is not None:
+        image = _as_mapping(image_value)
+        bands = [str(band) for band in image.get("band", ())]
+        flux = _stack_nested(image.get("flux")).astype(np.float32, copy=False)
+        if flux.shape == IMAGE_SHAPE and len(bands) == IMAGE_SHAPE[0]:
+            record["image"] = {"flux": flux, "band": bands}
+            fwhm_value = image.get("psf_fwhm")
+
+    skip = {
+        "object_id",
+        f"object_id{_CROSSMATCH_LEGACY_SUFFIX}",
+        "spectrum",
+        image_key,
+        "ra",
+        "dec",
+        f"ra{_CROSSMATCH_LEGACY_SUFFIX}",
+        f"dec{_CROSSMATCH_LEGACY_SUFFIX}",
+        "_dist_arcsec",
+    }
+    for key, value in row.items():
+        if key in skip:
+            continue
+        base_key = (
+            key[: -len(_CROSSMATCH_LEGACY_SUFFIX)]
+            if key.endswith(_CROSSMATCH_LEGACY_SUFFIX)
+            else key
+        )
+        number = _finite_scalar(value)
+        if number is not None:
+            record[base_key] = number
+
+    if fwhm_value is not None:
+        bands = record["image"]["band"]
+        if len(fwhm_value) == len(bands):
+            for band, value in zip(bands, fwhm_value):
+                number = _finite_scalar(value)
+                if number is not None and 0 < number < 5:
+                    record[f"psf_fwhm_{band}"] = number
+    return record
 
 
 def consumer_seed(seed: int, rank: int, worker: int, retry_generation: int) -> int:
@@ -208,7 +309,9 @@ def _lsdb_version() -> str:
         return "unknown"
 
 
-def _log_provenance(catalog, columns: list[str], rank: int, worker: int) -> None:
+def _log_provenance(
+    catalog, columns: list[str], rank: int, worker: int, catalog_desc: str = LEGACY_CATALOG
+) -> None:
     info = getattr(getattr(catalog, "hc_structure", None), "catalog_info", None)
     metadata = {}
     for key in ("catalog_name", "catalog_type", "hats_builder", "hats_version"):
@@ -218,7 +321,7 @@ def _log_provenance(catalog, columns: list[str], rank: int, worker: int) -> None
     suffix = f" provenance={metadata}" if metadata else ""
     print(
         f"[data] dp={rank} worker={worker} lsdb={_lsdb_version()} "
-        f"catalog={LEGACY_CATALOG} columns={columns}{suffix}",
+        f"catalog={catalog_desc} columns={columns}{suffix}",
         flush=True,
     )
 
@@ -236,6 +339,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         seed: int = 0,
         ar_replicas: int = 1,
         replica_placement: str = "decorrelated",
+        crossmatch_desi: bool = False,
     ):
         super().__init__()
         if ar_replicas < 1:
@@ -257,7 +361,12 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         self.seed = seed
         self.ar_replicas = ar_replicas
         self.replica_placement = replica_placement
-        self.columns = _catalog_columns(config)
+        self.desi_columns = _desi_columns(config) if crossmatch_desi else None
+        if crossmatch_desi and self.desi_columns is None:
+            raise ValueError(
+                "crossmatch_desi=True but no active modality sources from DESI"
+            )
+        self.columns = _catalog_columns(config, include_position=self.desi_columns is not None)
         self._epoch = 0  # InfiniteStream partition-draw nonce for span ordering
         self.sequencer = ObjectSequencer(config)
         self.collator = PackedCollator(config, seq_len=seq_len)
@@ -270,10 +379,29 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         while True:
             catalog = stream = iterator = None
             try:
-                catalog = getattr(lsdb, "open_catalog")(
+                legacy_catalog = getattr(lsdb, "open_catalog")(
                     LEGACY_CATALOG, columns=self.columns
                 )
-                _log_provenance(catalog, self.columns, self.rank, worker_id)
+                if self.desi_columns is not None:
+                    desi_catalog = getattr(lsdb, "open_catalog")(
+                        DESI_CATALOG, columns=self.desi_columns
+                    )
+                    catalog = desi_catalog.crossmatch(
+                        legacy_catalog,
+                        radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC,
+                        how="left",
+                        suffixes=("", _CROSSMATCH_LEGACY_SUFFIX),
+                        suffix_method="all_columns",
+                    )
+                    catalog_desc = f"{DESI_CATALOG} x {LEGACY_CATALOG}"
+                    columns_desc = self.desi_columns + self.columns
+                else:
+                    catalog = legacy_catalog
+                    catalog_desc = LEGACY_CATALOG
+                    columns_desc = self.columns
+                _log_provenance(
+                    catalog, columns_desc, self.rank, worker_id, catalog_desc
+                )
                 stream = InfiniteStream(
                     catalog,
                     client=None,
@@ -338,8 +466,13 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 consecutive_failures = 0
                 self._epoch = draw
                 draw += 1
+                decode_row = (
+                    decode_crossmatch_row
+                    if self.desi_columns is not None
+                    else decode_legacy_row
+                )
                 for _, row in frame.iterrows():
-                    yield decode_legacy_row(row)
+                    yield decode_row(row)
 
     def _replica_objects(self, record: dict) -> list:
         """Build the base sequence and distinct autoregressive reorderings."""
@@ -461,6 +594,7 @@ def build_astropt3_dataloader(
         ar_replicas=getattr(dataset_args, "ar_replicas", 1) or 1,
         replica_placement=getattr(dataset_args, "replica_placement", None)
         or "decorrelated",
+        crossmatch_desi=getattr(dataset_args, "crossmatch_desi", False),
     )
     loader = torch.utils.data.DataLoader(
         dataset,

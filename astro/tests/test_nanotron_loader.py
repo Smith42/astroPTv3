@@ -11,12 +11,13 @@ import pandas as pd
 import pytest
 import torch
 
-from legacy_fixture import legacy_row, make_record
+from legacy_fixture import crossmatch_row, legacy_row, make_record
 
 from astropt3.data import nanotron_loader
 from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
     consumer_seed,
+    decode_crossmatch_row,
     decode_legacy_row,
 )
 from astropt3.data.nanotron_loader import (
@@ -153,6 +154,61 @@ def test_decoder_rejects_bad_shape_and_id():
     del row["object_id"]
     with pytest.raises(ValueError, match="object_id"):
         decode_legacy_row(row)
+
+
+def test_crossmatch_decoder_recovers_matched_row():
+    record = decode_crossmatch_row(crossmatch_row(3, matched=True))
+    assert record["spectrum"]["flux"].shape == (7781,)
+    assert record["spectrum"]["flux"].dtype == np.float32
+    assert record["spectrum"]["mask"].dtype == bool
+    assert record["image"]["flux"].shape == (3, 152, 152)
+    assert record["image"]["band"] == ["des-g", "des-r", "des-z"]
+    assert isinstance(record["Z"], float)
+    assert isinstance(record["ebv"], float)
+    for band in ("des-g", "des-r", "des-z"):
+        assert isinstance(record[f"psf_fwhm_{band}"], float)
+
+
+def test_crossmatch_decoder_handles_unmatched_row():
+    record = decode_crossmatch_row(crossmatch_row(3, matched=False))
+    assert "spectrum" in record
+    assert "image" not in record
+    assert "ebv" not in record
+
+
+def test_crossmatch_decoder_rejects_missing_id():
+    row = crossmatch_row(0, matched=True)
+    del row["object_id"]
+    with pytest.raises(ValueError, match="object_id"):
+        decode_crossmatch_row(row)
+
+
+class _AmbiguousBoolMapping:
+    """Mimics a real nested-pandas struct scalar: like a live ``image_legacy``
+    cell, ``bool(...)`` raises pandas' own ambiguity error rather than
+    falling back to truthiness."""
+
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+    def __bool__(self):
+        raise ValueError(
+            "The truth value of a DataFrame is ambiguous. "
+            "Use a.empty, a.bool(), a.item(), a.any() or a.all()."
+        )
+
+    def as_py(self):
+        return self._mapping
+
+
+def test_crossmatch_decoder_never_bool_checks_nested_image_scalar():
+    """Regression: a live run crashed because decode did ``image_value and
+    ...`` on a nested-pandas struct scalar, whose ``bool()`` raises instead
+    of returning True/False like a plain dict would."""
+    row = crossmatch_row(3, matched=True)
+    row["image_legacy"] = _AmbiguousBoolMapping(row["image_legacy"])
+    record = decode_crossmatch_row(row)
+    assert record["image"]["flux"].shape == (3, 152, 152)
 
 
 def test_transient_error_reopens_fresh_stream(tiny_config, monkeypatch):

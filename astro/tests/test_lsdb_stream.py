@@ -50,3 +50,51 @@ def test_live_lsdb_stream_decodes_and_selects(tiny_config, tiny_model):
     for _ in range(2):
         more = next(iter(stream))  # fresh draw
         assert len(more) > 0
+
+
+def test_live_desi_crossmatch_stream_decodes_and_selects(tiny_config, tiny_model):
+    """ADR 0015 spectra experiment: the real DESI-left ``desi x legacy`` join."""
+    from astropt3.data.nanotron_loader import (
+        DESI_CATALOG,
+        LEGACY_CATALOG,
+        _CROSSMATCH_LEGACY_SUFFIX,
+        _CROSSMATCH_RADIUS_ARCSEC,
+        _catalog_columns,
+        _desi_columns,
+        decode_crossmatch_row,
+    )
+    from astropt3.data.packing import ObjectSequencer
+
+    from lsdb.loaders.hats.read_hats import open_catalog
+    from lsdb.streams.catalog_streams import InfiniteStream
+
+    legacy_cat = open_catalog(
+        LEGACY_CATALOG, columns=_catalog_columns(tiny_config, include_position=True)
+    )
+    desi_cat = open_catalog(DESI_CATALOG, columns=_desi_columns(tiny_config))
+    catalog = desi_cat.crossmatch(
+        legacy_cat,
+        radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC,
+        how="left",
+        suffixes=("", _CROSSMATCH_LEGACY_SUFFIX),
+        suffix_method="all_columns",
+    )
+    stream = InfiniteStream(catalog, client=None, partitions_per_chunk=1, seed=0)
+    frame = next(iter(stream))
+    assert len(frame) > 0
+
+    sequencer = ObjectSequencer(tiny_config)
+    matched_images = 0
+    for _, row in itertools.islice(frame.iterrows(), ROWS_TO_CHECK):
+        record = decode_crossmatch_row(dict(row.items()))
+        assert "spectrum" in record  # DESI drives the join: always present
+        flux = torch.as_tensor(record["spectrum"]["flux"], dtype=torch.float32)
+        assert flux.shape == (7781,)
+        if "image" in record:
+            matched_images += 1
+            image_flux = torch.as_tensor(record["image"]["flux"], dtype=torch.float32)
+            assert image_flux.shape == (3, 152, 152)
+        obj = sequencer.build(record)
+        assert obj.input_ids[0] == 1
+    # not asserting matched_images > 0: a single random partition draw may
+    # legitimately contain zero LegacySurvey matches
