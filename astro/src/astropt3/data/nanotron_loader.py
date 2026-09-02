@@ -21,6 +21,7 @@ import lsdb
 import numpy as np
 import pandas as pd
 import torch
+from dask.distributed import Client, LocalCluster
 from lsdb.streams.catalog_streams import InfiniteStream
 
 from ..configuration_astropt3 import AstroPT3Config
@@ -441,6 +442,28 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         retry_generation = 0
         consecutive_failures = 0
         draw = 0
+        # InfiniteStream's own submit-next-before-returning-current prefetch
+        # (catalog_streams.CatalogIterator.__next__) only overlaps with
+        # anything when given a real dask client -- with client=None it calls
+        # Future.compute() synchronously, so partition N+1's fetch fully
+        # blocks the call that returns partition N (profiled: draining a
+        # partition's records now costs ~10ms, entirely hidden behind
+        # 10-40s network fetches otherwise). processes=False keeps this to
+        # in-process threads, not a distributed cluster -- one scheduler +
+        # one worker thread per DataLoader worker (~30ms/1.5MiB to start).
+        # dashboard_address must go through LocalCluster directly: Client()
+        # doesn't forward it to the LocalCluster it builds implicitly, and
+        # falls back to :8787. The scheduler's status HTTP server binds a
+        # port regardless of dashboard_address (only the bokeh UI routes are
+        # actually optional) -- ":0" picks a free one per worker instead of
+        # every one of the 8 workers colliding on the fixed default.
+        dask_cluster = LocalCluster(
+            processes=False,
+            n_workers=1,
+            threads_per_worker=1,
+            dashboard_address=":0",
+        )
+        dask_client = Client(dask_cluster)
         while True:
             catalog = stream = iterator = None
             try:
@@ -469,7 +492,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 )
                 stream = InfiniteStream(
                     catalog,
-                    client=None,
+                    client=dask_client,
                     partitions_per_chunk=1,
                     seed=consumer_seed(
                         self.seed, self.rank, worker_id, retry_generation
