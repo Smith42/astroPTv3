@@ -35,7 +35,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from ..tokenization import PAD_ID
+from ..tokenization import BOS_ID, PAD_ID
 
 TELEMETRY_DIR_ENV = "ASTROPT3_TELEMETRY_DIR"
 
@@ -139,6 +139,7 @@ def _blank() -> dict[str, Any]:
         "loader_wait_s": 0.0,
         "tokens_total": 0,
         "tokens_nonpad": 0,
+        "rows": 0,
         "loss_tokens": {},
         "target_values": {},
     }
@@ -150,7 +151,9 @@ def observe_micro_batch(flat: dict, wait_s: float) -> None:
     ``{m}_mask`` counts loss-bearing tokens per modality (which is also the
     per-step composition measurement ADR 0014 §4 wants — exact, unlike
     inferring composition from object ids); ``{m}_values`` counts the valid
-    target dimensions behind ``E_values``.
+    target dimensions behind ``E_values``. ``rows`` counts galaxies (packed
+    objects), via ``<|bos|>`` occurrences — packing puts several objects per
+    row, so this is not ``input_ids.shape[0]``.
     """
     if not _counters:
         _counters.update(_blank())
@@ -163,6 +166,8 @@ def observe_micro_batch(flat: dict, wait_s: float) -> None:
     _counters["tokens_total"] += int(input_ids.numel())
     # pi-lens-ignore: unchecked-throwing-call-python
     _counters["tokens_nonpad"] += int((input_ids != PAD_ID).sum().item())
+    # pi-lens-ignore: unchecked-throwing-call-python
+    _counters["rows"] += int((input_ids == BOS_ID).sum().item())
     for key, value in flat.items():
         if key.endswith("_mask"):
             name = key[: -len("_mask")]
@@ -188,12 +193,20 @@ def drain_step() -> dict[str, Any]:
     ``utilisation_packing`` is the §2a MFU factor: padding earns no credit,
     so a padded-out packed row is wasted compute exactly as a stall is
     wasted time.
+
+    ``rows_per_s`` is galaxies delivered per second of ``loader_wait_s`` —
+    the main process was blocked on the loader for exactly that long, so
+    this is the loader's own throughput, isolated from step compute time
+    (the number a fair loader-backend comparison wants).
     """
     record = dict(_counters) if _counters else _blank()
     _counters.clear()
     total = record["tokens_total"]
     record["utilisation_packing"] = (
         record["tokens_nonpad"] / total if total else 0.0
+    )
+    record["rows_per_s"] = (
+        record["rows"] / record["loader_wait_s"] if record["loader_wait_s"] else 0.0
     )
     return record
 

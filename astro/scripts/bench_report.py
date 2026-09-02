@@ -100,7 +100,7 @@ def summarise_steps(directory: Path, slow_threshold: float) -> dict:
         merged = by_step.setdefault(
             step,
             {"step": step, "seconds": 0.0, "wait": 0.0, "flops": 0.0,
-             "nonpad": 0, "total": 0, "loss_tokens": Counter(),
+             "nonpad": 0, "total": 0, "rows": 0, "loss_tokens": Counter(),
              "target_values": 0, "ranks": 0},
         )
         merged["ranks"] += 1
@@ -122,6 +122,7 @@ def summarise_steps(directory: Path, slow_threshold: float) -> dict:
         merged["flops"] = max(merged["flops"], flops)
         merged["nonpad"] += record.get("tokens_nonpad", 0)
         merged["total"] += record.get("tokens_total", 0)
+        merged["rows"] += record.get("rows", 0)
         merged["loss_tokens"].update(record.get("loss_tokens", {}))
         merged["target_values"] += sum(record.get("target_values", {}).values())
 
@@ -135,6 +136,7 @@ def summarise_steps(directory: Path, slow_threshold: float) -> dict:
     total_loss_tokens = sum(loss_tokens.values())
     nonpad = sum(s["nonpad"] for s in steps)
     tokens_total = sum(s["total"] for s in steps)
+    rows = sum(s["rows"] for s in steps)
 
     # TIME-WEIGHTED, not a mean of per-step ratios. This corpus is bimodal —
     # most steps stall for nothing, a few for a minute — so averaging ratios
@@ -182,6 +184,12 @@ def summarise_steps(directory: Path, slow_threshold: float) -> dict:
         "loader_wait_s": total_wait,
         "tokens_nonpad": nonpad,
         "tokens_total": tokens_total,
+        "rows": rows,
+        # end-to-end, wall-clock throughput — the number a fair loader-backend
+        # comparison wants (galaxies actually delivered per second of the run,
+        # not per second of stall — see telemetry.drain_step's rows_per_s for
+        # the loader-only figure this is time-weighted against).
+        "rows_per_s": rows / total_wall,
         "target_values": sum(s["target_values"] for s in steps),
         "loss_tokens": dict(loss_tokens.most_common()),
         # §4: realised modality composition. Short windows swing 160x on this
@@ -284,6 +292,9 @@ def render(report: dict) -> str:
             f"p50 {timing['p50']:.2f}s  p95 {timing['p95']:.2f}s  "
             f"p99 {timing['p99']:.2f}s  "
             f"slow(>{timing['slow_threshold_s']:.0f}s) {timing['slow_steps']}",
+            "",
+            f"Throughput: {steps['rows']:,} rows (galaxies) over "
+            f"{timing['total_s']:.1f}s = {steps['rows_per_s']:,.1f} rows/s",
             "",
             "MFU (decomposed — never quote the headline alone, §11):",
         ]

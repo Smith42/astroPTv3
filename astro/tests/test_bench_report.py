@@ -33,6 +33,7 @@ def _write(directory: Path, ranks=2, steps=None):
                         "model_flops": 1e14,
                         "tokens_total": 1000,
                         "tokens_nonpad": 900,
+                        "rows": 50,
                         "utilisation_packing": 0.9,
                         "loss_tokens": {"images": 100},
                         "target_values": {"images": 19200},
@@ -51,6 +52,16 @@ def test_ranks_are_grouped_not_concatenated(tmp_path):
     assert steps["dp_ranks"] == 2
     # token counts sum across ranks (each packs its own data)
     assert steps["tokens_total"] == 4 * 1000 * 2
+
+
+def test_rows_per_s_is_end_to_end_wall_clock_throughput(tmp_path):
+    """rows/s uses total wall time, not loader-wait time (that's telemetry's own metric)."""
+    _write(tmp_path, ranks=2)
+    steps = bench_report.summarise_steps(tmp_path, slow_threshold=60.0)
+    # rows sum across ranks (each packs its own data), like token counts
+    assert steps["rows"] == 4 * 50 * 2
+    total_wall = 1.0 + 1.0 + 1.0 + 97.0
+    assert steps["rows_per_s"] == pytest.approx(steps["rows"] / total_wall)
 
 
 def test_stall_share_is_time_weighted_not_a_mean_of_ratios(tmp_path):

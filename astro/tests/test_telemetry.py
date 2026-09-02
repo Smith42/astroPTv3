@@ -11,7 +11,7 @@ import torch
 
 from astropt3.data import telemetry
 from astropt3.data.nanotron_loader import PackedMicroBatches
-from astropt3.tokenization import PAD_ID
+from astropt3.tokenization import BOS_ID, PAD_ID
 
 MBS, SEQ_LEN = 2, 512
 
@@ -59,9 +59,14 @@ def test_step_counters_match_a_hand_computed_micro_batch():
     assert record["utilisation_packing"] == pytest.approx(5 / 8)
     assert record["loss_tokens"] == {"images": 3}  # absent modality contributes nothing
     assert record["target_values"] == {"images": 3 * 192}
+    assert record["rows"] == 2  # one <|bos|> per packed row here
+    assert record["rows_per_s"] == pytest.approx(2 / 0.25)
 
     # draining resets, so the next step starts clean
-    assert telemetry.drain_step()["tokens_total"] == 0
+    drained = telemetry.drain_step()
+    assert drained["tokens_total"] == 0
+    assert drained["rows"] == 0
+    assert drained["rows_per_s"] == 0.0
 
 
 def test_counters_accumulate_across_the_micro_batches_of_one_step():
@@ -77,6 +82,18 @@ def test_counters_accumulate_across_the_micro_batches_of_one_step():
     assert record["loader_wait_s"] == pytest.approx(0.5)
     assert record["tokens_nonpad"] == 4
     assert record["loss_tokens"] == {"images": 2}
+    assert record["rows"] == 2  # one row per micro-batch, accumulated
+    assert record["rows_per_s"] == pytest.approx(2 / 0.5)
+
+
+def test_rows_counts_galaxies_not_tensor_rows():
+    """A packed row can hold several objects — ``rows`` must count objects."""
+    input_ids = torch.tensor([[BOS_ID, 3, BOS_ID, 3, PAD_ID]])
+    flat = {"input_ids": input_ids}
+    telemetry.observe_micro_batch(flat, wait_s=1.0)
+    record = telemetry.drain_step()
+    assert record["rows"] == 2  # two packed objects in one tensor row
+    assert record["rows_per_s"] == pytest.approx(2.0)
 
 
 def test_loader_wrapper_times_batches_and_proxies(tiny_config, tmp_path, monkeypatch):
