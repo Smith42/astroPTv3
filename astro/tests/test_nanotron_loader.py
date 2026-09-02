@@ -7,11 +7,10 @@ sources are faked — only the network-marked live check touches the hub.
 from itertools import islice
 
 import numpy as np
-import pandas as pd
 import pytest
 import torch
 
-from legacy_fixture import crossmatch_row, legacy_row, make_record
+from legacy_fixture import crossmatch_row, legacy_row, make_record, nested_frame
 
 from astropt3.data import nanotron_loader
 from astropt3.data.nanotron_loader import (
@@ -44,8 +43,8 @@ def fake_stream(frames_per_epoch=2, rows_per_frame=4):
 
         def __iter__(self):
             for _ in range(frames_per_epoch):
-                yield pd.DataFrame(
-                    [legacy_row(i) for i in range(rows_per_frame)]
+                yield nested_frame(
+                    [legacy_row(i) for i in range(rows_per_frame)], ("image",)
                 )
 
     return FakeStream
@@ -222,10 +221,10 @@ def test_transient_error_reopens_fresh_stream(tiny_config, monkeypatch):
 
         def __iter__(self):
             if self.built == 1:
-                yield pd.DataFrame([legacy_row(i) for i in range(6)])
+                yield nested_frame([legacy_row(i) for i in range(6)], ("image",))
                 raise OSError("simulated storage blip")
             while True:
-                yield pd.DataFrame([legacy_row(i) for i in range(6)])
+                yield nested_frame([legacy_row(i) for i in range(6)], ("image",))
 
     monkeypatch.setattr(
         nanotron_loader.lsdb, "open_catalog", lambda *a, **k: _FakeCatalog()
@@ -250,7 +249,7 @@ def test_non_retryable_error_fails_immediately(tiny_config, monkeypatch):
             pass
 
         def __iter__(self):
-            yield pd.DataFrame([legacy_row(0)])
+            yield nested_frame([legacy_row(0)], ("image",))
             raise ValueError("decode blew up")
 
     monkeypatch.setattr(

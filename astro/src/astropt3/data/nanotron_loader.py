@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 import lsdb
 import numpy as np
+import pandas as pd
 import torch
 from lsdb.streams.catalog_streams import InfiniteStream
 
@@ -37,6 +38,12 @@ _MAX_REPLICA_ATTEMPTS = 32
 # PLAN.md's pilot crossmatch radius (mmu_desi_edr_sv3 x mmu_ssl_legacysurvey_north).
 _CROSSMATCH_RADIUS_ARCSEC = 1.0
 _CROSSMATCH_LEGACY_SUFFIX = "_legacy"
+# nested (struct/list) column -> sub-field names, for map_rows-based decode
+_LEGACY_NESTED = {"image": ("band", "flux", "psf_fwhm")}
+_CROSSMATCH_NESTED = {
+    "spectrum": ("flux", "lambda", "mask"),
+    f"image{_CROSSMATCH_LEGACY_SUFFIX}": ("band", "flux", "psf_fwhm"),
+}
 
 
 def hf_config_from_modalities(modalities, **extra) -> AstroPT3Config:
@@ -134,6 +141,51 @@ def _finite_scalar(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _row_from_map_rows(mapped: Mapping, nested: dict[str, tuple[str, ...]]) -> dict:
+    """Reassemble a ``NestedFrame.map_rows`` dotted-key row into the plain
+    nested-mapping shape ``decode_legacy_row``/``decode_crossmatch_row`` expect.
+
+    ``map_rows`` hands nested sub-columns to its callback as numpy arrays
+    straight from Arrow storage. ``frame.iterrows()`` instead materializes
+    each nested cell as its own per-row pandas DataFrame, which made
+    ``_as_mapping``'s ``DataFrame.to_dict()`` fallback the dominant cost of
+    crossmatch decode (profiled: ~0.44s of an 0.47s/micro-batch total, from
+    boxing every one of a 7781-row spectrum's ~39k cells individually). An
+    absent/unmatched nested value (e.g. a crossmatch row with no LegacySurvey
+    counterpart) arrives as an empty array, folded to ``None`` here to match
+    the old "no image" case.
+    """
+    row = dict(mapped)
+    for name, subfields in nested.items():
+        sub: dict = {}
+        present = False
+        for field in subfields:
+            key = f"{name}.{field}"
+            if key not in row:
+                continue
+            value = row.pop(key)
+            sub[field] = value
+            if isinstance(value, np.ndarray):
+                present = present or bool(value.size)
+            else:
+                present = present or value is not None
+        row[name] = sub if present else None
+    return row
+
+
+def _map_rows_columns(frame: Any, nested: dict[str, tuple[str, ...]]) -> list[str]:
+    """Column list for ``map_rows``: every plain column plus nested sub-fields.
+
+    Built from ``frame.columns`` rather than the catalog's requested
+    projection, so HATS-always-present columns (e.g. ``ra``/``dec``, which
+    ``decode_row``'s generic scalar sweep also picks up even when not
+    explicitly requested) aren't silently dropped.
+    """
+    scalar = [name for name in frame.columns if name not in nested]
+    subcols = [f"{name}.{field}" for name, fields in nested.items() for field in fields]
+    return scalar + subcols
+
+
 def decode_legacy_row(row: Mapping) -> dict:
     """Decode one LegacySurvey row to the ``ObjectSequencer`` contract.
 
@@ -223,6 +275,19 @@ def _desi_columns(config: AstroPT3Config) -> list[str] | None:
 
 
 def _decode_spectrum(value: Any) -> dict:
+    if isinstance(value, pd.DataFrame):
+        # A per-record spectrum arrives as one row per wavelength bin
+        # (~7781 rows x flux/ivar/lsf_sigma/lambda/mask). The generic
+        # _as_mapping -> DataFrame.to_dict(orient="list") path boxes every
+        # cell through pandas' maybe_box_native (~39k Python-level boxings
+        # per record), which dominates crossmatch decode time end to end
+        # (profiled: ~0.44s/micro-batch of an 0.47s total). Column access
+        # is vectorized and skips that entirely.
+        return {
+            "flux": value["flux"].to_numpy(dtype=np.float32, copy=False),
+            "lambda": value["lambda"].to_numpy(dtype=np.float32, copy=False),
+            "mask": value["mask"].to_numpy(dtype=bool, copy=False),
+        }
     spec = _as_mapping(value)
     return {
         "flux": _stack_nested(spec.get("flux")).astype(np.float32, copy=False),
@@ -471,8 +536,21 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                     if self.desi_columns is not None
                     else decode_legacy_row
                 )
-                for _, row in frame.iterrows():
-                    yield decode_row(row)
+                nested = (
+                    _CROSSMATCH_NESTED
+                    if self.desi_columns is not None
+                    else _LEGACY_NESTED
+                )
+                # map_rows delivers nested sub-columns as numpy arrays (no
+                # per-row DataFrame materialization), which is what makes
+                # this ~2.5-4x faster end to end than frame.iterrows() +
+                # decode_row -- see _row_from_map_rows.
+                decoded = frame.map_rows(
+                    lambda mapped: {"record": decode_row(_row_from_map_rows(mapped, nested))},
+                    columns=_map_rows_columns(frame, nested),
+                    infer_nesting=False,
+                )
+                yield from decoded["record"]
 
     def _replica_objects(self, record: dict) -> list:
         """Build the base sequence and distinct autoregressive reorderings."""

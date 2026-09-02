@@ -18,7 +18,9 @@ corpus where the DESI crossmatch covers only ~1/14 of the images; a
 non-crossmatched DESI rows of ``pilot_v2`` (ADR 0005).
 """
 
+import nested_pandas as npd
 import numpy as np
+import pandas as pd
 
 IMAGE_SIDE = 152
 IMAGE_BANDS = ["des-g", "des-r", "des-z"]
@@ -231,3 +233,20 @@ def crossmatch_row(index: int, matched: bool = True) -> dict:
         }
     )
     return row
+
+
+def nested_frame(rows: list[dict], nested_fields: tuple[str, ...]) -> "npd.NestedFrame":
+    """Pack ``legacy_row``/``crossmatch_row`` dicts into a real
+    ``nested_pandas.NestedFrame``, shaped like a HATS/``InfiniteStream``
+    partition (nested struct columns, not plain nested dicts in an object
+    column) -- so offline tests exercise ``NestedFrame.map_rows`` exactly as
+    the real streaming path does. A row missing a nested field entirely
+    (e.g. ``crossmatch_row(matched=False)`` has no ``image_legacy`` key)
+    packs as a missing element, matching the real join's unmatched rows.
+    """
+    scalar_cols = sorted({key for row in rows for key in row} - set(nested_fields))
+    base = pd.DataFrame([{key: row.get(key) for key in scalar_cols} for row in rows])
+    frame = npd.NestedFrame(base)
+    for field in nested_fields:
+        frame = frame.join_nested([row.get(field) for row in rows], name=field)
+    return frame
