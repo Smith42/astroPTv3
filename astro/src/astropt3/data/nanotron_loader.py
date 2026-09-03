@@ -39,6 +39,19 @@ _MAX_REPLICA_ATTEMPTS = 32
 # PLAN.md's pilot crossmatch radius (mmu_desi_edr_sv3 x mmu_ssl_legacysurvey_north).
 _CROSSMATCH_RADIUS_ARCSEC = 1.0
 _CROSSMATCH_LEGACY_SUFFIX = "_legacy"
+# Partitions fetched per InfiniteStream draw. >1 gives each worker a bigger
+# ready-buffer to drain, widening the wall-clock window during which the
+# background prefetch (see _open_records' dask_client) has a chance to
+# finish the NEXT draw before the current one is exhausted -- depth-1
+# lookahead (partitions_per_chunk=1) measured no stall_share improvement on
+# a real run (bounded by DataLoader prefetch_factor, not partition drain
+# time). Tuned against a real crossmatch run (astropt3-70m-jetformer,
+# DP=2 x 8 workers): 1 -> stall_share ~85%, 3.3k rows/s; 4 -> 65%, 2.0k
+# rows/s; 8 -> 46%, 3.3k rows/s (best); 16 -> 62%, 2.3k rows/s -- a real
+# regression, not diminishing returns, coinciding with box-wide RAM growing
+# past 500GiB (16 workers x 2 chunks-in-flight x 16 partitions). 8 is the
+# measured sweet spot, not a guess -- re-tune if worker/chunk counts change.
+_PARTITIONS_PER_CHUNK = 8
 # nested (struct/list) column -> sub-field names, for map_rows-based decode
 _LEGACY_NESTED = {"image": ("band", "flux", "psf_fwhm")}
 _CROSSMATCH_NESTED = {
@@ -457,10 +470,12 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         # port regardless of dashboard_address (only the bokeh UI routes are
         # actually optional) -- ":0" picks a free one per worker instead of
         # every one of the 8 workers colliding on the fixed default.
+        # threads_per_worker > 1 so a >1 partitions_per_chunk draw fetches its
+        # partitions concurrently too, not serialized on a single thread.
         dask_cluster = LocalCluster(
             processes=False,
             n_workers=1,
-            threads_per_worker=1,
+            threads_per_worker=_PARTITIONS_PER_CHUNK,
             dashboard_address=":0",
         )
         dask_client = Client(dask_cluster)
@@ -493,7 +508,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 stream = InfiniteStream(
                     catalog,
                     client=dask_client,
-                    partitions_per_chunk=1,
+                    partitions_per_chunk=_PARTITIONS_PER_CHUNK,
                     seed=consumer_seed(
                         self.seed, self.rank, worker_id, retry_generation
                     ),
