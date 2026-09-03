@@ -1,47 +1,104 @@
-"""Sample from a (jetformer) AstroPT3 checkpoint and render the results.
+"""Sample from a converted AstroPT3 checkpoint and render the results.
 
-Modes:
-- ``unconditional``:    <|bos|> -> full image span -> spectra span (if the
-                        template object has one), all sampled.
-- ``image-to-spectra``: teacher-force the template record's image tokens and
-                        sample only the spectra span.
-- ``reconstruct``:      one-step teacher-forced predictions for every span
-                        (works for affine checkpoints too).
-
-The template record fixes the token skeleton and the positions (image patch
-indices, spectra wavelengths). ``--data-root synthetic`` (default) uses the
-deterministic synthetic records; point it at a prepared val shard dir to use
-a real record.
+Template records come from one live catalog draw: the plain uncrossmatched
+LSDB LegacySurvey North catalog
+(``hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north``) when the
+checkpoint has no active desi-sourced (spectra) modality, or the DESI x
+Legacy crossmatch (via ``OuterKdTreeCrossmatch``, matching the training
+stream -- see ``outer_crossmatch.py``) when it does. ``unconditional`` only
+samples spans the template record actually has, so a plain-Legacy template
+can only ever produce image spans -- getting a spectra span too requires a
+crossmatch-drawn template. Rows are ordered matched (both modalities) first,
+then spectrum-only, then image-only, so ``--rows 0`` picks the most
+complete template available. ``reconstruct`` works for any checkpoint;
+``unconditional`` works for jetformer checkpoints.
+``astropt3.eval.samples.sample_checkpoint`` (model-side only, ADR 0015 §6)
+does the sampling/rendering; this script only supplies live records and
+optional wandb logging.
 
 Usage:
     uv run python scripts/generate.py --checkpoint <hf_dir> \
-        --mode image-to-spectra --n 4 --temperature 0.9 \
-        [--data-root <val_dir>|synthetic] [--record-index 0] [--out outdir]
+        [--mode reconstruct] [--n 4] [--rows 0,1,2] [--stream-seed 0] \
+        [--seed 0] [--out generated] [--wandb] [--wandb-run-id <id>]
 
-Outputs land in ``--out`` as ``.npy`` (raw sampled values, data space) plus
-PNGs: a grid for images, flux-vs-wavelength for spectra. Non-unconditional
-modes lead with a ground-truth panel/trace from the template record. Both
-modalities get the physical inverse normalization (images: band-registry
-keyed by the template record's bands; spectra: the DESI f_ν map, ADR 0007;
-no calibration file needed) — exact for jetformer
-checkpoints (whose sequencer skips per-patch standardization precisely so
-the token map inverts back to flux); for affine checkpoints it is
-qualitative only, since standardization discards each patch's mean/std.
-``--wandb`` logs the figures to the astropt3
-wandb project as a fresh generation run; ``--wandb-run-id <id>`` appends
-them to an existing run instead (e.g. the training run). Pass several
-comma-separated ``--record-index`` values to collect a batch of
-reconstructions into one run.
-
-The sampling/rendering implementation lives in ``astropt3.eval.samples``,
-shared with the per-checkpoint sweep (``run_probe_sweep.py`` — ADR 0003).
+Outputs land in ``--out`` as PNGs (a grid for images, flux-vs-wavelength for
+spectra). ``--wandb`` logs the same figures to the astropt3 wandb project as
+a fresh generation run; ``--wandb-run-id <id>`` appends them to an existing
+run instead (e.g. the training run that produced the checkpoint).
 """
 
 import argparse
+import importlib
 from pathlib import Path
+from typing import Any, cast
 
-import numpy as np
-import torch
+
+def _draw_live_records(config, rows: list[int], stream_seed: int) -> list[dict]:
+    """Decode ``rows`` positions out of one live catalog draw.
+
+    Crossmatch-aware: draws from the DESI x Legacy crossmatch (recovering
+    unmatched images too, via ``OuterKdTreeCrossmatch``) when the checkpoint
+    has an active desi-sourced modality, else the plain uncrossmatched
+    Legacy catalog. See the module docstring for row ordering.
+    """
+    from lsdb.loaders.hats.read_hats import open_catalog
+    from lsdb.streams.catalog_streams import InfiniteStream
+
+    from astropt3.data.nanotron_loader import (
+        LEGACY_CATALOG,
+        _catalog_columns,
+        _desi_columns,
+        decode_legacy_row,
+    )
+
+    desi_columns = _desi_columns(config)
+    if desi_columns is None:
+        catalog = open_catalog(LEGACY_CATALOG, columns=_catalog_columns(config))
+        stream = InfiniteStream(catalog, client=None, partitions_per_chunk=1, seed=stream_seed)
+        frame = next(iter(stream))
+        if max(rows) >= len(frame):
+            raise ValueError(f"drew {len(frame)} rows, but --rows asked for index {max(rows)}")
+        return [decode_legacy_row(dict(frame.iloc[i].items())) for i in rows]
+
+    from astropt3.data.nanotron_loader import (
+        DESI_CATALOG,
+        _CROSSMATCH_LEGACY_SUFFIX,
+        _CROSSMATCH_NESTED,
+        _CROSSMATCH_RADIUS_ARCSEC,
+        _map_rows_columns,
+        _row_from_map_rows,
+        decode_crossmatch_row,
+    )
+    from astropt3.data.outer_crossmatch import OuterKdTreeCrossmatch
+
+    legacy_cat = open_catalog(
+        LEGACY_CATALOG, columns=_catalog_columns(config, include_position=True)
+    )
+    desi_cat = open_catalog(DESI_CATALOG, columns=desi_columns)
+    catalog = desi_cat.crossmatch(
+        legacy_cat,
+        algorithm=OuterKdTreeCrossmatch(radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC),
+        how="left",
+        suffixes=("", _CROSSMATCH_LEGACY_SUFFIX),
+        suffix_method="all_columns",
+    )
+    stream = InfiniteStream(catalog, client=None, partitions_per_chunk=1, seed=stream_seed)
+    frame = next(iter(stream))
+
+    columns = _map_rows_columns(frame, _CROSSMATCH_NESTED)
+
+    def decode(mapped):
+        return {"record": decode_crossmatch_row(_row_from_map_rows(mapped, _CROSSMATCH_NESTED))}
+
+    decoded = frame.map_rows(decode, columns=columns, infer_nesting=False)
+    records = list(decoded["record"])
+    matched = [r for r in records if "image" in r and "spectrum" in r]
+    spectrum_only = [r for r in records if "image" not in r and "spectrum" in r]
+    image_only = [r for r in records if "image" in r and "spectrum" not in r]
+    ordered = matched + spectrum_only + image_only
+    if max(rows) >= len(ordered):
+        raise ValueError(f"drew {len(ordered)} usable rows, but --rows asked for index {max(rows)}")
+    return [ordered[i] for i in rows]
 
 
 def main():
@@ -50,17 +107,19 @@ def main():
     parser.add_argument(
         "--mode",
         choices=["unconditional", "image-to-spectra", "spectra-to-images", "reconstruct"],
-        default="unconditional",
+        default=None,
+        help="default: every mode the checkpoint's tokeniser supports",
     )
-    parser.add_argument("--n", type=int, default=4, help="samples to draw")
+    parser.add_argument("--n", type=int, default=4, help="samples to draw per mode")
     parser.add_argument("--temperature", type=float, default=1.0, help="scales GMM sigma")
-    parser.add_argument("--argmax", action="store_true", help="mixture-mean point sample")
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--data-root", default="synthetic", help="val shard dir or 'synthetic'")
+    parser.add_argument("--seed", type=int, default=0, help="sampling RNG seed")
     parser.add_argument(
-        "--record-index",
+        "--stream-seed", type=int, default=0, help="LSDB InfiniteStream draw seed"
+    )
+    parser.add_argument(
+        "--rows",
         default="0",
-        help="template record index; comma-separated list logs several into one run",
+        help="comma-separated row positions in the drawn chunk to render",
     )
     parser.add_argument("--out", default="generated", help="output directory")
     parser.add_argument("--device", default=None)
@@ -77,81 +136,47 @@ def main():
     args = parser.parse_args()
 
     import astropt3  # noqa: F401  -- registers the Auto classes
-    from transformers import AutoModel
+    from transformers import AutoConfig
 
-    from astropt3.data.packing import ObjectSequencer
-    from astropt3.eval.samples import (
-        build_template,
-        load_template_record,
-        render_sampled_tokens,
-        sample_template,
-    )
+    from astropt3.eval.samples import sample_checkpoint
 
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    model = AutoModel.from_pretrained(args.checkpoint).to(device).eval()
+    try:
+        rows = [int(i) for i in args.rows.split(",")]
+    except ValueError:
+        parser.error("--rows must be a comma-separated list of integers")
 
-    # sampling modes want the full skeleton (image + spectra spans) where the
-    # corpus has one; image-only corpora fall back to an image-only template
-    prefer_spectrum = args.mode != "reconstruct"
-    record_indices = [int(i) for i in str(args.record_index).split(",")]
-    sequencer = ObjectSequencer(model.config)
-
-    # one wandb run for the whole invocation: a fresh generation run by
-    # default, or the run named by --wandb-run-id (e.g. the training run)
-    wandb_run = None
-    if args.wandb:
-        import wandb
-
-        wandb_run = wandb.init(
-            project="astropt3",
-            id=args.wandb_run_id,
-            resume="allow" if args.wandb_run_id else None,
-            name=None if args.wandb_run_id else f"generate-{args.mode}",
-            job_type="generation",
-            config={k: v for k, v in vars(args).items() if k not in ("wandb", "wandb_run_id")},
-        )
-
-    # ground truth for teacher-forced/conditioned spans: unconditional samples
-    # have none; reconstruct compares both spans; image-to-spectra compares
-    # the generated spectra against the record's real spectrum
-    show_truth = args.mode != "unconditional"
+    config = AutoConfig.from_pretrained(args.checkpoint)
+    records = _draw_live_records(config, rows, args.stream_seed)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    pngs = sample_checkpoint(
+        args.checkpoint,
+        records,
+        modes=[args.mode] if args.mode else None,
+        n=args.n,
+        temperature=args.temperature,
+        seed=args.seed,
+        out_dir=out_dir,
+        device=args.device,
+    )
 
-    for record_index in record_indices:
-        record = load_template_record(args.data_root, record_index, prefer_spectrum)
-        template = build_template(sequencer, record, args.mode)
-        print(f"template object {template.object_id!r}: spans {sorted(template.masks)}")
-
-        generator = None
-        if args.mode != "reconstruct":
-            generator = torch.Generator(device=device).manual_seed(args.seed)
-        sampled = sample_template(
-            model,
-            template,
-            args.mode,
-            n=args.n,
-            temperature=args.temperature,
-            argmax=args.argmax,
-            generator=generator,
+    wandb_run = None
+    if args.wandb:
+        wandb_module = cast(Any, importlib.import_module("wandb"))
+        wandb_run = wandb_module.init(
+            project="astropt3",
+            id=args.wandb_run_id,
+            resume="allow" if args.wandb_run_id else None,
+            name=None if args.wandb_run_id else "generate",
+            job_type="generation",
+            config={k: v for k, v in vars(args).items() if k not in ("wandb", "wandb_run_id")},
         )
-
-        # the object id keeps figures from different records distinct on disk
-        # and as wandb media keys, so a multi-record batch shares one run
-        tag = f"{args.mode}_{template.object_id}_seed{args.seed}"
-        for name, tokens in sampled.items():
-            np.save(out_dir / f"{name}_{tag}.npy", tokens.cpu().float().numpy())
-        pngs = render_sampled_tokens(
-            model, record, template, sampled, out_dir=out_dir, tag=tag, show_truth=show_truth
-        )
-        for name, png in pngs.items():
-            if wandb_run is not None:
-                wandb_run.log({f"generation/{name}_{tag}": wandb.Image(str(png))})
-            print(f"wrote {name}: {tuple(sampled[name].shape)} -> {out_dir}/{name}_{tag}.{{npy,png}}")
-
-    if wandb_run is not None:
+        wandb_run.log({f"generation/{key}": wandb_module.Image(png) for key, png in pngs.items()})
         wandb_run.finish()
+
+    for key, png in pngs.items():
+        print(f"wrote {key}: {png}")
 
 
 if __name__ == "__main__":

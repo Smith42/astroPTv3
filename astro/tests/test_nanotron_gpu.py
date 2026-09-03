@@ -20,6 +20,7 @@ Dao-AILab release wheel works on A100 (see PLAN Phase 3 notes). Run:
     pytest -m gpu tests/test_nanotron_gpu.py -v
 """
 
+import importlib
 import json
 import os
 import re
@@ -27,6 +28,7 @@ import subprocess
 import sys
 from itertools import islice
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -44,6 +46,57 @@ SEQ_LEN = 896
 # bf16 forward parity: different-but-equivalent RoPE position conventions and
 # flash-attn vs sdpa kernels bound the achievable agreement
 REL_TOL = 3e-2
+LOSS_RE = re.compile(r"lm_loss: ([0-9.eE+-]+)")
+
+
+def run_train(config: dict, workdir: Path, name: str, timeout: int = 5400) -> str:
+    """torchrun a nanotron config to completion; shared with test_jetformer_gpu.py."""
+    config_path = workdir / f"{name}.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--nproc_per_node=1",
+            "--rdzv-backend=c10d",
+            "--rdzv-endpoint=localhost:0",
+            str(NANOTRON_DIR / "run_train.py"),
+            "--config-file",
+            str(config_path),
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "CUDA_DEVICE_MAX_CONNECTIONS": "1"},
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout[-4000:]}\nstderr:\n{result.stderr[-4000:]}"
+    return result.stdout
+
+
+def losses_from(stdout: str) -> list[float]:
+    return [float(m) for m in LOSS_RE.findall(stdout)]
+
+
+def _load_yaml(path: Path) -> dict:
+    try:
+        value = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError) as error:
+        raise RuntimeError(f"cannot load YAML from {path}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"expected a mapping in {path}")
+    return value
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"cannot load JSON from {path}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"expected a mapping in {path}")
+    return value
 
 
 def _dist_env(port: int = 29123) -> dict:
@@ -72,33 +125,24 @@ def make_nt():
     pytest.importorskip("flash_attn")
     _dist_env()
     sys.path.insert(0, str(TOOLS_DIR))
-    import convert_hf_to_nanotron
-    import convert_nanotron_to_hf
-    import convert_weights
-    import nanotron.models
-    from nanotron.config import AstroPT3Config as NanotronAstroPT3Config
-    from nanotron.models.astropt3 import AstroPT3ForTraining
-    from nanotron.parallel import ParallelContext
-    from nanotron.trainer import mark_tied_parameters
-
-    class NT:
-        pass
-
-    ns = NT()
-    ns.config_cls = NanotronAstroPT3Config
-    ns.model_cls = AstroPT3ForTraining
-    ns.build_model = nanotron.models.build_model
-    ns.mark_tied_parameters = mark_tied_parameters
-    ns.convert_weights = convert_weights
-    ns.to_hf = convert_nanotron_to_hf
-    ns.from_hf = convert_hf_to_nanotron
-    ns.parallel_context = ParallelContext(
-        data_parallel_size=1, pipeline_parallel_size=1, tensor_parallel_size=1
+    config_module = importlib.import_module("nanotron.config")
+    models = importlib.import_module("nanotron.models")
+    model_module = importlib.import_module("nanotron.models.astropt3")
+    parallel = importlib.import_module("nanotron.parallel")
+    trainer = importlib.import_module("nanotron.trainer")
+    return SimpleNamespace(
+        config_cls=config_module.AstroPT3Config,
+        model_cls=model_module.AstroPT3ForTraining,
+        build_model=models.build_model,
+        mark_tied_parameters=trainer.mark_tied_parameters,
+        convert_weights=importlib.import_module("convert_weights"),
+        to_hf=importlib.import_module("convert_nanotron_to_hf"),
+        from_hf=importlib.import_module("convert_hf_to_nanotron"),
+        parallel_context=parallel.ParallelContext(
+            data_parallel_size=1, pipeline_parallel_size=1, tensor_parallel_size=1
+        ),
+        serialize=importlib.import_module("nanotron.serialize"),
     )
-    import nanotron.serialize
-
-    ns.serialize = nanotron.serialize
-    return ns
 
 
 @pytest.fixture(scope="session")
@@ -107,6 +151,7 @@ def nt():
 
 
 def tiny_nt_config(nt, **overrides):
+    overrides.setdefault("loss_aggregation", "family")
     return nt.config_cls(
         hidden_size=64,
         num_hidden_layers=4,  # crosses one NoPE layer (idx 3)
@@ -176,7 +221,9 @@ def matched_models(nt):
     hf_model = AstroPT3Model(hf_config)
     nt_model = build_nt_model(nt, nt_config)
     nt.from_hf.convert_hf_to_nt(hf_model, nt_model, nt_config)
-    hf_model = hf_model.cuda().to(torch.bfloat16).eval()
+    torch.nn.Module.cuda(hf_model)
+    torch.nn.Module.to(hf_model, dtype=torch.bfloat16)
+    hf_model.eval()
     return hf_model, nt_model, nt_config, hf_config
 
 
@@ -190,18 +237,27 @@ def test_forward_loss_parity(nt, matched_models):
 
     nt_loss = nt_out["loss"].item()
     hf_loss = hf_out.loss.item()
-    assert nt_loss == pytest.approx(hf_loss, rel=REL_TOL), (nt_loss, hf_loss)
+    assert nt_loss == pytest.approx(hf_loss, rel=REL_TOL), f"NT={nt_loss}, HF={hf_loss}"
     for name in names:
         nt_mod = nt_out[f"{name}_loss"].item()
         hf_mod = hf_out.modality_losses[name].item()
-        assert nt_mod == pytest.approx(hf_mod, rel=REL_TOL), (name, nt_mod, hf_mod)
+        assert nt_mod == pytest.approx(hf_mod, rel=REL_TOL), (
+            f"{name}: NT={nt_mod}, HF={hf_mod}"
+        )
+    for family, hf_family in hf_out.family_losses.items():
+        nt_family = nt_out[f"{family}_family_loss"].item()
+        assert nt_family == pytest.approx(hf_family.item(), rel=REL_TOL), (
+            f"{family}: NT={nt_family}, HF={hf_family.item()}"
+        )
 
 
 def test_conversion_roundtrip_exact(nt, matched_models):
     from astropt3 import AstroPT3Model
 
     hf_model, nt_model, nt_config, hf_config = matched_models
-    hf_back = AstroPT3Model(hf_config).cuda().to(torch.bfloat16)
+    hf_back = AstroPT3Model(hf_config)
+    torch.nn.Module.cuda(hf_back)
+    torch.nn.Module.to(hf_back, dtype=torch.bfloat16)
     nt.to_hf.convert_nt_to_hf(nt_model, hf_back, nt_config)
     original = hf_model.state_dict()
     for key, value in hf_back.state_dict().items():
@@ -233,10 +289,15 @@ def test_tp2_replicated_module_gradients(nt):
 def test_50step_synthetic_run_and_checkpoint_conversion(nt, tmp_path_factory):
     """torchrun 50 steps on synthetic data; convert; reload; reproduce loss."""
     workdir = tmp_path_factory.mktemp("nanotron_smoke")
-    config = yaml.safe_load((ASTRO_DIR / "configs" / "nanotron" / "astropt3-test-tiny.yaml").read_text())
+    config = _load_yaml(
+        ASTRO_DIR / "configs" / "nanotron" / "astropt3-test-tiny.yaml"
+    )
     config["checkpoints"]["checkpoints_path"] = str(workdir / "checkpoints")
     config_path = workdir / "test-tiny.yaml"
-    config_path.write_text(yaml.safe_dump(config))
+    try:
+        config_path.write_text(yaml.safe_dump(config))
+    except OSError as error:
+        raise RuntimeError(f"cannot write {config_path}") from error
 
     result = subprocess.run(
         [
@@ -289,12 +350,14 @@ def test_50step_synthetic_run_and_checkpoint_conversion(nt, tmp_path_factory):
     import astropt3  # noqa: F401
     from transformers import AutoModel
 
-    hf_model = AutoModel.from_pretrained(save_path).cuda().to(torch.bfloat16).eval()
+    hf_model = AutoModel.from_pretrained(save_path)
+    torch.nn.Module.cuda(hf_model)
+    torch.nn.Module.to(hf_model, dtype=torch.bfloat16)
+    hf_model.eval()
     assert hf_model.config.model_type == "astropt3"
 
     # ...and reproduces the nanotron model's val loss on a held-out batch
-    with open(checkpoint / "model_config.json") as f:
-        nt_config = nt.config_cls(**json.load(f))
+    nt_config = nt.config_cls(**_load_json(checkpoint / "model_config.json"))
     nt_model = build_nt_model(nt, nt_config)
     nt.serialize.load_weights(
         model=nt_model, parallel_context=nt.parallel_context, root_folder=checkpoint
@@ -304,4 +367,4 @@ def test_50step_synthetic_run_and_checkpoint_conversion(nt, tmp_path_factory):
     with torch.no_grad():
         nt_loss = nt_model(**flat)["loss"].item()
         hf_loss = hf_model(**regroup(flat, names)).loss.item()
-    assert hf_loss == pytest.approx(nt_loss, rel=REL_TOL), (nt_loss, hf_loss)
+    assert hf_loss == pytest.approx(nt_loss, rel=REL_TOL), f"NT={nt_loss}, HF={hf_loss}"

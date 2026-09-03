@@ -8,111 +8,92 @@ with AstroPT-style continuous-token regression (NAIRR260009).
   64-id special-token vocabulary; images/spectra enter as affine-projected
   continuous patch tokens and leave through per-modality regression decoders
   (Huber next-token loss). See `src/astropt3/modeling_astropt3.py`.
-- **Training** runs on the nanotron fork (git submodule at `../nanotron`,
-  Phase 3+); the transformers implementation here is the release/probing
-  artifact and the CPU test target.
-- **Pilot data**: `UniverseTBD/mmu_ssl_legacysurvey_north` (3×152×152 flux
-  cubes, center-cropped to 96×96 → 144 patch-8 tokens) × `UniverseTBD/mmu_desi_edr_sv3` (7781-bin
-  spectra → 31 patch-256 tokens), lsdb-crossmatched offline.
+- **Training** runs on the nanotron fork (git submodule at `../nanotron`);
+  the transformers implementation here is the release/probing artifact and
+  the CPU test target.
+- **Pilot data (ADR 0015, experimental)**: the uncrossmatched
+  `UniverseTBD/mmu_ssl_legacysurvey_north` HATS catalog, streamed through
+  LSDB's `InfiniteStream` — image only, with the image-side catalog scalars.
 
 ## Setup
 
 ```bash
 cd astro
-uv sync --extra dev          # CPU-safe: model, packing, tests
-uv sync --extra data         # + lsdb (match-index build only; not needed to train)
-uv sync --extra train        # + nanotron/flash-attn (training machine only)
+uv sync --extra dev          # CPU-safe: model, packing, tests, lsdb
+uv sync --extra train        # + nanotron/flash-attn (any GPU box, this one included)
 ```
 
-## Develop / verify (no GPU, no network)
+## Develop / verify (CPU, no network)
 
 ```bash
 uv run pytest                          # unit tests (gpu-marked tests excluded)
 uv run python scripts/count_params.py  # size table, ±10% assert
-uv run python -m astropt3.train_smoke --config configs/model/test-tiny.yaml \
-    --steps 50 --assert-decrease       # end-to-end CPU smoke on synthetic data
 ```
+
+The synthetic-dependent `train_smoke` gate is **temporarily gone** under the
+ADR 0015 cutover; this branch is experimental and is not declared complete
+against the old repo contract until an LSDB-backed smoke exists (ADR 0015
+§Interim evidence). Offline decode/sequence/pack fixtures live in
+`tests/legacy_fixture.py`; one bounded `pytest.mark.network` test opens the
+live catalog (`tests/test_lsdb_stream.py`).
 
 Model-size configs live in `configs/model/` (Pythia-mirrored 70M–12B).
 The implementation plan (phases, verification, parallelism recipes) is
-[`PLAN.md`](PLAN.md); per-phase PRs land on feature branches.
+[`PLAN.md`](PLAN.md).
 
 **Docs**: [`docs/architecture.md`](docs/architecture.md) — what the model is
-and why (data→tokens→model, size family, parallelism semantics);
-[`docs/training.md`](docs/training.md) — how to run it (environments, data
-prep, launching, checkpoint/resume, eval, troubleshooting).
+and why; [`docs/training.md`](docs/training.md) — how to run it.
 
-## Pilot data (streamed, ADR 0006)
+## Training data (LSDB InfiniteStream, ADR 0015)
 
-The corpus is **streamed live from the HF hub at train time** — there is no
-prep step and no local copy. The **match index defines the corpus**
-(ADR 0011 as amended 2026-08-04): one scan of its LegacySurvey cells emits
-matched image x spectrum pairs, the unmatched images it passes, and the
-globally unmatched DESI spectra of the cells it owns. One source, one pass;
-the modality mix follows the data rather than a weighting.
+The training-record path is:
 
-Reads are `hats` (partition enumeration) + `pyarrow` (row groups); lsdb runs
-only offline, to build the match index:
-
-```bash
-uv run --extra data python scripts/build_match_index.py --out match_index.parquet
-    # ~200 crossmatch partitions, ~1h; ids only (tens of MB, no pixels copied)
-uv run pytest tests/test_streaming.py    # cursor logic offline + one live check
+```
+lsdb.open_catalog("hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north")
+→ lsdb.streams.InfiniteStream(client=None, partitions_per_chunk=1, seed)
+→ decode rows → ObjectSequencer → greedy packing → torch DataLoader → nanotron
 ```
 
-The published index is
-`hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet`
-(137,906 pairs over 173 cells); every `data_root: mmu` config points at it,
-and `$ASTROPT3_MATCH_INDEX` overrides it for a locally built one. **It is
-mandatory** — without an index the stream raises rather than degrading.
+- **One catalog, no crossmatch.** Image rows plus the image-side scalars the
+  active registry uses. The full multimodal model shape is retained so later
+  crossmatches don't need an architecture migration.
+- **Concurrency is the DataLoader's.** LSDB runs synchronously with
+  `client=None`; keep `num_loading_workers` at the configured 6–8 per rank.
+  Each consumer derives its stream seed from `(run seed, dp rank, worker id,
+  retry generation)`. Overlap between consumers, repeats, and incomplete
+  coverage are accepted.
+- **No dataset checkpoint state.** Resume restores model/optimizer/scheduler
+  state and starts a fresh stream. There is no cursor and no replay audit.
+- **Failure policy.** Recognized transport/storage errors reopen a fresh
+  stream under bounded exponential backoff; decode/validation and unknown
+  errors fail immediately.
+- **Floating revisions.** LSDB and the catalog float to latest; `uv.lock`
+  records the resolved package graph and runs log the resolved LSDB version.
+  Worker memory is the known risk: `InfiniteStream` can retain ~2 whole
+  pandas partitions, so lower `num_loading_workers` on an observed OOM.
 
-Because the index is the corpus, its 173 cells (165 train) are also the
-sharding unit: partitions are dealt to DP ranks, so a rank owns
-`floor(165 / dp)` and `num_loading_workers` cannot exceed that. The loader
-raises if it does; `datasets` alone would only warn and stop the surplus
-workers.
-
-`data_root` is `synthetic` (tests, smoke) or `mmu` (real training); a path
-to the retired local corpus raises. Partitions are addressed by index, so
-resume skips without downloading and replays nothing; the whole stream
-state is a handful of ints. Val reserves whole HEALPix partitions, so
-train/val stay spatially disjoint.
+Evaluation (validation loss, probes, sample sweeps) is deferred (ADR 0015
+§Evaluation and generation): `astropt3.eval` keeps only the pure model-side
+functions consuming provided records/objects/batches; the source-driven
+CLIs, `run_probe_sweep.py`, and the eval co-launch hooks are removed.
 
 Image normalization is physical (band-registry-keyed rescale → bright-pixel
 clamp → arcsinh; `data/band_registry.py`), so there is no per-corpus
 calibration step.
 
-Network is a hard training dependency: hub downtime stalls training with no
-local fallback. That is the deliberate trade for dropping the reshard.
-
-## Training (nanotron fork) + async eval
-
-Pretraining runs on the `Smith42/nanotron` fork (submodule at `../nanotron`;
-configs in `configs/nanotron/`). Smoke run:
+## Training (nanotron fork)
 
 ```bash
 cd .. && CUDA_DEVICE_MAX_CONNECTIONS=1 \
   torchrun --nproc_per_node=1 nanotron/run_train.py \
-    --config-file astro/configs/nanotron/astropt3-test-tiny.yaml
+    --config-file astro/configs/nanotron/<config>.yaml
 ```
 
-- **Checkpoints**: `checkpoints.checkpoint_schedule: pythia` saves at steps
-  1,2,4,…,512 plus every `checkpoint_interval` (schedule source:
-  `src/astropt3/checkpoint_schedule.py`). Each checkpoint carries the data
-  stream position (`dataset_state/dp_{rank}.pt`), so setting
-  `checkpoints.resume_checkpoint_path` resumes the exact micro-batch
-  sequence — no sample replay, no gap (requires `num_loading_workers: 0`;
-  set `object_id_log` on the dataset to audit this).
-- **Eval never blocks training** — run the sweep beside it on a spare GPU:
+All run configs use `is_astropt3_streaming: true` — no dataset block knobs
+beyond `ar_replicas`/`replica_placement`. Checkpoints store weights
+(bf16), optimizer + LR-scheduler state, RNG states, and `model_config.json`
+under the Pythia schedule (`checkpoint_schedule.py`); `latest.txt` marks the
+last complete checkpoint.
 
-```bash
-python astro/scripts/run_probe_sweep.py \
-  --checkpoints-dir <run_ckpt_dir> --out-dir <eval_dir> \
-  --data-root <mmu|synthetic> --watch --until-step <train_steps>
-    # per checkpoint: convert to HF -> fixed-batch val loss
-    # (astropt3.eval.val_loss) -> ridge redshift probe
-    # (astropt3.eval.linear_probe) -> one line in probe_results.jsonl
-```
-
-GPU-marked tests (training machine / reserved GPU):
-`pytest -m gpu tests/test_nanotron_gpu.py tests/test_phase4_gpu.py`.
+GPU-marked tests (any reserved GPU, this box included):
+`pytest -m gpu tests/test_nanotron_gpu.py`.

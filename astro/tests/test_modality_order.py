@@ -3,9 +3,8 @@
 import pytest
 import torch
 
-from astropt3 import AstroPT3Config
 from astropt3.data.packing import ObjectSequencer, PackedCollator
-from astropt3.data.synthetic import make_record
+from legacy_fixture import make_record
 from astropt3.tokenization import _MODALITY_ID_BLOCKS, modality_token_ids
 
 
@@ -99,7 +98,7 @@ def test_spectra_to_images_mode(tiny_config):
     from astropt3.eval.samples import build_template, sample_template
     from astropt3.modeling_astropt3 import AstroPT3Model
 
-    config = AstroPT3Config(**{**tiny_config.to_dict(), "tokeniser": "jetformer"})
+    config = tiny_config
     torch.manual_seed(0)
     model = AstroPT3Model(config).eval()
     seq = ObjectSequencer(config)
@@ -122,10 +121,8 @@ def test_spectra_to_images_mode(tiny_config):
 def test_default_modes_includes_spectra_to_images(tiny_config):
     from astropt3.eval.samples import default_modes
 
-    jet = AstroPT3Config(**{**tiny_config.to_dict(), "tokeniser": "jetformer"})
-    assert default_modes(jet) == [
+    assert default_modes(tiny_config) == [
         "unconditional",
         "image-to-spectra",
         "spectra-to-images",
     ]
-    assert default_modes(tiny_config) == ["reconstruct"]

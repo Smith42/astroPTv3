@@ -1,38 +1,83 @@
-"""CPU tests for the nanotron micro-batch adapter (no nanotron import).
+"""CPU tests for the nanotron LSDB micro-batch adapter.
 
-The adapter's output contract is what the nanotron fork's
-``AstroPT3ForTraining.forward(**micro_batch)`` consumes; here the same flat
-dicts are regrouped and fed to the HF model, which shares the packing/loss
-semantics.
+Contract honored by the nanotron fork's ``AstroPT3ForTraining.forward``;
+sources are faked — only the network-marked live check touches the hub.
 """
 
 from itertools import islice
-from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
-from astropt3.data import nanotron_loader, streaming
+from legacy_fixture import (
+    crossmatch_row,
+    legacy_only_crossmatch_row,
+    legacy_row,
+    make_record,
+    nested_frame,
+)
+
+from astropt3.data import nanotron_loader
 from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
+    consumer_seed,
+    decode_crossmatch_row,
+    decode_legacy_row,
+)
+from astropt3.data.nanotron_loader import (
     regroup_micro_batch as regroup,
 )
 from astropt3.tokenization import BOS_ID, modality_token_ids
-from fake_mmu import fake_open_stream
 
 MBS = 2
 SEQ_LEN = 896
 
 
-@pytest.fixture(scope="module")
-def micro_batches(tiny_config):
-    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN)
-    return list(islice(iter(stream), 3))
+class _FakeCatalog:
+    npartitions = 3
 
 
-def test_micro_batch_contract(tiny_config, micro_batches):
+def fake_stream(frames_per_epoch=2, rows_per_frame=4):
+    """Cheap ``InfiniteStream`` replacement yielding unconsumed DataFrames."""
+
+    class FakeStream:
+        seed = None
+
+        def __init__(self, catalog, client, partitions_per_chunk, seed):
+            FakeStream.seed = seed
+
+        def __iter__(self):
+            for _ in range(frames_per_epoch):
+                yield nested_frame(
+                    [legacy_row(i) for i in range(rows_per_frame)], ("image",)
+                )
+
+    return FakeStream
+
+
+@pytest.fixture
+def fake_lsdb(monkeypatch):
+    monkeypatch.setattr(
+        nanotron_loader.lsdb, "open_catalog", lambda *a, **k: _FakeCatalog()
+    )
+    monkeypatch.setattr(nanotron_loader, "_log_provenance", lambda *a, **k: None)
+
+    def install(stream_cls):
+        monkeypatch.setattr(nanotron_loader, "InfiniteStream", stream_cls)
+
+    return install
+
+
+def _stream(tiny_config, fake_lsdb, **kwargs):
+    fake_lsdb(fake_stream())
+    return PackedMicroBatches(tiny_config, MBS, SEQ_LEN, **kwargs)
+
+
+def test_micro_batch_contract(tiny_config, fake_lsdb):
     registry = tiny_config.modality_registry()
-    for flat in micro_batches:
+    stream = _stream(tiny_config, fake_lsdb)
+    for flat in islice(iter(stream), 3):
         assert flat["input_ids"].shape == (MBS, SEQ_LEN)
         assert flat["position_ids"].shape == (MBS, SEQ_LEN)
         assert flat["input_ids"].dtype == torch.long
@@ -45,34 +90,31 @@ def test_micro_batch_contract(tiny_config, micro_batches):
             assert values.shape == (int(mask.sum()), mod.input_size)
             assert values.dtype == torch.float32
             assert len(positions) == len(values)
-            # placeholder ids sit exactly at the mask positions
             _, placeholder_id, _ = modality_token_ids(name)
             assert (flat["input_ids"][mask] == placeholder_id).all()
-            # <|bos|> leads every object, so no modality token at position 0
             assert not mask[:, 0].any()
-        # each row starts a fresh object: position_ids restart at 0
         assert (flat["position_ids"][:, 0] == 0).all()
         assert (flat["input_ids"][:, 0] == BOS_ID).all()
 
 
-def test_batches_feed_hf_model(tiny_config, tiny_model, micro_batches):
+def test_batches_feed_hf_model(tiny_config, tiny_model, fake_lsdb):
+    stream = _stream(tiny_config, fake_lsdb)
     names = tiny_config.modality_registry().names()
-    for flat in micro_batches:
+    for flat in islice(iter(stream), 3):
         out = tiny_model(**regroup(flat, names))
         assert torch.isfinite(out.loss)
 
 
-def test_absent_modality_ships_typed_empty_tensors(tiny_config, tiny_model):
-    stream = PackedMicroBatches(
-        tiny_config, MBS, SEQ_LEN, synthetic_image_only_fraction=1.0
-    )
+def test_image_only_records_ship_empty_spectra_tensors(
+    tiny_config, tiny_model, fake_lsdb
+):
+    stream = _stream(tiny_config, fake_lsdb)
     flat = next(iter(stream))
+    # uncrossmatched LegacySurvey rows carry image + legacy scalars only
     assert not flat["spectra_mask"].any()
     assert flat["spectra_values"].shape == (0, 256)
     assert flat["spectra_values"].dtype == torch.float32
-    assert flat["spectra_positions"].shape == (0, 1)  # continuous positions
-    assert flat["spectra_positions"].dtype == torch.float32
-    # Z rides with the spectrum (ADR 0008): image-only records ship it empty
+    assert flat["spectra_positions"].shape == (0, 1)
     assert flat["Z_values"].shape == (0, 1)
     assert flat["Z_positions"].dtype == torch.long
     out = tiny_model(**regroup(flat, tiny_config.modality_registry().names()))
@@ -80,126 +122,230 @@ def test_absent_modality_ships_typed_empty_tensors(tiny_config, tiny_model):
     assert set(out.modality_losses) == {"images", "ebv", "photometry"}
 
 
-def test_synthetic_stream_disjoint_across_ranks_and_workers(tiny_config):
-    # rank/worker sharding strides over record indices
-    ds_a = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, rank=0, world_size=2)
-    ds_b = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, rank=1, world_size=2)
-    a = [r["object_id"] for r in islice(ds_a._synthetic_records(0, None), 20)]
-    b = [r["object_id"] for r in islice(ds_b._synthetic_records(0, None), 20)]
-    assert not set(a) & set(b)
-    assert len(set(a)) == 20
+def test_seeds_differ_across_rank_worker_and_retry(tiny_config):
+    base = consumer_seed(42, 0, 0, 0)
+    assert base != consumer_seed(42, 1, 0, 0)
+    assert base != consumer_seed(42, 0, 1, 0)
+    assert base != consumer_seed(42, 0, 0, 1)
+    # two consumers with identical identity derive the same seed
+    assert base == consumer_seed(42, 0, 0, 0)
 
 
-def test_deterministic_across_instances(tiny_config):
-    first = next(iter(PackedMicroBatches(tiny_config, MBS, SEQ_LEN)))
-    second = next(iter(PackedMicroBatches(tiny_config, MBS, SEQ_LEN)))
-    for key in first:
-        assert torch.equal(first[key], second[key]), key
+def test_decoder_recovers_record_fields():
+    record = decode_legacy_row(legacy_row(3))
+    assert record["image"]["flux"].shape == (3, 152, 152)
+    assert record["image"]["flux"].dtype == np.float32
+    assert record["image"]["band"] == ["des-g", "des-r", "des-z"]
+    for key in (
+        "ebv",
+        "flux_g",
+        "flux_r",
+        "flux_z",
+        "fiberflux_g",
+        "psfdepth_z",
+        "z_spec",
+    ):
+        assert isinstance(record[key], float), key
+    for band in ("des-g", "des-r", "des-z"):
+        assert isinstance(record[f"psf_fwhm_{band}"], float)
 
 
-def test_mmu_stream_loops_epochs(tiny_config, monkeypatch):
-    # the fake sources hold 24 records each: pulling many batches must cross
-    # an epoch boundary without exhausting the endless stream
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
-    stream = PackedMicroBatches(
-        tiny_config, MBS, SEQ_LEN, data_root="mmu", match_index="present"
-    )
-    batches = list(islice(iter(stream), 8))
-    assert len(batches) == 8
-    for flat in batches:
-        assert flat["input_ids"].shape == (MBS, SEQ_LEN)
+def test_decoder_rejects_bad_shape_and_id():
+    row = legacy_row(0)
+    row["image"] = {"band": ["des-g"], "flux": [[0.0]]}
+    with pytest.raises(ValueError, match="flux has shape"):
+        decode_legacy_row(row)
+    row = legacy_row(0)
+    del row["object_id"]
+    with pytest.raises(ValueError, match="object_id"):
+        decode_legacy_row(row)
 
 
-def test_more_workers_than_partitions_raises_a_named_error(tiny_config, monkeypatch):
-    # datasets only WARNS and stops the surplus workers, so an over-subscribed
-    # run trains on a fraction of its loaders. The fake corpus has 3 train
-    # cells, so 4 workers must fail loudly with the remedy in the message.
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", fake_open_stream)
-    stream = PackedMicroBatches(
-        tiny_config, MBS, SEQ_LEN, data_root="mmu", match_index="present"
-    )
-    loader = torch.utils.data.DataLoader(stream, batch_size=None, num_workers=4)
-    with pytest.raises(ValueError, match="reduce num_loading_workers"):
-        next(iter(loader))
+def test_crossmatch_decoder_recovers_matched_row():
+    record = decode_crossmatch_row(crossmatch_row(3, matched=True))
+    assert record["spectrum"]["flux"].shape == (7781,)
+    assert record["spectrum"]["flux"].dtype == np.float32
+    assert record["spectrum"]["mask"].dtype == bool
+    assert record["image"]["flux"].shape == (3, 152, 152)
+    assert record["image"]["band"] == ["des-g", "des-r", "des-z"]
+    assert isinstance(record["Z"], float)
+    assert isinstance(record["ebv"], float)
+    for band in ("des-g", "des-r", "des-z"):
+        assert isinstance(record[f"psf_fwhm_{band}"], float)
 
 
-def test_run_configs_fit_the_crossmatch_partition_ceiling():
-    """dp x num_loading_workers must fit the ~165-cell crossmatch corpus."""
-    import yaml
+def test_crossmatch_decoder_handles_unmatched_row():
+    record = decode_crossmatch_row(crossmatch_row(3, matched=False))
+    assert "spectrum" in record
+    assert "image" not in record
+    assert "ebv" not in record
 
-    # 173 cells in the published index minus streaming.VAL_PARTITIONS. Offline
-    # constant on purpose; recompute with load_match_index() after a rebuild.
-    ceiling = 173 - streaming.VAL_PARTITIONS
-    configs = sorted((Path(__file__).parents[1] / "configs" / "nanotron").glob("*.yaml"))
-    assert configs, "no nanotron run configs found"
-    for path in configs:
-        config = yaml.safe_load(path.read_text())
-        stage = config["data_stages"][0]["data"]
-        if stage["dataset"].get("data_root") != "mmu":
-            continue
-        dp = config["parallelism"]["dp"]
-        workers = stage["num_loading_workers"]
-        # owned_by_rank deals the partitions, so the thinnest rank holds
-        # floor(train / dp) — that is what caps this config's workers.
-        assert workers <= ceiling // dp, (
-            f"{path.name}: num_loading_workers({workers}) exceeds the "
-            f"{ceiling // dp} partitions a dp({dp}) rank owns"
+
+def test_crossmatch_decoder_falls_back_to_legacy_id_when_desi_id_missing():
+    """OuterKdTreeCrossmatch rows can be Legacy-only (no DESI match at all,
+    so "object_id" itself is null) -- object_id falls back to
+    "object_id_legacy" rather than raising."""
+    row = crossmatch_row(0, matched=True)
+    del row["object_id"]
+    record = decode_crossmatch_row(row)
+    assert record["object_id"] == row["object_id_legacy"]
+
+
+def test_crossmatch_decoder_rejects_missing_id():
+    row = crossmatch_row(0, matched=True)
+    del row["object_id"]
+    del row["object_id_legacy"]
+    with pytest.raises(ValueError, match="object_id"):
+        decode_crossmatch_row(row)
+
+
+def test_crossmatch_decoder_handles_legacy_only_row(tiny_config):
+    """OuterKdTreeCrossmatch rows recovered from an unmatched right side:
+    image present, no spectrum, object_id from the Legacy side."""
+    row = legacy_only_crossmatch_row(7)
+    record = decode_crossmatch_row(row)
+    assert record["object_id"] == row["object_id_legacy"]
+    assert "spectrum" not in record
+    assert record["image"]["flux"].shape == (3, 152, 152)
+
+    from astropt3.data.packing import ObjectSequencer
+
+    obj = ObjectSequencer(tiny_config).build(record)
+    assert obj.input_ids[0] == 1
+
+
+class _AmbiguousBoolMapping:
+    """Mimics a real nested-pandas struct scalar: like a live ``image_legacy``
+    cell, ``bool(...)`` raises pandas' own ambiguity error rather than
+    falling back to truthiness."""
+
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+    def __bool__(self):
+        raise ValueError(
+            "The truth value of a DataFrame is ambiguous. "
+            "Use a.empty, a.bool(), a.item(), a.any() or a.all()."
         )
 
-
-class _FlakyStream:
-    """Wraps a real fake stream to raise a 'client has been closed' RuntimeError
-    once mid-iteration (the DNS-blip signature), delegating state_dict so the
-    loader can resume the rebuilt stream from the pre-error snapshot."""
-
-    def __init__(self, inner, fail_at):
-        self._inner = inner
-        self._fail_at = fail_at
-
-    def __iter__(self):
-        for i, rec in enumerate(self._inner):
-            if self._fail_at is not None and i == self._fail_at:
-                self._fail_at = None
-                raise RuntimeError("client has been closed")
-            yield rec
-
-    def state_dict(self):
-        return self._inner.state_dict()
-
-    def load_state_dict(self, s):
-        self._inner.load_state_dict(s)
+    def as_py(self):
+        return self._mapping
 
 
-def test_transient_error_rebuilds_and_reclaims(tiny_config, monkeypatch):
-    # A DNS blip surfaces as this RuntimeError; the loader must ride it out by
-    # rebuilding the stream AND reclaiming the abandoned one (gc.collect), or its
-    # datasets/pyarrow prefetch buffers leak per rebuild to the cgroup OOM.
+def test_crossmatch_decoder_never_bool_checks_nested_image_scalar():
+    """Regression: a live run crashed because decode did ``image_value and
+    ...`` on a nested-pandas struct scalar, whose ``bool()`` raises instead
+    of returning True/False like a plain dict would."""
+    row = crossmatch_row(3, matched=True)
+    row["image_legacy"] = _AmbiguousBoolMapping(row["image_legacy"])
+    record = decode_crossmatch_row(row)
+    assert record["image"]["flux"].shape == (3, 152, 152)
+
+
+def test_transient_error_reopens_fresh_stream(tiny_config, monkeypatch):
+    """A mid-iteration transport blip discards the iterator and retries."""
     builds = {"n": 0}
 
-    def flaky(**kw):
-        builds["n"] += 1
-        return _FlakyStream(
-            fake_open_stream(**kw), fail_at=5 if builds["n"] == 1 else None
-        )
+    class FlakyStream:
+        def __init__(self, *a, **k):
+            builds["n"] += 1
+            self.built = builds["n"]
 
-    collects = {"n": 0}
-    real_collect = nanotron_loader.gc.collect
+        def __iter__(self):
+            if self.built == 1:
+                yield nested_frame([legacy_row(i) for i in range(6)], ("image",))
+                raise OSError("simulated storage blip")
+            while True:
+                yield nested_frame([legacy_row(i) for i in range(6)], ("image",))
 
-    def spy_collect(*a, **k):
-        collects["n"] += 1
-        return real_collect(*a, **k)
-
-    monkeypatch.setattr("astropt3.data.streaming.open_stream", flaky)
-    monkeypatch.setattr(nanotron_loader.time, "sleep", lambda *_: None)
-    monkeypatch.setattr(nanotron_loader.gc, "collect", spy_collect)
-
-    stream = PackedMicroBatches(
-        tiny_config, MBS, SEQ_LEN, data_root="mmu", match_index="present"
+    monkeypatch.setattr(
+        nanotron_loader.lsdb, "open_catalog", lambda *a, **k: _FakeCatalog()
     )
-    batches = list(islice(iter(stream), 4))
+    monkeypatch.setattr(nanotron_loader, "_log_provenance", lambda *a, **k: None)
+    monkeypatch.setattr(nanotron_loader, "InfiniteStream", FlakyStream)
+    monkeypatch.setattr(nanotron_loader.time, "sleep", lambda *_: None)
 
-    assert builds["n"] >= 2, "the stream was never rebuilt — error path not taken"
-    assert collects["n"] >= 1, "rebuild did not reclaim the abandoned stream"
-    assert len(batches) == 4  # recovered and kept producing valid batches
+    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN)
+    batches = list(islice(iter(stream), 3))
+    assert builds["n"] >= 2, "no fresh stream was opened after the blip"
+    assert len(batches) == 3
     for flat in batches:
         assert flat["input_ids"].shape == (MBS, SEQ_LEN)
+
+
+def test_non_retryable_error_fails_immediately(tiny_config, monkeypatch):
+    """Decode/validation errors are not retried."""
+
+    class BadStream:
+        def __init__(self, *a, **k):
+            pass
+
+        def __iter__(self):
+            yield nested_frame([legacy_row(0)], ("image",))
+            raise ValueError("decode blew up")
+
+    monkeypatch.setattr(
+        nanotron_loader.lsdb, "open_catalog", lambda *a, **k: _FakeCatalog()
+    )
+    monkeypatch.setattr(nanotron_loader, "_log_provenance", lambda *a, **k: None)
+    monkeypatch.setattr(nanotron_loader, "InfiniteStream", BadStream)
+    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN)
+    with pytest.raises(ValueError, match="decode blew up"):
+        next(iter(stream))
+
+
+# -- replicas / placement (kept behavior, ADR 0015 keeps ar_replicas) --------
+
+
+def _bipartite_stream(tiny_config, **kwargs):
+    kwargs.setdefault("ar_replicas", 3)
+    return PackedMicroBatches(tiny_config, 8, SEQ_LEN, **kwargs)
+
+
+def test_one_span_records_get_no_replica(tiny_config):
+    stream = _bipartite_stream(tiny_config)
+    record = make_record(2, image_only_fraction=1.0)
+    objects = stream._replica_objects(record)
+    assert len(objects) == len(set(id(obj) for obj in objects))
+    assert all(set(obj.order) == set(objects[0].order) for obj in objects)
+
+
+def test_replicas_carry_distinct_span_orders(tiny_config):
+    stream = _bipartite_stream(tiny_config)
+    for i in range(12):
+        objects = stream._replica_objects(make_record(i, image_only_fraction=1.0))
+        orders = [obj.order for obj in objects]
+        assert len(orders) == len(set(orders)), f"record {i} repeated an order"
+        assert "#" not in objects[0].object_id
+        assert all("#" in obj.object_id for obj in objects[1:])
+
+
+def test_no_two_replicas_of_one_object_share_a_packed_row(tiny_config):
+    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=2)
+    placements = []
+    for i in range(8):
+        objects = stream._replica_objects(make_record(i, image_only_fraction=1.0))
+        if len(objects) > 1:
+            placements.append(stream._place(objects, [0] * MBS))
+    assert placements, "no record produced replicas"
+    for chosen in placements:
+        assert len(chosen) == len(set(chosen)), "two replicas landed in one row"
+
+
+def test_placement_deterministic_and_emptiest_first(tiny_config):
+    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=1)
+    objects = stream._replica_objects(make_record(1, image_only_fraction=1.0))
+    used = [300, 10] + [50] * (MBS - 2)
+    first = stream._place(objects, used)
+    assert first == [1]
+    assert stream._place(objects, used) == first
+
+
+def test_more_replicas_than_rows_is_rejected(tiny_config):
+    with pytest.raises(ValueError, match="exceeds micro_batch_size"):
+        PackedMicroBatches(tiny_config, 2, SEQ_LEN, ar_replicas=3)
+
+
+def test_ar_replicas_rejects_a_nonsense_count(tiny_config):
+    with pytest.raises(ValueError, match="ar_replicas must be >= 1"):
+        PackedMicroBatches(tiny_config, MBS, SEQ_LEN, ar_replicas=0)

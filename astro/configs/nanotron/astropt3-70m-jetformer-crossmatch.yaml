@@ -1,9 +1,23 @@
-# Clean crossmatch-only run: every downloaded matched-partition row trains once.
-# No skim governor, standalone source, source weighting, prefunded quota, cache,
-# or environment source-mode switch. Start from a fresh checkpoint path.
+# 70M JETFORMER crossmatch spectra test (GH200 node, DP=2, ZeRO-1).
+# Identical to astropt3-70m-jetformer.yaml except the data source: streams
+# the DESI-left crossmatch (mmu_desi_edr_sv3 x mmu_ssl_legacysurvey_north,
+# radius<=1", PLAN.md pilot decision #4) instead of the plain uncrossmatched
+# LegacySurvey catalog, so `spectra`-modality tokens are actually populated
+# (ADR 0015 marks crossmatching "Deferred"; this is the interim experiment
+# that turns it on via nanotron_loader.decode_crossmatch_row). Three record
+# shapes: matched (image+spectrum, ~10% of DESI rows within radius_arcsec),
+# spectrum-only (DESI drives the pixel-level join, so most rows carry a
+# spectrum with no Legacy match), and image-only -- outer_crossmatch.
+# OuterKdTreeCrossmatch recovers unmatched Legacy rows within the pixel
+# pairs the join already visits (full "image" column already fetched into
+# memory to run the KDTree match, then discarded by stock lsdb) as free
+# extra training data; a Legacy partition with no DESI coverage nearby is
+# still never touched by this stream at all (loader-throughput
+# investigation, 2026-09-02). Fresh checkpoints_path and run name -- does
+# not touch the astropt3-70m-jetformer checkpoints.
 general:
   project: astropt3
-  run: astropt3-70m-jetformer-crossmatch-only
+  run: astropt3-70m-jetformer-crossmatch
   seed: 42
   step: null
   consumed_train_samples: null
@@ -36,14 +50,12 @@ model:
         pos_input_size: 1
         max_positions: 1024
         loss_weight: 1.0
-    tokeniser: jetformer
+    spiral: true # center-outward image patch order (ADR 0004)
     jetformer_flow_steps: 4
     jetformer_flow_hidden: 128
     jetformer_gmm_k: 4
     jetformer_noise_max: 0.1
     jetformer_noise_min: 0.0
-    spectra_norm_divisor: 10.0 # ADR 0007 arcsinh knee (nMgy)
-    huber_delta: 1.0
     hidden_size: 512
     num_hidden_layers: 23
     num_attention_heads: 8
@@ -80,25 +92,17 @@ parallelism:
   tp_linear_async_communication: false
   recompute_layer: false
 data_stages:
-  - name: jetformer-test
+  - name: jetformer-crossmatch-test
     start_training_step: 1
     data:
       dataset:
-        data_root: mmu
-        match_index: >-
-          hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
-        object_id_log: >-
-          /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only/objects.log
+        is_astropt3_streaming: true
+        crossmatch_desi: true
       seed: 42
-      # 8 workers/rank needs the whole 68.7G slurm memory cgroup to itself:
-      # co-launching the eval sidecar on top OOM-killed a worker at step 2168
-      # (16 x ~3.8G RSS + 2 ranks + sidecar), and 4 workers starved the feed
-      # (~80K vs 115K tok/s/GPU). Run the probe sweep post-hoc instead of via
-      # EVAL_GPU while the cgroup budget is this tight.
       num_loading_workers: 8
 optimizer:
   accumulate_grad_in_fp32: true
-  clip_grad: 100.0
+  clip_grad: 1.0
   learning_rate_scheduler:
     learning_rate: 0.001
     lr_warmup_steps: 200
@@ -120,17 +124,14 @@ optimizer:
   zero_stage: 1
 tokens:
   sequence_length: 4096
-  train_steps: 20000
+  train_steps: 60000
   micro_batch_size: 16
   batch_accumulation_per_replica: 1
   val_check_interval: 100
   limit_val_batches: 0
   limit_test_batches: 0
 checkpoints:
-  checkpoints_path: >-
-    /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only
-  resume_checkpoint_path: >-
-    /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-only
+  checkpoints_path: ../astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch
   checkpoint_interval: 1000
   save_initial_state: false
   save_final_state: true

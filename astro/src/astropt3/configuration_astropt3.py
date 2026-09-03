@@ -1,11 +1,13 @@
 """AstroPT3 configuration: a SmolLM3 body with continuous-modality I/O."""
 
+from __future__ import annotations
+
 from transformers.models.smollm3.configuration_smollm3 import SmolLM3Config
 
 from .data.band_registry import _DIV_FACTOR
 from .data.spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
 from .modalities import ModalityRegistry
-from .tokenization import VOCAB_SIZE
+from .tokenization import assign_modality_token_ids, required_vocab_size
 
 # Pilot modalities, pinned to the verified MMU schemas (see plan):
 # - images:  (3, 152, 152) flux cubes, center crop 96x96, patch 8 -> 144
@@ -13,10 +15,10 @@ from .tokenization import VOCAB_SIZE
 # - spectra: 7781-bin DESI spectra, patch 256 -> 31 tokens; position = per-patch
 #   mean wavelength, normalized, projected by an affine PositionEmbedder
 # - Z / ebv / photometry: ADR 0008 scalar modalities — one-token spans over
-#   the catalog scalars the records already carry, GMM-headed under both
-#   tokenisers. loss_weight 0.1 keeps the objective dominated by images and
-#   spectra (the per-token mean that balanced 364-vs-31 tokens creates the
-#   imbalance at 144:1 — the ADR's scoped override of 0005's 1:1 principle).
+#   the catalog scalars the records already carry, GMM-headed like every
+#   other modality. ``loss_weight=0.1`` remains for historical configs; ADR
+#   0013 family configs collectively cap all present scalar modalities at
+#   weight 0.1.
 DEFAULT_MODALITIES = [
     {
         "name": "images",
@@ -24,6 +26,10 @@ DEFAULT_MODALITIES = [
         "patch_size": 8,
         "pos_type": "index",
         "max_positions": 361,
+        "family": "image",
+        "source": "legacy",
+        "record_keys": ["image"],
+        "token_ids": [2, 3, 4],
         "loss_weight": 1.0,
     },
     {
@@ -32,6 +38,10 @@ DEFAULT_MODALITIES = [
         "patch_size": 256,
         "pos_type": "continuous",
         "pos_input_size": 1,
+        "family": "spectrum",
+        "source": "desi",
+        "record_keys": ["spectrum"],
+        "token_ids": [5, 6, 7],
         "loss_weight": 1.0,
     },
     {
@@ -40,6 +50,10 @@ DEFAULT_MODALITIES = [
         "patch_size": 1,
         "pos_type": "index",
         "max_positions": 1,
+        "family": "scalar",
+        "source": "desi",
+        "record_keys": ["Z"],
+        "token_ids": [8, 9, 10],
         "loss_weight": 0.1,
         "scalar": True,
     },
@@ -49,6 +63,10 @@ DEFAULT_MODALITIES = [
         "patch_size": 1,
         "pos_type": "index",
         "max_positions": 1,
+        "family": "scalar",
+        "source": "legacy",
+        "record_keys": ["ebv"],
+        "token_ids": [11, 12, 13],
         "loss_weight": 0.1,
         "scalar": True,
     },
@@ -60,10 +78,37 @@ DEFAULT_MODALITIES = [
         "patch_size": 1,
         "pos_type": "index",
         "max_positions": 1,
+        "family": "scalar",
+        "source": "legacy",
+        "record_keys": ["flux_g", "flux_r", "flux_z"],
+        "token_ids": [14, 15, 16],
         "loss_weight": 0.1,
         "scalar": True,
     },
 ]
+
+
+def _complete_modalities(modalities: list[dict]) -> list[dict]:
+    """Backfill only the five released modalities; new ones self-describe."""
+    legacy = {modality["name"]: modality for modality in DEFAULT_MODALITIES}
+    completed = []
+    for raw in modalities:
+        modality = dict(raw)
+        defaults = legacy.get(modality.get("name"), {})
+        for key in ("family", "source", "record_keys", "token_ids"):
+            if key not in modality and key in defaults:
+                modality[key] = defaults[key]
+        if (
+            "family" not in modality
+            or "source" not in modality
+            or "record_keys" not in modality
+        ):
+            raise ValueError(
+                f"new modality {modality.get('name')!r} must declare family, source, and record_keys"
+            )
+        modality["scalar"] = modality["family"] == "scalar"
+        completed.append(modality)
+    return assign_modality_token_ids(completed)
 
 
 class AstroPT3Config(SmolLM3Config):
@@ -72,19 +117,18 @@ class AstroPT3Config(SmolLM3Config):
     def __init__(
         self,
         modalities: list[dict] | None = None,
-        tokeniser: str = "affine",
         jetformer_flow_steps: int = 4,
         jetformer_flow_hidden: int = 128,
         jetformer_gmm_k: int = 4,
         jetformer_noise_max: float = 0.1,
         jetformer_noise_min: float = 0.0,
         scalar_gmm_k: int = 5,
-        huber_delta: float = 1.0,
+        loss_aggregation: str = "legacy_modality_mean",
         special_token_ce_weight: float = 0.0,
         image_norm_divisor: float = _DIV_FACTOR,
         spectra_norm_divisor: float = _SPECTRA_DIV_FACTOR,
         spiral: bool = True,
-        vocab_size: int = VOCAB_SIZE,
+        vocab_size: int | None = None,
         hidden_size: int = 512,
         intermediate_size: int = 1536,
         num_hidden_layers: int = 22,
@@ -99,8 +143,16 @@ class AstroPT3Config(SmolLM3Config):
         eos_token_id: int = 1,
         **kwargs,
     ):
-        self.modalities = modalities if modalities is not None else DEFAULT_MODALITIES
-        self.tokeniser = tokeniser
+        raw_modalities = modalities if modalities is not None else DEFAULT_MODALITIES
+        self.modalities = _complete_modalities(raw_modalities)
+        required_vocab = required_vocab_size(self.modalities)
+        if vocab_size is None:
+            vocab_size = required_vocab
+        elif vocab_size < required_vocab:
+            raise ValueError(
+                f"vocab_size={vocab_size} cannot hold modality token id "
+                f"{required_vocab - 1}; set vocab_size >= {required_vocab}"
+            )
         self.jetformer_flow_steps = jetformer_flow_steps
         self.jetformer_flow_hidden = jetformer_flow_hidden
         self.jetformer_gmm_k = jetformer_gmm_k
@@ -109,7 +161,9 @@ class AstroPT3Config(SmolLM3Config):
         # mixture count of the ADR 0008 scalar GMM heads (photometric-redshift
         # posteriors are multimodal; K=5 is the ADR's unswept starting point)
         self.scalar_gmm_k = scalar_gmm_k
-        self.huber_delta = huber_delta
+        if loss_aggregation not in {"legacy_modality_mean", "family"}:
+            raise ValueError(f"unknown loss_aggregation {loss_aggregation!r}")
+        self.loss_aggregation = loss_aggregation
         self.special_token_ce_weight = special_token_ce_weight
         # arcsinh divisor of the physical image normalization; consumed by
         # ObjectSequencer (forward) and scripts/generate.py (inverse), so a
@@ -137,7 +191,7 @@ class AstroPT3Config(SmolLM3Config):
         # or load those with `spiral: false` passed explicitly.
         self.spiral = spiral
         kwargs["use_cache"] = False  # reload passes it back through kwargs
-        super().__init__(
+        super().__init__(  # type: ignore[call-arg]
             vocab_size=vocab_size,
             hidden_size=hidden_size,
             intermediate_size=intermediate_size,
@@ -145,7 +199,7 @@ class AstroPT3Config(SmolLM3Config):
             num_attention_heads=num_attention_heads,
             num_key_value_heads=num_key_value_heads,
             max_position_embeddings=max_position_embeddings,
-            rope_theta=rope_theta,
+            rope_theta=rope_theta,  # type: ignore[call-arg]
             no_rope_layer_interval=no_rope_layer_interval,
             tie_word_embeddings=tie_word_embeddings,
             pad_token_id=pad_token_id,

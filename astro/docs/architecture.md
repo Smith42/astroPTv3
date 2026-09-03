@@ -4,6 +4,13 @@
 [`training.md`](training.md); the authoritative phase plan with all fixed
 decisions is [`../PLAN.md`](../PLAN.md).*
 
+**Note (2026-09-01):** the crossmatch corpus and `data/streaming.py` described
+below in "What this is" and step 1 of "From a galaxy to a token sequence" are
+retired by [ADR 0015](adr/0015-lsdb-infinite-stream-training.md); the corpus
+actually running today is the single uncrossmatched LegacySurvey catalog
+described later in this doc's "Parallelism semantics" / "Training routine"
+sections.
+
 ## What this is
 
 AstroPTv3 (NAIRR260009) is a from-scratch suite of **multimodal astronomical
@@ -13,8 +20,8 @@ the whole family. The recipe combines two lineages:
 
 - **AstroPT** (Smith et al.): autoregressive *next-token regression* over
   continuous embeddings of astronomical data — no quantization, no text
-  vocabulary. The model predicts the next image/spectrum patch directly and
-  is trained with a Huber loss.
+  vocabulary. The model predicts the next image/spectrum patch directly,
+  via the jetformer (JetFormer/GIVT-style) flow + GMM regression head.
 - **SmolLM3**: the transformer body — a modern decoder stack with grouped-
   query attention (GQA), RoPE with NoPE every 4th layer, RMSNorm, SwiGLU,
   and document-masked packed sequences.
@@ -118,18 +125,24 @@ reference):
   `embed(<|m|>) + encoder_m(value) + pos_embed_m(position)`. The placeholder
   embedding acts as a learned modality-type embedding; nothing is overwritten
   in place.
-- **Encoders/decoders** are per-modality affine maps (`tokeniser: affine`,
-  a single `nn.Linear` each way; an `aim` MLP variant is selectable in
-  config). Image positions go through an `nn.Embedding` (index type), spectra
-  positions through a small affine layer (continuous type).
+- **Encoders** are a single per-modality `nn.Linear` (data space -> embedding
+  space). Image positions go through an `nn.Embedding` (index type), spectra
+  positions through a small affine layer (continuous type). Each patch
+  modality also has a per-modality normalizing flow (`TinyFlow1D`) that maps
+  its raw patch value to a latent z — z is both what gets embedded and what
+  the `GMMHead` decoder predicts; scalar modalities (`Z`, `ebv`, `photometry`)
+  skip the flow and feed a `GMMHead` directly on the raw normalized value.
 - **Body**: the stock SmolLM3 decoder stack, consuming `inputs_embeds`.
   RoPE θ=100k, **NoPE every 4th layer** (`no_rope_layer: 4` /
   `no_rope_layer_interval: 4`), GQA, RMSNorm ε=1e-6, SwiGLU, bf16 training.
-- **Loss**: Huber (δ=1.0) computed at positions **one to the left** of each
+- **Loss**: the exact patch-space likelihood `mean(NLL_GMM(z) - logdet)`
+  (may be negative) computed at positions **one to the left** of each
   modality token — `<|begin_m|>` predicts patch 0, patch *i* predicts patch
   *i+1* (AstroPT's `starts−1` alignment, implemented via `left_shift_mask`).
-  Per-modality means are combined by `loss_weight` (both 1.0 for the pilot).
-  Special tokens and pads carry no loss.
+  ADR 0013 configs average present modalities within image/spectrum/scalar,
+  then combine present family means at 1:1:0.1. Historical configs retain the
+  former per-modality `loss_weight` mean. Special tokens and pads carry no
+  loss.
 - **Init**: stock SmolLM3 `_init_weights`, normal(0, 0.02).
 
 ### Size family (Pythia-mirrored totals, no vocab head)
@@ -137,15 +150,15 @@ reference):
 Verified by `scripts/count_params.py` (asserts ±10%; all within 1.8%):
 
 | Name | layers | hidden | heads | kv heads | head_dim | intermediate | total |
-|------|--------|--------|-------|----------|----------|--------------|-------|
-| 70M  | 23 | 512  | 8  | 2 | 64  | 1536  | 70.0M |
-| 160M | 25 | 768  | 12 | 4 | 64  | 2048  | 158.3M |
-| 410M | 27 | 1024 | 16 | 4 | 64  | 4096  | 411.9M |
-| 1B   | 22 | 2048 | 16 | 4 | 128 | 5632  | 994.8M |
-| 1.4B | 31 | 2048 | 16 | 4 | 128 | 5632  | 1.401B |
+| ------ | -------- | -------- | ------- | ---------- | ---------- | -------------- | ------- |
+| 70M | 23 | 512 | 8 | 2 | 64 | 1536 | 70.0M |
+| 160M | 25 | 768 | 12 | 4 | 64 | 2048 | 158.3M |
+| 410M | 27 | 1024 | 16 | 4 | 64 | 4096 | 411.9M |
+| 1B | 22 | 2048 | 16 | 4 | 128 | 5632 | 994.8M |
+| 1.4B | 31 | 2048 | 16 | 4 | 128 | 5632 | 1.401B |
 | 2.8B | 36 | 2048 | 16 | 4 | 128 | 11008 | 2.815B (exact SmolLM3-3B body) |
 | 6.9B | 38 | 4096 | 32 | 8 | 128 | 11008 | 6.740B |
-| 12B  | 42 | 5120 | 40 | 8 | 128 | 14336 | 11.90B |
+| 12B | 42 | 5120 | 40 | 8 | 128 | 14336 | 11.90B |
 
 Modality extras are tiny (~2560×hidden ≈ 1M params at 70M, 13M at 12B); the
 small sizes gain a layer or two over Pythia to hit nominal totals.
@@ -156,7 +169,8 @@ small sizes gain a layer or two over Pythia to hit nominal totals.
   repo root `nanotron/`): the *training* implementation.
   `src/nanotron/models/astropt3.py` is the branch's Qwen2/SmolLM3 stack with
   the vocab-embedding block replaced by the 64-id + modality assembly, and
-  the lm_head + sharded-CE loss replaced by modality decoders + masked Huber.
+  the lm_head + sharded-CE loss replaced by modality flows/GMM heads +
+  masked exact-likelihood loss.
   `run_train.py` gains an `astropt3_streaming` dataset type that calls back
   into this package's `data/nanotron_loader.py`.
 - **transformers implementation** (`src/astropt3/`): the release/probing
@@ -194,10 +208,11 @@ flat because nanotron's device mover only transfers top-level tensors).
   rank* (different objects → different patch counts), which is why
   `general.ignore_sanity_checks: true` is required — nanotron's DP
   input-difference check all-gathers tensors assuming equal shapes.
-- **Data sharding**: the object stream splits by DP rank
-  (`split_dataset_by_node`, identical within a TP group) and then across
-  DataLoader workers (HF datasets assigns each worker a disjoint subset of
-  the rank's parquet shards).
+- **Stream concurrency (ADR 0015)**: torch DataLoader workers own parallelism;
+  LSDB's `InfiniteStream` runs synchronously (`client=None`) inside each
+  worker over the uncrossmatched LegacySurvey North catalog. Seeds derive
+  from (run seed, DP rank, worker id, retry generation); overlap and repeats
+  are accepted — there is no cross-rank ownership.
 
 ## Training routine
 
@@ -214,14 +229,12 @@ Pythia-style, adapted to a smaller corpus:
 - **Checkpointing**: `checkpoint_schedule: pythia` saves at steps
   1, 2, 4, …, 512 and then every `checkpoint_interval` (1000) — the log2-
   spaced early checkpoints are what make learning-dynamics studies possible.
-  Each checkpoint carries the data-stream position (`dataset_state/`), so a
-  resumed run continues the *exact* micro-batch sequence with no replay.
-- **Evaluation never blocks training**: `scripts/run_probe_sweep.py` runs in
-  a separate process (spare GPU), converting each checkpoint to HF and
-  computing (a) a fixed-batch validation loss and (b) a ridge linear probe
-  of redshift `Z` from mean-pooled hidden states. Val/train splits are
-  **spatially disjoint** (whole order-7 HEALPix tiles hash to one split), so
-  near-duplicates cannot leak.
+  Checkpoints hold model/optimizer/scheduler/RNG weight state only (ADR
+  0015): the cursorless LSDB stream restarts fresh on resume.
+- **Evaluation (deferrred, ADR 0015)**: `astropt3.eval` retains only pure
+  model-side functions over provided records/objects/batches (`evaluate`,
+  `embed_objects`, `ridge_r2`, `scalar_head_metrics`, sampling/rendering);
+  source-backed collection reconnects at a future LSDB evaluation seam.
 
 ## Roadmap context
 

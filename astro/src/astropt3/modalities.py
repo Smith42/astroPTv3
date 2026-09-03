@@ -1,16 +1,18 @@
 """Modality registry and the modules that move data in and out of embedding space.
 
-Ported from astroPT (src/astropt/model.py) with the affine tokeniser as the
-default. Each modality contributes three modules to the model:
+Ported from astroPT (src/astropt/model.py). Each modality contributes:
 
 - ``Encoder``:   data space  -> embedding space (one token per patch)
-- ``Decoder``:   embedding space -> data space (the regression head)
 - ``PositionEmbedder``: per-modality positional information, added to the
   input embeddings (SmolLM3's RoPE/NoPE over the flat sequence is unchanged).
+- a per-modality flow (``TinyFlow1D``) + ``GMMHead`` (embedding space -> data
+  space, the jetformer regression head; see below).
 """
 
+from __future__ import annotations
+
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -29,12 +31,29 @@ class ModalityConfig:
             "continuous" for a projected float position (e.g. wavelength).
         pos_input_size: dimensionality of the continuous position vector.
         max_positions: number of learned positions when pos_type == "index".
-        loss_weight: weight of this modality's Huber loss term.
-        scalar: ADR 0008 scalar modality — a one-token span holding a
+        family: fixed ADR 0013 objective family: image, spectrum, or scalar.
+        source: source survey/product name used for provenance and dispatch.
+        record_keys: record field(s) carrying this modality.
+        token_ids: frozen (begin, placeholder, end) special-token block.
+        loss_weight: legacy field retained for checkpoint compatibility;
+            ADR 0013 aggregates by family instead.
+        channel_tokenization: image factorisation (ADR 0014 §8).
+            ``fused`` (default) makes one token per patch across all bands
+            (8*8*3 = 192 floats); ``per_band`` makes one token per patch PER
+            band (8*8 = 64 floats, 3x the tokens) from identical bytes — a
+            finer autoregressive factorisation with narrower heads, not more
+            information. ``E_values`` is unchanged either way.
+        band_order: fixed band serialization order for ``per_band``, in
+            record band names (``des-g``, ``des-r``, ``des-z``). Fixed, not
+            shuffled: band order as an ADR 0008 ordering decision is a
+            separate experiment, and this one changes one variable.
+        scalar: ADR 0008 scalar-modality compatibility marker. It must agree
+            with ``family == "scalar"``.
+        ADR 0008 scalar modality — a one-token span holding a
             physical quantity (Z, ebv, photometry). Scalars bypass the
             jetformer flow (their dims are odd and a flow buys nothing on a
-            scalar) and are predicted by a ``GMMHead`` under BOTH tokenisers,
-            with ``gmm_nll`` on the raw normalized value as the loss.
+            scalar) and are predicted by a ``GMMHead`` directly, with
+            ``gmm_nll`` on the raw normalized value as the loss.
     """
 
     name: str
@@ -43,8 +62,65 @@ class ModalityConfig:
     pos_type: str = "index"
     pos_input_size: int = 1
     max_positions: int = 1024
+    family: str | None = None
+    source: str | None = None
+    record_keys: tuple[str, ...] = ()
+    token_ids: tuple[int, int, int] | None = None
     loss_weight: float = 1.0
     scalar: bool = False
+    channel_tokenization: str = "fused"
+    band_order: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        if self.family not in {"image", "spectrum", "scalar"}:
+            raise ValueError(
+                f"modality {self.name!r} has invalid family {self.family!r}"
+            )
+        if self.channel_tokenization not in {"fused", "per_band"}:
+            raise ValueError(
+                f"modality {self.name!r} has invalid channel_tokenization "
+                f"{self.channel_tokenization!r} (fused | per_band)"
+            )
+        self.band_order = tuple(self.band_order)
+        if self.channel_tokenization == "per_band":
+            if self.family != "image":
+                raise ValueError(
+                    f"modality {self.name!r} is {self.family!r}; per-band "
+                    "tokenisation only applies to images"
+                )
+            if not self.band_order:
+                raise ValueError(
+                    f"modality {self.name!r} is per_band but names no "
+                    "band_order; the order must be fixed, not inferred"
+                )
+            expected = self.patch_size * self.patch_size
+            if self.input_size != expected:
+                raise ValueError(
+                    f"modality {self.name!r} is per_band with patch_size "
+                    f"{self.patch_size}, so input_size must be {expected}, "
+                    f"got {self.input_size}"
+                )
+        if self.scalar != (self.family == "scalar"):
+            raise ValueError(
+                f"modality {self.name!r} scalar={self.scalar} disagrees with "
+                f"family={self.family!r}"
+            )
+        if not self.source:
+            raise ValueError(f"modality {self.name!r} is missing source provenance")
+        self.record_keys = tuple(self.record_keys)
+        if not self.record_keys:
+            raise ValueError(f"modality {self.name!r} has no record_keys")
+        raw_token_ids = self.token_ids
+        if raw_token_ids is None or len(raw_token_ids) != 3:
+            raise ValueError(f"modality {self.name!r} needs three token_ids")
+        try:
+            first, second, third = (int(token_id) for token_id in raw_token_ids)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"modality {self.name!r} has invalid token_ids") from error
+        token_ids = (first, second, third)
+        if token_ids != tuple(range(token_ids[0], token_ids[0] + 3)):
+            raise ValueError(f"modality {self.name!r} token_ids must be consecutive")
+        self.token_ids = token_ids
 
     def to_dict(self) -> dict:
         return {
@@ -54,8 +130,14 @@ class ModalityConfig:
             "pos_type": self.pos_type,
             "pos_input_size": self.pos_input_size,
             "max_positions": self.max_positions,
+            "family": self.family,
+            "source": self.source,
+            "record_keys": list(self.record_keys),
+            "token_ids": list(self.token_ids or ()),
             "loss_weight": self.loss_weight,
             "scalar": self.scalar,
+            "channel_tokenization": self.channel_tokenization,
+            "band_order": list(self.band_order),
         }
 
 
@@ -84,33 +166,16 @@ class ModalityRegistry:
 
 
 class Encoder(nn.Module):
-    """Data space -> embedding space.
+    """Data space -> embedding space: a single linear projection.
 
-    "affine" (default) and "jetformer" both use a single linear projection;
-    the flow that precedes jetformer lives on the model
-    (``AstroPT3Model.flows``).
+    The flow that precedes jetformer's latent space lives on the model
+    (``AstroPT3Model.flows``); this just projects the (possibly flowed)
+    patch value into embedding space.
     """
 
-    def __init__(self, hidden_size: int, in_size: int, tokeniser: str = "affine", bias: bool = False):
+    def __init__(self, hidden_size: int, in_size: int, bias: bool = False):
         super().__init__()
-        if tokeniser not in ("affine", "jetformer"):
-            raise ValueError(f"unknown tokeniser {tokeniser!r} (expected 'affine' or 'jetformer')")
-        self.tokeniser = tokeniser
         self.c_fc = nn.Linear(in_size, hidden_size, bias=bias)
-
-    def forward(self, x):
-        return self.c_fc(x)
-
-
-class Decoder(nn.Module):
-    """Embedding space -> data space (the per-modality regression head)."""
-
-    def __init__(self, hidden_size: int, out_size: int, tokeniser: str = "affine", bias: bool = False):
-        super().__init__()
-        if tokeniser != "affine":
-            raise ValueError(f"unknown tokeniser {tokeniser!r} (Decoder supports only 'affine')")
-        self.tokeniser = tokeniser
-        self.c_fc = nn.Linear(hidden_size, out_size, bias=bias)
 
     def forward(self, x):
         return self.c_fc(x)

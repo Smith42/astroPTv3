@@ -1,6 +1,9 @@
 # ADR 0001: Inverse-variance-weighted loss for the jetformer head
 
-- **Status:** Rejected
+- **Status:** Rejected. **Note (2026-09-01):** the affine tokeniser this ADR
+  compares jetformer against is removed from the codebase — jetformer is now
+  the sole tokeniser. The affine-path reasoning below is historical context,
+  not a currently-available alternative.
 - **Date:** 2026-07-15
 - **References:**
   `../galactiktok/docs/adr/0002-inverse-variance-weighted-loss.md`

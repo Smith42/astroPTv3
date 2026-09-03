@@ -29,17 +29,24 @@ using `<|begin_mod|>`/placeholder/`<|end_mod|>` special tokens;
 4. **Pilot data**: `UniverseTBD/mmu_ssl_legacysurvey_north` ×
    `UniverseTBD/mmu_desi_edr_sv3` via lsdb crossmatch (schemas verified below);
    time series + tabular later as config-only extensions.
-5. **Affine tokeniser default** (single `nn.Linear` per direction); aim MLP
-   selectable via config.
+5. **Jetformer tokeniser default and sole regression head** (flow + GMM head;
+   decision rewritten 2026-09-01 — it previously read "affine tokeniser
+   default, single `nn.Linear` per direction; aim MLP selectable via
+   config." Both the affine `Decoder` and the never-wired-into-HF `aim` MLP
+   variant are removed from the codebase).
 6. **uv** manages environments; new deps in `astro/pyproject.toml`; upgrading
    existing venv packages is fine.
-7. **No training runs on this machine.** Development + CPU unit/smoke tests
-   here; all GPU work (including nanotron smoke runs) on the training machine.
-   Deliver launch scripts + docs, don't execute.
+7. **GPU work and training runs are allowed on this machine** (2×A100 80GB
+   plus slurm; rule rewritten 2026-08-06, it previously forbade both). CPU
+   unit/smoke tests stay the fast gate and must be green first; the node is
+   shared, so pin a device and check `nvidia-smi` before claiming one.
+   Multi-day production runs still belong on the training cluster by
+   preference, not by prohibition.
 
 ## Verified pilot-data schemas (checked 2026-07-07 via HF datasets-server + MMU builders)
 
 **`UniverseTBD/mmu_ssl_legacysurvey_north`** — 14,174,203 rows, ~4 TB:
+
 - `image` struct: `band=["des-g","des-r","des-z"]`, `flux` float32 **(3, 152, 152)**
   (builder constant `_image_size=152`, `_pixel_scale=0.262`), `psf_fwhm`, `scale`.
 - Scalars: `flux_{g,r,z}`, `fiberflux_{g,r,z}`, `psfdepth_{g,r,z}`, `ebv`, `z_spec`.
@@ -47,6 +54,7 @@ using `<|begin_mod|>`/placeholder/`<|end_mod|>` special tokens;
 - ⚠ Raw flux (not JPG), 152 px — **not divisible by 16**; patch size must change vs AstroPTv1.
 
 **`UniverseTBD/mmu_desi_edr_sv3`** — 1,126,441 rows, ~86 GB:
+
 - `spectrum` struct of length-**7781** sequences: `flux`, `lambda`, `ivar`,
   `lsf_sigma` (float32), `mask` (bool).
 - `Z`, `ZERR`, `ZWARN`, `FLUX_*`/`FIBERFLUX_*` photometry, `EBV`, `ra`, `dec`,
@@ -62,7 +70,7 @@ using `<|begin_mod|>`/placeholder/`<|end_mod|>` special tokens;
 - **nanotron fork** (`Smith42/nanotron`, branch `astropt3`, forked from
   `huggingface/nanotron@smollm3`): training-time model with TP + ZeRO-1 DP.
   Added as a **git submodule at repo root `nanotron/`**, installed editable via
-  a `[train]` extra (needs flash-attn; training machine only).
+  a `[train]` extra (needs flash-attn; any GPU box, this one included).
 - **transformers implementation** (`astro/src/astropt3/`): release artifact,
   probing/eval, and CPU tests. `AstroPT3Config(SmolLM3Config)` +
   `AstroPT3Model(SmolLM3PreTrainedModel)`, registered with Auto classes
@@ -71,6 +79,16 @@ using `<|begin_mod|>`/placeholder/`<|end_mod|>` special tokens;
   Every released checkpoint is converted nanotron→HF (as SmolLM3 does).
 
 ### Repo layout
+
+> **Superseded in part by [ADR 0015](docs/adr/0015-lsdb-infinite-stream-training.md)
+> (2026-09-01).** The listing below was written against the match-index/
+> `mmu-stream` corpus (ADR 0006/0011/0013). ADR 0015's hard cutover deleted
+> `data/streaming.py`, `data/match_index.py`, `data/synthetic.py`,
+> `train_smoke.py`, `scripts/build_match_index.py`, and
+> `scripts/run_probe_sweep.py` outright, and replaced the training-record path
+> with `lsdb.streams.InfiniteStream` over a single uncrossmatched catalog
+> feeding `data/nanotron_loader.py` directly. The listing has been updated to
+> the current tree; see the ADR for what changed and why.
 
 ```
 astroPTv3/
@@ -81,8 +99,7 @@ astroPTv3/
 │       tools/astropt3/convert_{nanotron_to_hf,hf_to_nanotron}.py
 ├── astro/
 │   ├── pyproject.toml               # uv project "astropt3": torch, transformers>=4.57,
-│   │                                # datasets>=4.3, einops, pyyaml, pytest, wandb
-│   │                                # [data]: lsdb, hats, nested-pandas   (prep env, login node)
+│   │                                # datasets>=4.3, einops, pyyaml, pytest, wandb, lsdb
 │   │                                # [train]: nanotron (editable ../nanotron), flash-attn (training machine)
 │   ├── src/astropt3/
 │   │   ├── __init__.py              # AutoConfig/AutoModel registration
@@ -90,49 +107,63 @@ astroPTv3/
 │   │   ├── modeling_astropt3.py     # HF release/probing model
 │   │   ├── modalities.py            # ModalityConfig/Registry, Encoder, Decoder, PositionEmbedder
 │   │   ├── tokenization.py          # patchify/unpatchify, normalization, SPECIAL_TOKENS (frozen)
+│   │   ├── generation.py            # jetformer/GIVT sampling
+│   │   ├── checkpoint_schedule.py   # Pythia checkpoint step schedule
 │   │   ├── data/
-│   │   │   ├── mmu.py               # MMUIterableDataset (parquet streaming, rank/worker sharding)
+│   │   │   ├── nanotron_loader.py   # opens the LSDB InfiniteStream per worker, feeds the sequencer/packer
 │   │   │   ├── packing.py           # ObjectSequencer + PackedCollator (shared by HF & nanotron paths)
-│   │   │   ├── nanotron_loader.py   # adapter: PackedCollator batches → nanotron micro-batch dicts
-│   │   │   ├── synthetic.py         # network-free fixtures matching the verified MMU schemas
 │   │   │   ├── band_registry.py     # physical per-band normalization (rescale → clamp → arcsinh)
-│   │   │   └── transforms.py        # per-patch standardization
-│   │   ├── train_smoke.py           # tiny plain-torch CPU loop (validation only, NOT the trainer)
-│   │   └── eval/{val_loss.py,linear_probe.py}
+│   │   │   ├── spectral.py          # DESI spectral normalization (ADR 0007)
+│   │   │   ├── scalar_registry.py   # scalar-modality transforms (ADR 0008)
+│   │   │   ├── transforms.py        # per-patch standardization
+│   │   │   └── telemetry.py
+│   │   └── eval/{val_loss.py,linear_probe.py,scalar_head.py,samples.py}   # pure model-side functions (ADR 0015)
 │   ├── configs/
 │   │   ├── nanotron/astropt3-{70m,160m,410m,1b,1p4b,2p8b,6p9b,12b}.yaml   # full nanotron configs
-│   │   ├── model/…yaml (HF-side mirrors + test-tiny)
-│   │   └── data/pilot_images_spectra.yaml
+│   │   └── model/…yaml (HF-side mirrors + test-tiny)
 │   ├── scripts/
-│   │   ├── prepare_pilot_data.py    # lsdb crossmatch → parquet shards (login node, [data] env)
 │   │   ├── count_params.py          # asserts each size within 10% of nominal
-│   │   ├── launch_slurm.sbatch      # torchrun → nanotron run_train.py, multi-node
-│   │   └── run_probe_sweep.py       # async linear probes over converted HF checkpoints
+│   │   └── launch_slurm.sbatch      # torchrun → nanotron run_train.py, multi-node
 │   └── tests/                       # CPU-only by default; @pytest.mark.gpu for nanotron parity
 └── text/, vision/, tools/           # upstream smollm, untouched (reference)
 ```
 
 ### Model (both implementations share this spec)
 
+> **Updated 2026-09-01.** The affine `Decoder`/Huber-loss regression head
+> this section originally described is removed: the jetformer flow + GMM
+> head (originally an alternative `tokeniser: jetformer` option) is now the
+> sole regression head, made the Pythia ladder's default. See
+> [`adr/0015-lsdb-infinite-stream-training.md`](docs/adr/0015-lsdb-infinite-stream-training.md)
+> for the corpus cutover in the same commit; the tokeniser change is
+> unrelated to that ADR but landed alongside it.
+
 Tiny 64-id special-token embedding + SmolLM3 decoder stack (GQA, NoPE every
-4th layer, RMSNorm, SwiGLU, doc masking) + per-modality affine
-Encoder/Decoder/PositionEmbedder dicts. No lm_head.
+4th layer, RMSNorm, SwiGLU, doc masking) + per-modality `Encoder` (a single
+`nn.Linear`) + per-modality `TinyFlow1D` + `GMMHead` + `PositionEmbedder`
+dicts. No lm_head.
 
 - Slot embedding is **additive**: `embed(<|m|>) + encoder_m(value) + pos_m(position)`
   (placeholder = learned modality-type embedding; no in-place overwrite).
-- Loss: Huber(delta=1.0) on each modality span, predictions taken one position
-  left of each modality token (`<|begin_m|>` predicts patch 0 — astroPT
-  `starts-1` semantics), `loss_weight`-weighted mean over modalities. No loss
-  on special/pad tokens (`special_token_ce_weight` hook kept for later
+  Patch modalities embed the flow's latent z; scalar modalities (`Z`, `ebv`,
+  `photometry`) bypass the flow and embed the raw normalized value.
+- Loss: the exact patch-space likelihood `mean(NLL_GMM(z) - logdet)` (may be
+  negative) on each modality span, predictions taken one position left of
+  each modality token (`<|begin_m|>` predicts patch 0 — astroPT `starts-1`
+  semantics). ADR 0013 configs average modalities within each
+  image/spectrum/scalar family and combine present family means at 1:1:0.1;
+  historical configs retain the prior `loss_weight` mean. No loss on
+  special/pad tokens (`special_token_ce_weight` hook kept for later
   variable-length modalities).
 - Positions: SmolLM3 RoPE/NoPE unchanged over the flat packed sequence with
   per-object-reset `position_ids` (doubles as nanotron's doc-masking signal for
   FA varlen); per-modality embeddings added at input.
 - Init: stock SmolLM3 `_init_weights` (normal 0.02).
 
-Special vocab (frozen in `tokenization.py`): `0 <|pad|>`, `1 <|bos|>`, then 3
-ids per modality alphabetically: images 2–4, spectra 5–7; 8–63 reserved so new
-modalities never resize the embedding.
+Special vocab (frozen in `tokenization.py`): `0 <|pad|>`, `1 <|bos|>`, then
+three ids per modality in addition order. Existing ids 2–16 never move; ADR
+0013 configs consume complete blocks in 17–63 before explicitly enlarging the
+vocabulary above 63.
 
 ### Modality tokenization (pinned to verified schemas)
 
@@ -164,15 +195,15 @@ nominal totals — finalized in Phase 1 by `count_params.py` (±10% assert).
 FINAL (Phase 1, verified by count_params.py on meta device; all within 1.8% of nominal):
 
 | Name | layers | hidden | heads | kv | head_dim | inter | total (measured) |
-|------|--------|--------|-------|----|----------|-------|------------------|
-| 70M  | 23 | 512  | 8  | 2 | 64  | 1536  | 70.04M (+0.1%) |
-| 160M | 25 | 768  | 12 | 4 | 64  | 2048  | 158.3M (−1.0%) |
-| 410M | 27 | 1024 | 16 | 4 | 64  | 4096  | 411.9M (+0.5%) |
-| 1B   | 22 | 2048 | 16 | 4 | 128 | 5632  | 994.8M (−1.5%) |
-| 1.4B | 31 | 2048 | 16 | 4 | 128 | 5632  | 1.401B (−0.7%) |
+| ------ | -------- | -------- | ------- | ---- | ---------- | ------- | ------------------ |
+| 70M | 23 | 512 | 8 | 2 | 64 | 1536 | 70.04M (+0.1%) |
+| 160M | 25 | 768 | 12 | 4 | 64 | 2048 | 158.3M (−1.0%) |
+| 410M | 27 | 1024 | 16 | 4 | 64 | 4096 | 411.9M (+0.5%) |
+| 1B | 22 | 2048 | 16 | 4 | 128 | 5632 | 994.8M (−1.5%) |
+| 1.4B | 31 | 2048 | 16 | 4 | 128 | 5632 | 1.401B (−0.7%) |
 | 2.8B | 36 | 2048 | 16 | 4 | 128 | 11008 | 2.815B (+0.5%, exact SmolLM3-3B body) |
 | 6.9B | 38 | 4096 | 32 | 8 | 128 | 11008 | 6.740B (−1.8%) |
-| 12B  | 42 | 5120 | 40 | 8 | 128 | 14336 | 11.90B (+0.4%) |
+| 12B | 42 | 5120 | 40 | 8 | 128 | 14336 | 11.90B (+0.4%) |
 
 ### Nanotron fork surgery (branch `astropt3`)
 
@@ -203,17 +234,17 @@ FINAL (Phase 1, verified by count_params.py on meta device; all within 1.8% of n
    steps (~2B tokens at GBS 2M) + final. Save `datasets` stateful-iterable
    `state_dict()` alongside nanotron's checkpoint for resume.
 7. Conversion: `tools/astropt3/convert_nanotron_to_hf.py` (backbone weight map
-   + modality modules), modeled on the fork's existing llama converters.
+   - modality modules), modeled on the fork's existing llama converters.
 
 ### Parallelism recipe (Ultra-Scale Playbook; H100 80GB, seq 4096, GBS 2M tokens = 512×4096)
 
 | Size | GPUs (grant) | TP | DP | ZeRO | Activation recompute | Notes |
-|------|--------------|----|----|------|----------------------|-------|
+| ------ | -------------- | ---- | ---- | ------ | ---------------------- | ------- |
 | 70M–410M | 32 | 1 | 32 | 1 | none | max micro-batch that fits |
-| 1B–1.4B  | 64 | 1 | 64 | 1 | selective | |
-| 2.8B     | 64 | 2 | 32 | 1 | selective | |
-| 6.9B     | 128 | 4 | 32 | 1 | selective/full | |
-| 12B      | 256 | 8 | 32 | 1 | full | TP inside NVLink node; **no PP** (24GB bf16 weights /8 + ZeRO-1 optim shards fit comfortably) |
+| 1B–1.4B | 64 | 1 | 64 | 1 | selective | |
+| 2.8B | 64 | 2 | 32 | 1 | selective | |
+| 6.9B | 128 | 4 | 32 | 1 | selective/full | |
+| 12B | 256 | 8 | 32 | 1 | full | TP inside NVLink node; **no PP** (24GB bf16 weights /8 + ZeRO-1 optim shards fit comfortably) |
 
 Playbook practices baked into the plan: TP never crosses the node boundary;
 prefer ZeRO-1 + activation recomputation before adding PP; benchmark
@@ -259,6 +290,7 @@ launch time in the YAML.
 ## Phases (each a reviewable PR)
 
 ### Phase 1 — `astro/` package: modalities, tokenization, packing, HF model
+
 Create `astro/` scaffold (uv), port from `../astroPT/src/astropt/model.py`
 (ModalityConfig/Registry l.41-71; Encoder/Decoder l.272-315 — affine default)
 and `local_datasets.py` (patchify/spiralise); implement `tokenization.py`
@@ -275,9 +307,11 @@ forward/backward finite with grads on every param; `save_pretrained` →
 size; 50-step CPU smoke on synthetic: loss < 0.7× initial.
 
 ### Phase 2 — Pilot data prep + streaming dataset
-`prepare_pilot_data.py`, `data/mmu.py`,
-`configs/data/pilot_images_spectra.yaml` (the original `compute_norm_stats.py`
-calibration step was later retired for physical normalization).
+
+`prepare_pilot_data.py`, `data/mmu.py`, `configs/data/pilot_images_spectra.yaml`
+(all three since deleted — ADR 0006 replaced the local reshard with the live
+stream; the original `compute_norm_stats.py` calibration step was retired for
+physical normalization).
 **Verify**: crossmatch logs matched/unmatched counts (expect ~0.5–1M matched,
 ~13M image-only); decoded-object sanity print (patch stats ~N(0,1) after
 stretch, λ range 3600–9824Å); dataloader-only throughput ≥2× training
@@ -285,6 +319,7 @@ consumption; 2 ranks × 2 workers yield disjoint object_ids. (lsdb runs on the
 login node here; nothing GPU.)
 
 ### Phase 3 — Nanotron fork: model, config, dataloader, conversion
+
 Fork `huggingface/nanotron@smollm3` → `Smith42/nanotron@astropt3`; submodule at
 `nanotron/`; implement fork items 1–7 above; `nanotron_loader.py`;
 `convert_nanotron_to_hf.py` (+ reverse); nanotron YAMLs for test-tiny + 70M.
@@ -297,6 +332,7 @@ run on synthetic data: loss decreases; conversion of that checkpoint loads via
 DONE (verified on a shared A100 node, GPU-pinned, tiny configs only). Fork
 items 1–5 + 7 delivered; item 6 (Pythia checkpoint schedule) is Phase 4 per
 the phase split. Notes:
+
 - Modality encoders/decoders/pos-embedders ride nanotron's stock
   `mark_unsharded_params_as_tied_across_tp` (replicated across TP,
   `reduce_op=None` under ALL_REDUCE — "synced by design", asserted identical
@@ -318,6 +354,7 @@ the phase split. Notes:
   `git -C nanotron push origin astropt3` and push the recorded gitlink).
 
 ### Phase 4 — Checkpoint schedule, resume, eval hooks
+
 Pythia `should_checkpoint` patch + dataset-state save; `eval/val_loss.py`
 (fixed 512 val batches per eval interval) + `eval/linear_probe.py` +
 `run_probe_sweep.py` (async over converted HF checkpoints — never blocks
@@ -328,6 +365,7 @@ checkpoint dirs at exactly steps 1,2,4,…,512,1000,…; each converts and loads
 
 DONE (verified on the reserved A100s, tiny synthetic configs,
 2026-07-08; gpu gates in `tests/test_phase4_gpu.py`). Notes:
+
 - Schedule: `checkpoints.checkpoint_schedule: pythia` (new optional
   `CheckpointsArgs` field) = powers of two ≤ 512 ∪ multiples of
   `checkpoint_interval`; canonical implementation in
@@ -371,6 +409,7 @@ DONE (verified on the reserved A100s, tiny synthetic configs,
   redshift probe R² 0.42→0.79 across checkpoints.
 
 ### Phase 5 — Slurm launch + 70M/160M pilots
+
 `launch_slurm.sbatch` (torchrun → `nanotron/run_train.py --config-file
 astro/configs/nanotron/astropt3-70m.yaml`), per-size YAMLs from the recipe
 table, profiling run instructions.
@@ -382,6 +421,7 @@ across checkpoints.
 
 IN PROGRESS (2026-07-08, dev node, user's GPU reservation): real-data
 70M shakeout ahead of the cluster pilots.
+
 - Pilot data prep RUNS ON THE DEV NODE too (network confirmed): the full
   `prepare_pilot_data.py` run is filling `../astroPTv3_data/pilot_v1`
   (5,596 partitions, ~75 obj/s ≈ multi-day; journalled, resume any time,
@@ -444,6 +484,7 @@ IN PROGRESS (2026-07-08, dev node, user's GPU reservation): real-data
   grows while prep runs, and the sweep needs one fixed val set).
 
 ### Phase 6 — Scale-up + modality extension
+
 410M → 1.4B (TP=1), then 2.8B/6.9B/12B per the recipe table (dry run before
 each). Add time series (`mmu_tess_spoc`) and tabular scalars (`mmu_gaia_gaia`)
 **config-only** via reserved token ids + registry entries; add a config-only
@@ -462,8 +503,9 @@ sizes (bigger = lower at matched tokens).
 - **Pilot corpus is small** (~5.7B tokens/epoch): fine for 70M–410M; larger
   sizes need the Phase 6 modality/survey extensions or many epochs — flag at
   the Month-3 scope checkpoint.
-- **flash-attn / nanotron env** exists only on the training machine; all
-  gpu-marked tests deferred there; CPU tests must stay green here.
+- **flash-attn / nanotron env** is a separate GPU venv (see
+  `docs/training.md`); gpu-marked tests run wherever it exists, this box
+  included. CPU tests must stay green first.
 - **BeeGFS checkpoint pressure**: prune non-schedule intermediates; convert +
   upload scheduled checkpoints to HF hub as they land.
 - **Streaming-resume fidelity**: pin `datasets`, record the pin in checkpoint
@@ -476,4 +518,4 @@ sizes (bigger = lower at matched tokens).
 - `text/pretraining/smollm3/stage1_8T.yaml` — SmolLM3-3B nanotron config conventions
 - `vision/m4/models/vllama3/modeling_vllama3.py` — in-fork placeholder-scatter reference
 - transformers 4.57.1 `models/smollm3/` — SmolLM3Config/Model (verified present)
-- Ultra-Scale Playbook: https://huggingface.co/spaces/nanotron/ultrascale-playbook
+- Ultra-Scale Playbook: <https://huggingface.co/spaces/nanotron/ultrascale-playbook>
