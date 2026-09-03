@@ -235,6 +235,37 @@ def crossmatch_row(index: int, matched: bool = True) -> dict:
     return row
 
 
+def legacy_only_crossmatch_row(index: int) -> dict:
+    """One Legacy-only crossmatch row: no DESI match at all
+    (``outer_crossmatch.OuterKdTreeCrossmatch`` recovers these from bytes
+    the plain left-join crossmatch already fetches and discards). Every
+    DESI-side column is null, including ``object_id`` itself -- decode
+    falls back to ``object_id_legacy``.
+    """
+    record = make_record(index, image_only_fraction=1.0)
+    return {
+        "object_id": None,
+        "ra": None,
+        "dec": None,
+        "spectrum": None,
+        "Z": None,
+        "ZWARN": None,
+        "_dist_arcsec": None,
+        "object_id_legacy": f"legacy_{record['object_id']}",
+        "ra_legacy": record["ra"],
+        "dec_legacy": record["dec"],
+        "image_legacy": {
+            "band": list(record["image"]["band"]),
+            "flux": record["image"]["flux"].tolist(),
+            "psf_fwhm": record["image"]["psf_fwhm"],
+        },
+        "ebv_legacy": record["ebv"],
+        "flux_g_legacy": record["flux_g"],
+        "flux_r_legacy": record["flux_r"],
+        "flux_z_legacy": record["flux_z"],
+    }
+
+
 def nested_frame(rows: list[dict], nested_fields: tuple[str, ...]) -> "npd.NestedFrame":
     """Pack ``legacy_row``/``crossmatch_row`` dicts into a real
     ``nested_pandas.NestedFrame``, shaped like a HATS/``InfiniteStream``

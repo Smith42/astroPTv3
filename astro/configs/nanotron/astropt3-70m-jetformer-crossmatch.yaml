@@ -4,11 +4,17 @@
 # radius<=1", PLAN.md pilot decision #4) instead of the plain uncrossmatched
 # LegacySurvey catalog, so `spectra`-modality tokens are actually populated
 # (ADR 0015 marks crossmatching "Deferred"; this is the interim experiment
-# that turns it on via nanotron_loader.decode_crossmatch_row). DESI drives
-# the join so every draw carries a spectrum; the legacy image is attached
-# only when a LegacySurvey counterpart matched within the radius (rarer,
-# since DESI covers ~1% of sky vs legacy's ~14%). Fresh checkpoints_path and
-# run name — does not touch the astropt3-70m-jetformer checkpoints.
+# that turns it on via nanotron_loader.decode_crossmatch_row). Three record
+# shapes: matched (image+spectrum, ~10% of DESI rows within radius_arcsec),
+# spectrum-only (DESI drives the pixel-level join, so most rows carry a
+# spectrum with no Legacy match), and image-only -- outer_crossmatch.
+# OuterKdTreeCrossmatch recovers unmatched Legacy rows within the pixel
+# pairs the join already visits (full "image" column already fetched into
+# memory to run the KDTree match, then discarded by stock lsdb) as free
+# extra training data; a Legacy partition with no DESI coverage nearby is
+# still never touched by this stream at all (loader-throughput
+# investigation, 2026-09-02). Fresh checkpoints_path and run name -- does
+# not touch the astropt3-70m-jetformer checkpoints.
 general:
   project: astropt3
   run: astropt3-70m-jetformer-crossmatch

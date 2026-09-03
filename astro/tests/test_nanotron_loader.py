@@ -10,7 +10,13 @@ import numpy as np
 import pytest
 import torch
 
-from legacy_fixture import crossmatch_row, legacy_row, make_record, nested_frame
+from legacy_fixture import (
+    crossmatch_row,
+    legacy_only_crossmatch_row,
+    legacy_row,
+    make_record,
+    nested_frame,
+)
 
 from astropt3.data import nanotron_loader
 from astropt3.data.nanotron_loader import (
@@ -175,11 +181,37 @@ def test_crossmatch_decoder_handles_unmatched_row():
     assert "ebv" not in record
 
 
+def test_crossmatch_decoder_falls_back_to_legacy_id_when_desi_id_missing():
+    """OuterKdTreeCrossmatch rows can be Legacy-only (no DESI match at all,
+    so "object_id" itself is null) -- object_id falls back to
+    "object_id_legacy" rather than raising."""
+    row = crossmatch_row(0, matched=True)
+    del row["object_id"]
+    record = decode_crossmatch_row(row)
+    assert record["object_id"] == row["object_id_legacy"]
+
+
 def test_crossmatch_decoder_rejects_missing_id():
     row = crossmatch_row(0, matched=True)
     del row["object_id"]
+    del row["object_id_legacy"]
     with pytest.raises(ValueError, match="object_id"):
         decode_crossmatch_row(row)
+
+
+def test_crossmatch_decoder_handles_legacy_only_row(tiny_config):
+    """OuterKdTreeCrossmatch rows recovered from an unmatched right side:
+    image present, no spectrum, object_id from the Legacy side."""
+    row = legacy_only_crossmatch_row(7)
+    record = decode_crossmatch_row(row)
+    assert record["object_id"] == row["object_id_legacy"]
+    assert "spectrum" not in record
+    assert record["image"]["flux"].shape == (3, 152, 152)
+
+    from astropt3.data.packing import ObjectSequencer
+
+    obj = ObjectSequencer(tiny_config).build(record)
+    assert obj.input_ids[0] == 1
 
 
 class _AmbiguousBoolMapping:

@@ -26,6 +26,7 @@ from lsdb.streams.catalog_streams import InfiniteStream
 
 from ..configuration_astropt3 import AstroPT3Config
 from .band_registry import _DIV_FACTOR
+from .outer_crossmatch import OuterKdTreeCrossmatch
 from .packing import ObjectSequencer, PackedCollator, span_order
 from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
 from .telemetry import install_byte_probe, instrument
@@ -311,15 +312,24 @@ def _decode_spectrum(value: Any) -> dict:
 
 
 def decode_crossmatch_row(row: Mapping) -> dict:
-    """Decode one ``desi ⋈ legacy`` left-crossmatch row (ADR 0015 spectra test).
+    """Decode one ``desi ⋈ legacy`` crossmatch row (ADR 0015 spectra test).
 
-    DESI drives the join, so every row carries a spectrum; the legacy image
-    and legacy-sourced scalars (suffixed ``_legacy`` by the crossmatch) are
+    Most rows carry a spectrum (DESI drives the pixel-level join); the
+    legacy image and legacy-sourced scalars (suffixed ``_legacy``) are
     present only when a LegacySurvey counterpart matched within the radius.
+    With ``outer_crossmatch.OuterKdTreeCrossmatch``, a row can also be
+    Legacy-only (no DESI match at all -- ``object_id`` itself is null),
+    recovered from otherwise-discarded bytes; ``object_id`` then falls back
+    to ``object_id_legacy``. A null scalar comes through as ``pandas.NA``,
+    not ``None`` (confirmed against real crossmatch data), so this checks
+    ``pd.isna`` rather than ``is None`` -- that also covers ``None``, so
+    plain-dict test fixtures are unaffected.
     """
     object_id = row.get("object_id")
-    if object_id is None:
-        raise ValueError("crossmatched row has no object_id")
+    if pd.isna(object_id):
+        object_id = row.get(f"object_id{_CROSSMATCH_LEGACY_SUFFIX}")
+        if pd.isna(object_id):
+            raise ValueError("crossmatched row has no object_id or object_id_legacy")
     record: dict = {"object_id": str(object_id)}
 
     spectrum_value = row.get("spectrum")
@@ -491,7 +501,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                     )
                     catalog = desi_catalog.crossmatch(
                         legacy_catalog,
-                        radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC,
+                        algorithm=OuterKdTreeCrossmatch(radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC),
                         how="left",
                         suffixes=("", _CROSSMATCH_LEGACY_SUFFIX),
                         suffix_method="all_columns",
