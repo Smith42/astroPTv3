@@ -1,11 +1,17 @@
 """Sample from a converted AstroPT3 checkpoint and render the results.
 
-Template records come from one live draw of the LSDB LegacySurvey North
-catalog (``hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north``, ADR 0015)
-— image-only/uncrossmatched, so ``image-to-spectra``/``spectra-to-images``
-modes (jetformer-only, and needing a spectrum in the record) have nothing to
-condition on until a crossmatched source returns. ``reconstruct`` works for
-any checkpoint; ``unconditional`` works for jetformer checkpoints.
+Template records come from one live catalog draw: the plain uncrossmatched
+LSDB LegacySurvey North catalog
+(``hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north``) when the
+checkpoint has no active desi-sourced (spectra) modality, or the DESI x
+Legacy crossmatch (via ``OuterKdTreeCrossmatch``, matching the training
+stream -- see ``outer_crossmatch.py``) when it does. ``unconditional`` only
+samples spans the template record actually has, so a plain-Legacy template
+can only ever produce image spans -- getting a spectra span too requires a
+crossmatch-drawn template. Rows are ordered matched (both modalities) first,
+then spectrum-only, then image-only, so ``--rows 0`` picks the most
+complete template available. ``reconstruct`` works for any checkpoint;
+``unconditional`` works for jetformer checkpoints.
 ``astropt3.eval.samples.sample_checkpoint`` (model-side only, ADR 0015 §6)
 does the sampling/rendering; this script only supplies live records and
 optional wandb logging.
@@ -28,22 +34,71 @@ from typing import Any, cast
 
 
 def _draw_live_records(config, rows: list[int], stream_seed: int) -> list[dict]:
-    """Decode ``rows`` positions out of one LSDB InfiniteStream chunk."""
+    """Decode ``rows`` positions out of one live catalog draw.
+
+    Crossmatch-aware: draws from the DESI x Legacy crossmatch (recovering
+    unmatched images too, via ``OuterKdTreeCrossmatch``) when the checkpoint
+    has an active desi-sourced modality, else the plain uncrossmatched
+    Legacy catalog. See the module docstring for row ordering.
+    """
     from lsdb.loaders.hats.read_hats import open_catalog
     from lsdb.streams.catalog_streams import InfiniteStream
 
     from astropt3.data.nanotron_loader import (
         LEGACY_CATALOG,
         _catalog_columns,
+        _desi_columns,
         decode_legacy_row,
     )
 
-    catalog = open_catalog(LEGACY_CATALOG, columns=_catalog_columns(config))
+    desi_columns = _desi_columns(config)
+    if desi_columns is None:
+        catalog = open_catalog(LEGACY_CATALOG, columns=_catalog_columns(config))
+        stream = InfiniteStream(catalog, client=None, partitions_per_chunk=1, seed=stream_seed)
+        frame = next(iter(stream))
+        if max(rows) >= len(frame):
+            raise ValueError(f"drew {len(frame)} rows, but --rows asked for index {max(rows)}")
+        return [decode_legacy_row(dict(frame.iloc[i].items())) for i in rows]
+
+    from astropt3.data.nanotron_loader import (
+        DESI_CATALOG,
+        _CROSSMATCH_LEGACY_SUFFIX,
+        _CROSSMATCH_NESTED,
+        _CROSSMATCH_RADIUS_ARCSEC,
+        _map_rows_columns,
+        _row_from_map_rows,
+        decode_crossmatch_row,
+    )
+    from astropt3.data.outer_crossmatch import OuterKdTreeCrossmatch
+
+    legacy_cat = open_catalog(
+        LEGACY_CATALOG, columns=_catalog_columns(config, include_position=True)
+    )
+    desi_cat = open_catalog(DESI_CATALOG, columns=desi_columns)
+    catalog = desi_cat.crossmatch(
+        legacy_cat,
+        algorithm=OuterKdTreeCrossmatch(radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC),
+        how="left",
+        suffixes=("", _CROSSMATCH_LEGACY_SUFFIX),
+        suffix_method="all_columns",
+    )
     stream = InfiniteStream(catalog, client=None, partitions_per_chunk=1, seed=stream_seed)
     frame = next(iter(stream))
-    if max(rows) >= len(frame):
-        raise ValueError(f"drew {len(frame)} rows, but --rows asked for index {max(rows)}")
-    return [decode_legacy_row(dict(frame.iloc[i].items())) for i in rows]
+
+    columns = _map_rows_columns(frame, _CROSSMATCH_NESTED)
+
+    def decode(mapped):
+        return {"record": decode_crossmatch_row(_row_from_map_rows(mapped, _CROSSMATCH_NESTED))}
+
+    decoded = frame.map_rows(decode, columns=columns, infer_nesting=False)
+    records = list(decoded["record"])
+    matched = [r for r in records if "image" in r and "spectrum" in r]
+    spectrum_only = [r for r in records if "image" not in r and "spectrum" in r]
+    image_only = [r for r in records if "image" in r and "spectrum" not in r]
+    ordered = matched + spectrum_only + image_only
+    if max(rows) >= len(ordered):
+        raise ValueError(f"drew {len(ordered)} usable rows, but --rows asked for index {max(rows)}")
+    return [ordered[i] for i in rows]
 
 
 def main():
