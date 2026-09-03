@@ -46,13 +46,17 @@ _CROSSMATCH_LEGACY_SUFFIX = "_legacy"
 # finish the NEXT draw before the current one is exhausted -- depth-1
 # lookahead (partitions_per_chunk=1) measured no stall_share improvement on
 # a real run (bounded by DataLoader prefetch_factor, not partition drain
-# time). Tuned against a real crossmatch run (astropt3-70m-jetformer,
-# DP=2 x 8 workers): 1 -> stall_share ~85%, 3.3k rows/s; 4 -> 65%, 2.0k
-# rows/s; 8 -> 46%, 3.3k rows/s (best); 16 -> 62%, 2.3k rows/s -- a real
-# regression, not diminishing returns, coinciding with box-wide RAM growing
-# past 500GiB (16 workers x 2 chunks-in-flight x 16 partitions). 8 is the
-# measured sweet spot, not a guess -- re-tune if worker/chunk counts change.
-_PARTITIONS_PER_CHUNK = 8
+# time). First tuned WITHOUT OuterKdTreeCrossmatch (astropt3-70m-jetformer,
+# DP=2 x 8 workers): 1 -> stall_share ~85%, 1.0k rows/s; 4 -> 65%, 2.0k
+# rows/s; 8 -> 46%, 3.3k rows/s (best); 16 -> 62%, 2.3k rows/s (regression,
+# RAM past 500GiB). Once OuterKdTreeCrossmatch started recovering
+# image-only rows too (outer_crossmatch.py), each chunk got heavier
+# (~277KB/recovered image), and 8 regressed the same way 16 previously did
+# -- re-tuned: 8 -> stall_share 50%, 2.3k rows/s, RAM 529GiB;
+# 4 -> 33%, 3.0k rows/s, RAM 349GiB (best again). Re-tune again if the
+# per-record byte weight changes materially (e.g. recovering unmatched
+# spectra too, or a bigger image modality).
+_PARTITIONS_PER_CHUNK = 4
 # nested (struct/list) column -> sub-field names, for map_rows-based decode
 _LEGACY_NESTED = {"image": ("band", "flux", "psf_fwhm")}
 _CROSSMATCH_NESTED = {
