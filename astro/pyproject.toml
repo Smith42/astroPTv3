@@ -11,28 +11,15 @@ authors = [
 ]
 dependencies = [
     "torch>=2.6",
-    "torchdata>=0.10",  # StatefulDataLoader: stream resume with num_workers > 0
     "transformers>=4.57",
-    "datasets>=4.3",
     "einops>=0.8",
     "numpy>=1.26",
     "pyyaml>=6.0",
-    # ADR 0006: the corpus is streamed from the HF hub at train time via
-    # hats (partition enumeration) + pyarrow (row-group reads). lsdb is
-    # deliberately NOT here — the crossmatch is precomputed offline into a
-    # match-index, so no train-time path needs its dask/KD-tree engine.
-    "hats",
-    "pyarrow",
+    "lsdb",
     "huggingface-hub",
-    "nested-pandas",
 ]
 
 [project.optional-dependencies]
-# Offline prep (login node): building the ADR 0006 match-index is the only
-# thing that still needs lsdb.
-data = [
-    "lsdb",
-]
 # Training machine only: the nanotron fork (../nanotron git submodule,
 # editable) plus flash-attn (needs a CUDA toolchain or a matching prebuilt
 # wheel — see astro/tests/test_nanotron_gpu.py for the verification recipe).

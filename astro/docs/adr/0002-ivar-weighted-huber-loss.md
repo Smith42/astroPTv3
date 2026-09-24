@@ -1,6 +1,10 @@
 # ADR 0002: Inverse-variance-weighted Huber loss for the affine tokeniser
 
-- **Status:** Proposed (Parked) — see *Parked* banner below.
+- **Status:** Proposed (Parked) — see *Parked* banner below. **Moot as of
+  2026-09-01:** the affine tokeniser this ADR proposes a loss change for is
+  removed from the codebase — jetformer is now the sole tokeniser, with its
+  own exact-likelihood loss. Kept as the historical record of the ivar-
+  weighting analysis.
 - **Date:** 2026-07-15 (facts refreshed 2026-07-16 for physical normalization;
   decision untouched — see *Superseded context* below)
 - **References:**

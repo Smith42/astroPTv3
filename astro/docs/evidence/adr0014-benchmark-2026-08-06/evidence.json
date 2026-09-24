@@ -1,0 +1,180 @@
+{
+  "adr": "0014",
+  "date": "2026-08-06",
+  "machine": "gpu node, 2x A100 80GB",
+  "projection_gate_section_6": {
+    "instrument": "HfFileSystemFile._fetch_range payload bytes",
+    "desi": {
+      "partition": "hf://datasets/UniverseTBD/mmu_desi_edr_sv3/mmu_desi_edr_sv3/dataset/Norder=5/Dir=0/Npix=2356.parquet",
+      "on_disk_bytes": 436800000,
+      "row_groups": 1,
+      "rows": 7472,
+      "whole_struct_bytes": 436900000,
+      "projected_bytes": 229600000,
+      "saving": 0.475
+    },
+    "sdss": {
+      "partition": "hf://datasets/UniverseTBD/mmu_sdss_sdss/mmu_sdss_sdss/dataset/Norder=4/Dir=0/Npix=268.parquet",
+      "on_disk_bytes": 72900000,
+      "row_groups": 1,
+      "rows": 1765,
+      "whole_struct_bytes": 72900000,
+      "projected_bytes": 30700000,
+      "saving": 0.579
+    }
+  },
+  "validation_split_section_4": {
+    "index": "north-v2-merged-5spoke",
+    "anchor_rows": 2182875,
+    "cells": 5488,
+    "split_function": "streaming.split_of_cell (crc32 over order-4 parent, 1-in-20)",
+    "val_cells": 252,
+    "val_cell_fraction": 0.046,
+    "val_anchor_fraction": 0.0402,
+    "val_partitions_constant_applies": false
+  },
+  "benchmark_section_3": {
+    "window_steps": 120,
+    "reps": 1,
+    "dp": 2,
+    "loader_workers": 8,
+    "gpus": "2x A100 80GB",
+    "index": "north-v2-merged-5spoke",
+    "seed": 42,
+    "caveat": "B0 window drew HSC; B1/B1-D/P0 windows did not. Comparisons against B0 are indicative only.",
+    "arms": {
+      "B0": {
+        "config": "bench-north-5spoke-b0.yaml",
+        "wire_mib": 37108.8,
+        "step_seconds": {
+          "mean": 8.53,
+          "p50": 0.72,
+          "p95": 51.48,
+          "p99": 96.77,
+          "slow_steps": 6,
+          "slow_threshold_s": 60.0,
+          "total_s": 1023.43
+        },
+        "mfu": {
+          "mfu": 0.024209,
+          "mfu_busy": 0.272932,
+          "stall_share": 0.909358,
+          "utilisation_packing": 0.978556,
+          "flops_per_token": 357993708.275118,
+          "peak_tflops_per_gpu": 312.0
+        },
+        "E_values_per_mib": 74651,
+        "E_AR_per_mib": 388,
+        "E_AR_primary_per_mib": 388,
+        "sequences": 114878,
+        "distinct_objects": 114878,
+        "duplicate_lines": 0,
+        "composition_top": {
+          "images": 0.9266023422061853,
+          "hsc_images": 0.02720917175831353,
+          "spectra": 0.020940669861910396,
+          "ebv": 0.006434738487542954
+        }
+      },
+      "B1": {
+        "config": "bench-north-5spoke-b1.yaml",
+        "wire_mib": 18072.3,
+        "step_seconds": {
+          "mean": 4.06,
+          "p50": 0.92,
+          "p95": 7.76,
+          "p99": 46.42,
+          "slow_steps": 1,
+          "slow_threshold_s": 60.0,
+          "total_s": 487.38
+        },
+        "mfu": {
+          "mfu": 0.049765,
+          "mfu_busy": 0.216281,
+          "stall_share": 0.758778,
+          "utilisation_packing": 0.953876,
+          "flops_per_token": 360233136.708394,
+          "peak_tflops_per_gpu": 312.0
+        },
+        "E_values_per_mib": 73791,
+        "E_AR_per_mib": 775,
+        "E_AR_primary_per_mib": 389,
+        "sequences": 114764,
+        "distinct_objects": 57678,
+        "duplicate_lines": 0,
+        "composition_top": {
+          "images": 0.9430868162151456,
+          "spectra": 0.030825719360324872,
+          "ebv": 0.006549214001494066,
+          "photometry": 0.006549214001494066
+        }
+      },
+      "B1-D": {
+        "config": "bench-north-5spoke-b1d.yaml",
+        "wire_mib": 18287.2,
+        "step_seconds": {
+          "mean": 3.81,
+          "p50": 0.7,
+          "p95": 10.43,
+          "p99": 34.32,
+          "slow_steps": 1,
+          "slow_threshold_s": 60.0,
+          "total_s": 457.42
+        },
+        "mfu": {
+          "mfu": 0.054205,
+          "mfu_busy": 0.276742,
+          "stall_share": 0.800042,
+          "utilisation_packing": 0.979549,
+          "flops_per_token": 358625947.92839,
+          "peak_tflops_per_gpu": 312.0
+        },
+        "E_values_per_mib": 74908,
+        "E_AR_per_mib": 786,
+        "E_AR_primary_per_mib": 395,
+        "sequences": 115170,
+        "distinct_objects": 57893,
+        "duplicate_lines": 0,
+        "composition_top": {
+          "images": 0.9425088525427356,
+          "spectra": 0.0314039442265817,
+          "ebv": 0.006545200364880109,
+          "photometry": 0.006545200364880109
+        }
+      },
+      "P0": {
+        "config": "bench-north-5spoke-p0-perband.yaml",
+        "wire_mib": 13837.0,
+        "step_seconds": {
+          "mean": 3.52,
+          "p50": 0.71,
+          "p95": 6.59,
+          "p99": 42.43,
+          "slow_steps": 1,
+          "slow_threshold_s": 60.0,
+          "total_s": 422.74
+        },
+        "mfu": {
+          "mfu": 0.058132,
+          "mfu_busy": 0.251389,
+          "stall_share": 0.761641,
+          "utilisation_packing": 0.970151,
+          "flops_per_token": 343347701.016625,
+          "peak_tflops_per_gpu": 312.0
+        },
+        "E_values_per_mib": 70984,
+        "E_AR_per_mib": 1076,
+        "E_AR_primary_per_mib": 1076,
+        "sequences": 43030,
+        "distinct_objects": 43030,
+        "duplicate_lines": 0,
+        "composition_top": {
+          "images": 0.9784844179790224,
+          "spectra": 0.012310585832938703,
+          "ebv": 0.0022650102268032928,
+          "photometry": 0.0022650102268032928
+        }
+      }
+    }
+  }
+}

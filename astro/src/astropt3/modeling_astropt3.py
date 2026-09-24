@@ -10,29 +10,30 @@ Sequence contract (built by data/packing.py):
 - ``position_ids`` restart at 0 at each object; with ``attention_mask=None``
   transformers' ``create_causal_mask`` detects the packed format and applies
   block-diagonal (doc) masking (torch >= 2.6).
-- Loss: Huber on each modality span, predictions read one position LEFT of
-  each modality token (``<|begin_m|>`` predicts patch 0 — astroPT's
-  ``starts-1`` alignment), weighted by ``loss_weight`` and averaged over the
-  modalities present in the batch. No loss on special or pad tokens unless
-  ``special_token_ce_weight > 0``.
-- ``tokeniser: jetformer`` swaps the regression heads for per-modality
-  normalizing flow + GMM heads (JetFormer/GIVT-style): patch values pass
-  through ``flows[m]`` to a latent z that is both embedded and predicted,
-  and the per-modality loss becomes ``mean(NLL_GMM(z) - logdet)`` — an exact
-  likelihood in patch space (may be negative). Same left-shift alignment.
+- Loss: predictions read one position LEFT of each modality token
+  (``<|begin_m|>`` predicts patch 0 — astroPT's ``starts-1`` alignment).
+  ADR 0013 averages modalities within each family, then combines present
+  image:spectrum:scalar families at 1:1:0.1. No loss on special or pad
+  tokens unless ``special_token_ce_weight > 0``.
+- The jetformer tokeniser (JetFormer/GIVT-style) is the sole regression
+  head: patch values pass through a per-modality normalizing flow
+  (``flows[m]``) to a latent z that is both embedded and predicted by a
+  ``GMMHead``, and the per-modality loss is
+  ``mean(NLL_GMM(z) - logdet)`` — an exact likelihood in patch space (may
+  be negative). Same left-shift alignment.
 - ADR 0008 scalar modalities (``ModalityConfig.scalar``) are GMM-headed
-  under BOTH tokenisers (``scalar_gmm_k`` mixture over the raw normalized
-  value; loss is plain ``gmm_nll``, no flow, no logdet — a scalar needs no
+  directly (``scalar_gmm_k`` mixture over the raw normalized value; loss
+  is plain ``gmm_nll``, no flow, no logdet — a scalar needs no
   invertibility machinery and its odd dim cannot feed ``TinyFlow1D``).
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, cast
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers.modeling_outputs import ModelOutput
+from transformers.utils.generic import ModelOutput
 from transformers.models.smollm3.modeling_smollm3 import (
     SmolLM3Model,
     SmolLM3PreTrainedModel,
@@ -40,7 +41,6 @@ from transformers.models.smollm3.modeling_smollm3 import (
 
 from .configuration_astropt3 import AstroPT3Config
 from .modalities import (
-    Decoder,
     Encoder,
     GMMHead,
     PositionEmbedder,
@@ -52,10 +52,11 @@ from .tokenization import PAD_ID
 
 @dataclass
 class AstroPT3Output(ModelOutput):
-    loss: Optional[torch.FloatTensor] = None
+    loss: Optional[torch.Tensor] = None
     modality_losses: Optional[dict] = None
+    family_losses: Optional[dict] = None
     predictions: Optional[dict] = None
-    last_hidden_state: Optional[torch.FloatTensor] = None
+    last_hidden_state: Optional[torch.Tensor] = None
     # per-layer states (embeddings first, HF convention), populated only
     # when forward(output_hidden_states=True); the linear probe pools the
     # central layer from here (astroPT convention)
@@ -82,51 +83,50 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
         self.model = SmolLM3Model(config)
         registry = config.modality_registry()
         self.modality_names = registry.names()
-        # ADR 0008: scalar modalities are GMM-headed under both tokenisers
-        # and never flow — one-token spans over raw normalized values
+        self.modality_families = {
+            name: cast(str, registry.get_config(name).family)
+            for name in self.modality_names
+        }
+        self.modality_loss_weights = {
+            name: registry.get_config(name).loss_weight for name in self.modality_names
+        }
+        # ADR 0008: scalar modalities are GMM-headed directly and never
+        # flow — one-token spans over raw normalized values
         self.scalar_names = {
             name
             for name in self.modality_names
-            if getattr(registry.get_config(name), "scalar", False)
+            if registry.get_config(name).family == "scalar"
         }
         patch_names = [n for n in self.modality_names if n not in self.scalar_names]
         self.encoders = nn.ModuleDict(
             {
-                name: Encoder(config.hidden_size, registry.get_config(name).input_size, config.tokeniser)
+                name: Encoder(config.hidden_size, registry.get_config(name).input_size)
                 for name in self.modality_names
             }
         )
-        if config.tokeniser == "jetformer":
-            # Per-modality flow (data -> latent z, with logdet) and GMM head;
-            # the head replaces the regression Decoder under the same name so
-            # the loss path below stays a single branch.
-            self.flows = nn.ModuleDict(
-                {
-                    name: TinyFlow1D(
-                        registry.get_config(name).input_size,
-                        steps=config.jetformer_flow_steps,
-                        hidden_dim=config.jetformer_flow_hidden,
-                    )
-                    for name in patch_names
-                }
-            )
-            self.decoders = nn.ModuleDict(
-                {
-                    name: GMMHead(
-                        config.hidden_size,
-                        registry.get_config(name).input_size,
-                        config.jetformer_gmm_k,
-                    )
-                    for name in patch_names
-                }
-            )
-        else:
-            self.decoders = nn.ModuleDict(
-                {
-                    name: Decoder(config.hidden_size, registry.get_config(name).input_size, config.tokeniser)
-                    for name in patch_names
-                }
-            )
+        # Per-modality flow (data -> latent z, with logdet) and GMM head; the
+        # head predicts the latent z, and the loss path below stays a single
+        # branch since every patch modality goes through it.
+        self.flows = nn.ModuleDict(
+            {
+                name: TinyFlow1D(
+                    registry.get_config(name).input_size,
+                    steps=config.jetformer_flow_steps,
+                    hidden_dim=config.jetformer_flow_hidden,
+                )
+                for name in patch_names
+            }
+        )
+        self.decoders = nn.ModuleDict(
+            {
+                name: GMMHead(
+                    config.hidden_size,
+                    registry.get_config(name).input_size,
+                    config.jetformer_gmm_k,
+                )
+                for name in patch_names
+            }
+        )
         for name in sorted(self.scalar_names):
             self.decoders[name] = GMMHead(
                 config.hidden_size,
@@ -140,7 +140,9 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
             }
         )
         if config.special_token_ce_weight > 0:
-            self.special_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+            self.special_head = nn.Linear(
+                config.hidden_size, config.vocab_size, bias=False
+            )
         # Noise-curriculum position (jetformer, v2 sogol_branch semantics):
         # sigma = noise_max + (noise_min - noise_max) * frac, so frac 0 -> 1
         # anneals noise_max -> noise_min over training. Default 1.0 means
@@ -150,18 +152,21 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
         self.post_init()
 
     def set_jet_noise_frac(self, frac: float):
-        self.jet_noise_frac = float(min(max(frac, 0.0), 1.0))
+        self.jet_noise_frac = min(max(frac, 0.0), 1.0)
 
     def _jet_noise_sigma(self) -> float:
         cfg = self.config
-        return cfg.jetformer_noise_max + (
-            cfg.jetformer_noise_min - cfg.jetformer_noise_max
-        ) * self.jet_noise_frac
+        return (
+            cfg.jetformer_noise_max
+            + (cfg.jetformer_noise_min - cfg.jetformer_noise_max) * self.jet_noise_frac
+        )
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
 
-    def set_input_embeddings(self, value):
+    def set_input_embeddings(self, value: nn.Module):
+        if not isinstance(value, nn.Embedding):
+            raise TypeError("AstroPT3 input embeddings must be nn.Embedding")
         self.model.embed_tokens = value
 
     def assemble_inputs_embeds(
@@ -178,7 +183,9 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
                 continue
             mask = modality_masks[name]
             values = modality_values[name].to(embeds.dtype)
-            content = self.encoders[name](values) + self.pos_embeds[name](modality_positions[name])
+            content = self.encoders[name](values) + self.pos_embeds[name](
+                modality_positions[name]
+            )
             delta = delta.index_put((mask,), content.to(embeds.dtype))
         return embeds + delta
 
@@ -198,13 +205,13 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
         modality_masks = modality_masks or {}
         modality_positions = modality_positions or {}
 
-        # jetformer: values -> flow -> latent z once, up front; z is both the
-        # embedded input and the GMM target, and logdet joins the loss. The
-        # noise curriculum perturbs only the embedded copy (training mode) —
-        # the GMM target z and the logdet stay clean.
+        # values -> flow -> latent z once, up front; z is both the embedded
+        # input and the GMM target, and logdet joins the loss. The noise
+        # curriculum perturbs only the embedded copy (training mode) — the
+        # GMM target z and the logdet stay clean.
         flow_logdets = {}
         embed_values = modality_values
-        if self.config.tokeniser == "jetformer" and modality_values:
+        if modality_values:
             flowed = {}
             for name in self.modality_names:
                 # scalars bypass the flow: their raw normalized value is both
@@ -240,11 +247,10 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
 
         predictions = {}
         modality_losses = {}
+        family_losses = {}
         loss = None
         if compute_loss:
-            total = hidden.new_zeros(())
-            n_present = 0
-            registry = self.config.modality_registry()
+            losses_by_family = {"image": [], "spectrum": [], "scalar": []}
             for name in self.modality_names:
                 if name not in modality_masks or not modality_masks[name].any():
                     continue
@@ -255,8 +261,8 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
                         "preceding token to predict it from (missing <|bos|>?)"
                     )
                 if name in self.scalar_names:
-                    # ADR 0008: GMM NLL on the raw normalized scalar, both
-                    # tokenisers — no flow, no logdet
+                    # ADR 0008: GMM NLL on the raw normalized scalar — no
+                    # flow, no logdet
                     logits_pi, mu, log_sigma = self.decoders[name](
                         hidden[left_shift_mask(mask)]
                     )
@@ -264,7 +270,7 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
                     mod_loss = gmm_nll(target, logits_pi, mu, log_sigma).mean()
                     pi = torch.softmax(logits_pi, dim=-1)
                     predictions[name] = (pi.unsqueeze(-1) * mu).sum(dim=-2)
-                elif self.config.tokeniser == "jetformer":
+                else:
                     logits_pi, mu, log_sigma = self.decoders[name](
                         hidden[left_shift_mask(mask)]
                     )
@@ -275,15 +281,27 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
                     # flow (self.flows[name](z, reverse=True)) maps it back.
                     pi = torch.softmax(logits_pi, dim=-1)
                     predictions[name] = (pi.unsqueeze(-1) * mu).sum(dim=-2)
-                else:
-                    pred = self.decoders[name](hidden[left_shift_mask(mask)])
-                    target = modality_values[name].to(pred.dtype)
-                    mod_loss = F.huber_loss(pred, target, delta=self.config.huber_delta)
-                    predictions[name] = pred
                 modality_losses[name] = mod_loss
-                total = total + registry.get_config(name).loss_weight * mod_loss
-                n_present += 1
-            loss = total / max(n_present, 1)
+                losses_by_family[self.modality_families[name]].append(mod_loss)
+
+            family_weights = {"image": 1.0, "spectrum": 1.0, "scalar": 0.1}
+            weighted = hidden.new_zeros(())
+            weight_sum = 0.0
+            for family, losses in losses_by_family.items():
+                if not losses:
+                    continue
+                family_loss = torch.stack(losses).mean()
+                family_losses[family] = family_loss
+                weighted = weighted + family_weights[family] * family_loss
+                weight_sum += family_weights[family]
+            if self.config.loss_aggregation == "family":
+                loss = weighted / weight_sum if weight_sum else weighted
+            else:
+                legacy = [
+                    self.modality_loss_weights[name] * mod_loss
+                    for name, mod_loss in modality_losses.items()
+                ]
+                loss = torch.stack(legacy).sum() / len(legacy) if legacy else weighted
 
             if self.config.special_token_ce_weight > 0:
                 logits = self.special_head(hidden[:, :-1])
@@ -299,6 +317,7 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
         return AstroPT3Output(
             loss=loss,
             modality_losses=modality_losses,
+            family_losses=family_losses,
             predictions=predictions,
             last_hidden_state=hidden,
             hidden_states=getattr(body_out, "hidden_states", None),

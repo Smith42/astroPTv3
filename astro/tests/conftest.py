@@ -6,7 +6,7 @@ import torch
 
 from astropt3.config_io import load_model_config
 from astropt3.data.packing import ObjectSequencer, PackedCollator
-from astropt3.data.synthetic import make_record
+from legacy_fixture import make_record
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs" / "model"
 

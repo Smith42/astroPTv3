@@ -8,7 +8,6 @@ import torch
 from astropt3.data.band_registry import (
     _DIV_FACTOR,
     BAND_REGISTRY,
-    RAW_BANDS,
     clamp_flux,
     physical_inverse,
     physical_normalize,
@@ -86,12 +85,12 @@ def test_sequencer_uses_config_divisor(tiny_config):
     """config.image_norm_divisor must reach the sequencer's normalization."""
     from astropt3 import AstroPT3Config
     from astropt3.data.packing import IMAGE_CROP, ObjectSequencer
-    from astropt3.data.synthetic import make_record
+    from legacy_fixture import make_record
     from astropt3.tokenization import antispiralise, patchify_image
 
     record = make_record(3)
     moved_config = AstroPT3Config(
-        **{**tiny_config.to_dict(), "tokeniser": "jetformer", "image_norm_divisor": 0.5}
+        **{**tiny_config.to_dict(), "image_norm_divisor": 0.5}
     )
     seq = ObjectSequencer(moved_config).build(record)
     flux = torch.as_tensor(record["image"]["flux"])
@@ -108,7 +107,5 @@ def test_sequencer_uses_config_divisor(tiny_config):
         else seq.values["images"]
     )
     assert torch.allclose(actual, expected)
-    default_seq = ObjectSequencer(
-        AstroPT3Config(**{**tiny_config.to_dict(), "tokeniser": "jetformer"})
-    ).build(record)
+    default_seq = ObjectSequencer(tiny_config).build(record)
     assert not torch.allclose(seq.values["images"], default_seq.values["images"])

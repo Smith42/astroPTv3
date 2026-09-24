@@ -1,6 +1,6 @@
 import torch
 
-from astropt3.data.synthetic import record_stream
+from legacy_fixture import record_stream
 
 
 def test_save_load_roundtrip(tmp_path, tiny_model, sequencer, collator):
@@ -15,7 +15,11 @@ def test_save_load_roundtrip(tmp_path, tiny_model, sequencer, collator):
 
     config = AutoConfig.from_pretrained(save_dir)
     assert config.model_type == "astropt3"
-    assert config.tokeniser == "affine"
+    assert config.loss_aggregation == "family"
+    assert all(
+        {"family", "source", "record_keys", "token_ids"} <= set(modality)
+        for modality in config.modalities
+    )
     assert [m["name"] for m in config.modalities] == [
         "images",
         "spectra",

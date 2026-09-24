@@ -1,165 +1,426 @@
-"""Adapter: astro data pipeline -> nanotron ``astropt3_streaming`` micro-batches.
+"""Adapter from the LSDB LegacySurvey stream to nanotron micro-batches.
 
-Turns the record sources (:func:`~astropt3.data.streaming.open_stream` over
-the live MMU catalogs, or the synthetic stream) into an endless stream of
-fixed-shape micro-batch dicts for the nanotron fork's ``AstroPT3ForTraining``:
-
-- ``input_ids``      long  [micro_batch_size, sequence_length]
-- ``position_ids``   long  [micro_batch_size, sequence_length]  (restart at 0
-  per object; pads at 0 — the packed-document boundary signal)
-- per modality ``m`` (all modalities always present, zero-length if absent
-  from the micro-batch):
-  - ``{m}_values``    float32 [n_m, input_size]   (row-major flattened)
-  - ``{m}_positions`` long [n_m] or float32 [n_m, pos_input_size]
-  - ``{m}_mask``      bool  [micro_batch_size, sequence_length]
-
-The dict is flat because nanotron's device mover
-(``nanotron.data.dataloader.sanity_check_dataloader``) only transfers
-top-level tensors. This module must stay importable WITHOUT nanotron: the CPU
-test suite exercises it against the HF model, and only
-``nanotron/run_train.py`` calls :func:`build_astropt3_dataloader`
-(``dataset_args`` is duck-typed, never isinstance-checked).
-
-Sharding: the object stream is split by DP rank (identical within a TP
-group — nanotron passes the dp process-group rank/size) inside
-``streaming.owned_by_rank``, which deals whole partitions; the split across
-DataLoader workers is then done by ``datasets`` itself — its ``_iter_pytorch``
-shards the stream per worker whenever it detects one. Splitting manually by
-``world_size x num_workers`` on top of that DOUBLE-shards and clamps the
-loader to one worker, so don't. ``datasets`` only WARNS when a rank owns
-fewer partitions than it has workers, so :meth:`_mmu_records` raises instead.
-(The synthetic stream, which has no datasets machinery underneath, still
-strides over record indices by ``world_size x num_workers`` itself.)
-
-Checkpoint-resume (Phase 4): ``state_dict()`` returns the stream position at
-the START of the current partial packing row — everything already drawn into
-that row has not been trained on, so resume re-draws it and continues with
-exactly the micro-batch sequence an uninterrupted run would have produced.
-The synthetic state is a record counter; the MMU state is the ``datasets``
-generator's own ``state_dict()`` (shard index + example index) alongside the
-epoch, tagged with ``source_assembly`` so a state written by a different
-record ORDER is rejected rather than resumed onto the wrong row. Both are
-exact: ADR 0006 §4 budgeted for replaying the in-flight partition, but the
-row-group cursor makes the offset exact, so the no-replay guarantee survives
-streaming.
-
-With ``num_workers == 0`` the dataset object itself carries the state. With
-``num_workers > 0`` each DataLoader worker's dataset copy keeps its own
-state, and :func:`build_astropt3_dataloader` returns a torchdata
-``StatefulDataLoader`` whose ``state_dict()`` gathers the per-worker
-snapshots consistent with the last micro-batch actually yielded to the
-caller (worker-prefetched batches are accounted for by torchdata). The
-trainer captures either kind of loader through :func:`loader_state_dict`.
+Each DataLoader worker opens the fixed catalog and owns one synchronous
+``lsdb.streams.InfiniteStream``. Items yielded by this module are already
+whole micro-batches, flattened because nanotron only moves top-level tensors
+to the device.
 """
 
+from __future__ import annotations
+
 import gc
-import itertools
+import math
 import time
-from pathlib import Path
-from typing import Any, cast
+import zlib
+from collections.abc import Mapping
+from importlib.metadata import PackageNotFoundError, version
+from typing import Any
 
 import httpx
+import lsdb
+import numpy as np
+import pandas as pd
 import torch
+from dask.distributed import Client, LocalCluster
+from lsdb.streams.catalog_streams import InfiniteStream
 
 from ..configuration_astropt3 import AstroPT3Config
 from .band_registry import _DIV_FACTOR
+from .outer_crossmatch import OuterKdTreeCrossmatch
+from .packing import ObjectSequencer, PackedCollator, span_order
 from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
-from .packing import ObjectSequencer, PackedCollator
-from .streaming import MMU_ROOT, SOURCE_ASSEMBLY, SYNTHETIC_ROOT
-from .synthetic import make_record
+from .telemetry import install_byte_probe, instrument
 
-STATE_FILE_TEMPLATE = "dp_{rank}.pt"
-STATE_SUBDIR = "dataset_state"
-LOADER_STATE_FORMAT = "stateful_dataloader"
-# transient hub/network failures (an overloaded DNS resolver returns "Name or
-# service not known" for seconds at a time) must not kill a multi-day run:
-# rebuild the stream from the last per-record snapshot instead. The counter
-# resets on any successful draw, so the budget only burns during a SUSTAINED
-# outage: 60 x 120s cap ≈ 2h, after which the network is truly down and the
-# run should die loudly rather than hang looking like a stall
+LEGACY_CATALOG = "hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north"
+DESI_CATALOG = "hf://datasets/UniverseTBD/mmu_desi_edr_sv3"
+IMAGE_SHAPE = (3, 152, 152)
 _MAX_NET_RETRIES = 60
 _MAX_NET_RETRY_WAIT = 120
+_MAX_REPLICA_ATTEMPTS = 32
+# PLAN.md's pilot crossmatch radius (mmu_desi_edr_sv3 x mmu_ssl_legacysurvey_north).
+_CROSSMATCH_RADIUS_ARCSEC = 1.0
+_CROSSMATCH_LEGACY_SUFFIX = "_legacy"
+# Partitions fetched per InfiniteStream draw. >1 gives each worker a bigger
+# ready-buffer to drain, widening the wall-clock window during which the
+# background prefetch (see _open_records' dask_client) has a chance to
+# finish the NEXT draw before the current one is exhausted -- depth-1
+# lookahead (partitions_per_chunk=1) measured no stall_share improvement on
+# a real run (bounded by DataLoader prefetch_factor, not partition drain
+# time). First tuned WITHOUT OuterKdTreeCrossmatch (astropt3-70m-jetformer,
+# DP=2 x 8 workers): 1 -> stall_share ~85%, 1.0k rows/s; 4 -> 65%, 2.0k
+# rows/s; 8 -> 46%, 3.3k rows/s (best); 16 -> 62%, 2.3k rows/s (regression,
+# RAM past 500GiB). Once OuterKdTreeCrossmatch started recovering
+# image-only rows too (outer_crossmatch.py), each chunk got heavier
+# (~277KB/recovered image), and 8 regressed the same way 16 previously did
+# -- re-tuned: 8 -> stall_share 50%, 2.3k rows/s, RAM 529GiB;
+# 4 -> 33%, 3.0k rows/s, RAM 349GiB (best again). Re-tune again if the
+# per-record byte weight changes materially (e.g. recovering unmatched
+# spectra too, or a bigger image modality).
+_PARTITIONS_PER_CHUNK = 4
+# nested (struct/list) column -> sub-field names, for map_rows-based decode
+_LEGACY_NESTED = {"image": ("band", "flux", "psf_fwhm")}
+_CROSSMATCH_NESTED = {
+    "spectrum": ("flux", "lambda", "mask"),
+    f"image{_CROSSMATCH_LEGACY_SUFFIX}": ("band", "flux", "psf_fwhm"),
+}
 
 
-def hf_config_from_modalities(
-    modalities, tokeniser: str = "affine", **extra
-) -> AstroPT3Config:
-    """Build the (tiny) HF-side config the sequencer/collator machinery wants.
-
-    ``modalities`` may come from either implementation's config — both carry
-    the same list of dicts. ``extra`` passes tokeniser-specific fields
-    (e.g. the ``jetformer_*`` knobs) straight through to ``AstroPT3Config``.
-    """
+def hf_config_from_modalities(modalities, **extra) -> AstroPT3Config:
+    """Build the HF-side config used by the shared sequencer and collator."""
     return AstroPT3Config(
-        modalities=[dict(m) for m in modalities], tokeniser=tokeniser, **extra
+        modalities=[dict(modality) for modality in modalities],
+        **extra,
     )
 
 
 def flatten_packed_batch(batch: dict, config: AstroPT3Config, seq_len: int) -> dict:
-    """PackedCollator output -> flat nanotron micro-batch dict.
-
-    Modalities absent from the batch get correctly-typed zero-length tensors
-    so the model's forward signature (and DDP's used-parameter accounting)
-    stays fixed.
-    """
+    """Convert ``PackedCollator`` output to nanotron's flat input contract."""
     registry = config.modality_registry()
-    b = batch["input_ids"].shape[0]
+    batch_size = batch["input_ids"].shape[0]
     flat = {
         "input_ids": batch["input_ids"],
         "position_ids": batch["position_ids"],
     }
     for name in registry.names():
-        mod = registry.get_config(name)
+        modality = registry.get_config(name)
         if name in batch["modality_masks"]:
             flat[f"{name}_mask"] = batch["modality_masks"][name]
             flat[f"{name}_values"] = batch["modality_values"][name]
             flat[f"{name}_positions"] = batch["modality_positions"][name]
         else:
-            flat[f"{name}_mask"] = torch.zeros((b, seq_len), dtype=torch.bool)
-            flat[f"{name}_values"] = torch.empty(
-                (0, mod.input_size), dtype=torch.float32
+            flat[f"{name}_mask"] = torch.zeros(
+                (batch_size, seq_len), dtype=torch.bool
             )
-            if mod.pos_type == "index":
+            flat[f"{name}_values"] = torch.empty(
+                (0, modality.input_size), dtype=torch.float32
+            )
+            if modality.pos_type == "index":
                 flat[f"{name}_positions"] = torch.empty((0,), dtype=torch.long)
             else:
                 flat[f"{name}_positions"] = torch.empty(
-                    (0, mod.pos_input_size), dtype=torch.float32
+                    (0, modality.pos_input_size), dtype=torch.float32
                 )
     return flat
 
 
 def regroup_micro_batch(flat: dict, names) -> dict:
-    """Flat nanotron micro-batch -> HF ``AstroPT3Model`` forward kwargs."""
+    """Convert a flat nanotron micro-batch to HF model keyword arguments."""
     return {
         "input_ids": flat["input_ids"],
         "position_ids": flat["position_ids"],
         "modality_values": {
-            n: flat[f"{n}_values"] for n in names if flat[f"{n}_values"].shape[0]
+            name: flat[f"{name}_values"]
+            for name in names
+            if flat[f"{name}_values"].shape[0]
         },
         "modality_masks": {
-            n: flat[f"{n}_mask"] for n in names if flat[f"{n}_mask"].any()
+            name: flat[f"{name}_mask"]
+            for name in names
+            if flat[f"{name}_mask"].any()
         },
         "modality_positions": {
-            n: flat[f"{n}_positions"] for n in names if flat[f"{n}_values"].shape[0]
+            name: flat[f"{name}_positions"]
+            for name in names
+            if flat[f"{name}_values"].shape[0]
         },
     }
 
 
-class PackedMicroBatches(torch.utils.data.IterableDataset):
-    """Endless stream of fixed-shape nanotron micro-batches.
+def _as_mapping(value: Any) -> Mapping:
+    if isinstance(value, Mapping):
+        return value
+    if hasattr(value, "as_py"):
+        value = value.as_py()
+        if isinstance(value, Mapping):
+            return value
+    if hasattr(value, "to_dict"):
+        try:
+            value = value.to_dict(orient="list")
+        except TypeError:
+            value = value.to_dict()
+        if isinstance(value, Mapping):
+            return value
+    raise ValueError(f"image payload has unsupported type {type(value).__name__}")
 
-    Objects are packed greedily into rows of ``seq_len`` (never split), rows
-    are grouped ``micro_batch_size`` at a time, and each group is collated by
-    the shared :class:`PackedCollator` — the greedy repack of whole rows is
-    deterministic, so the collator reproduces exactly the grouped rows.
 
-    Use with ``DataLoader(batch_size=None)``; each item IS a micro-batch.
+def _stack_nested(value: Any) -> np.ndarray:
+    array = np.asarray(value)
+    if array.dtype == object:
+        return np.stack([_stack_nested(item) for item in array])
+    return array
 
-    ``object_id_log`` appends one ``object_id`` line per object as its
-    micro-batch is YIELDED (a partial row lost to a kill is never logged),
-    to ``{object_id_log}.dp{rank}`` — the no-replay audit trail for the
-    Phase 4 kill/resume gate.
+
+def _finite_scalar(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _row_from_map_rows(mapped: Mapping, nested: dict[str, tuple[str, ...]]) -> dict:
+    """Reassemble a ``NestedFrame.map_rows`` dotted-key row into the plain
+    nested-mapping shape ``decode_legacy_row``/``decode_crossmatch_row`` expect.
+
+    ``map_rows`` hands nested sub-columns to its callback as numpy arrays
+    straight from Arrow storage. ``frame.iterrows()`` instead materializes
+    each nested cell as its own per-row pandas DataFrame, which made
+    ``_as_mapping``'s ``DataFrame.to_dict()`` fallback the dominant cost of
+    crossmatch decode (profiled: ~0.44s of an 0.47s/micro-batch total, from
+    boxing every one of a 7781-row spectrum's ~39k cells individually). An
+    absent/unmatched nested value (e.g. a crossmatch row with no LegacySurvey
+    counterpart) arrives as an empty array, folded to ``None`` here to match
+    the old "no image" case.
     """
+    row = dict(mapped)
+    for name, subfields in nested.items():
+        sub: dict = {}
+        present = False
+        for field in subfields:
+            key = f"{name}.{field}"
+            if key not in row:
+                continue
+            value = row.pop(key)
+            sub[field] = value
+            if isinstance(value, np.ndarray):
+                present = present or bool(value.size)
+            else:
+                present = present or value is not None
+        row[name] = sub if present else None
+    return row
+
+
+def _map_rows_columns(frame: Any, nested: dict[str, tuple[str, ...]]) -> list[str]:
+    """Column list for ``map_rows``: every plain column plus nested sub-fields.
+
+    Built from ``frame.columns`` rather than the catalog's requested
+    projection, so HATS-always-present columns (e.g. ``ra``/``dec``, which
+    ``decode_row``'s generic scalar sweep also picks up even when not
+    explicitly requested) aren't silently dropped.
+    """
+    scalar = [name for name in frame.columns if name not in nested]
+    subcols = [f"{name}.{field}" for name, fields in nested.items() for field in fields]
+    return scalar + subcols
+
+
+def decode_legacy_row(row: Mapping) -> dict:
+    """Decode one LegacySurvey row to the ``ObjectSequencer`` contract.
+
+    Duck-typed: any mapping with ``image``/scalar columns works (pandas
+    ``Series``, plain dicts, test fixtures).
+    """
+    image = _as_mapping(row.get("image"))
+    bands = [str(band) for band in image.get("band", ())]
+    flux = _stack_nested(image.get("flux")).astype(np.float32, copy=False)
+    if flux.shape != IMAGE_SHAPE:
+        raise ValueError(f"image flux has shape {flux.shape}, expected {IMAGE_SHAPE}")
+    if len(bands) != IMAGE_SHAPE[0]:
+        raise ValueError(f"image has {len(bands)} bands, expected {IMAGE_SHAPE[0]}")
+
+    object_id = row.get("object_id")
+    if object_id is None:
+        raise ValueError("LegacySurvey row has no object_id")
+    record = {
+        "object_id": str(object_id),
+        "image": {"flux": flux, "band": bands},
+    }
+    for key, value in row.items():
+        if key in {"object_id", "image"}:
+            continue
+        number = _finite_scalar(value)
+        if number is not None:
+            record[str(key)] = number
+
+    fwhm = image.get("psf_fwhm")
+    if fwhm is not None and len(fwhm) == len(bands):
+        for band, value in zip(bands, fwhm):
+            number = _finite_scalar(value)
+            if number is not None and 0 < number < 5:
+                record[f"psf_fwhm_{band}"] = number
+    return record
+
+
+def _catalog_columns(config: AstroPT3Config, *, include_position: bool = False) -> list[str]:
+    """Project the fixed catalog to active Legacy image/scalar fields only."""
+    columns = {"object_id"}
+    has_image = False
+    for name in config.modality_registry().names():
+        modality = config.modality_registry().get_config(name)
+        if modality.source != "legacy":
+            continue
+        if modality.family == "image":
+            if tuple(modality.record_keys) != ("image",):
+                raise ValueError(
+                    f"Legacy image modality {name!r} must use record key 'image'"
+                )
+            has_image = True
+            columns.add("image")
+        elif modality.family == "scalar":
+            for key in modality.record_keys:
+                columns.add("image" if key.startswith("psf_fwhm_") else key)
+    if not has_image:
+        raise ValueError("LSDB training requires an active Legacy image modality")
+    if include_position:
+        columns |= {"ra", "dec"}
+    return ["object_id", "image", *sorted(columns - {"object_id", "image"})]
+
+
+def _desi_columns(config: AstroPT3Config) -> list[str] | None:
+    """Project the fixed DESI catalog to active desi-source fields.
+
+    Returns ``None`` when no modality sources from DESI (the crossmatch
+    stream is then skipped entirely).
+    """
+    columns = {"object_id", "ra", "dec"}
+    active = False
+    for name in config.modality_registry().names():
+        modality = config.modality_registry().get_config(name)
+        if modality.source != "desi":
+            continue
+        active = True
+        if modality.family == "spectrum":
+            if tuple(modality.record_keys) != ("spectrum",):
+                raise ValueError(
+                    f"DESI spectrum modality {name!r} must use record key 'spectrum'"
+                )
+            columns.add("spectrum")
+        elif modality.family == "scalar":
+            columns.update(modality.record_keys)
+            if name == "Z":
+                columns.add("ZWARN")
+    return sorted(columns) if active else None
+
+
+def _decode_spectrum(value: Any) -> dict:
+    if isinstance(value, pd.DataFrame):
+        # A per-record spectrum arrives as one row per wavelength bin
+        # (~7781 rows x flux/ivar/lsf_sigma/lambda/mask). The generic
+        # _as_mapping -> DataFrame.to_dict(orient="list") path boxes every
+        # cell through pandas' maybe_box_native (~39k Python-level boxings
+        # per record), which dominates crossmatch decode time end to end
+        # (profiled: ~0.44s/micro-batch of an 0.47s total). Column access
+        # is vectorized and skips that entirely.
+        return {
+            "flux": value["flux"].to_numpy(dtype=np.float32, copy=False),
+            "lambda": value["lambda"].to_numpy(dtype=np.float32, copy=False),
+            "mask": value["mask"].to_numpy(dtype=bool, copy=False),
+        }
+    spec = _as_mapping(value)
+    return {
+        "flux": _stack_nested(spec.get("flux")).astype(np.float32, copy=False),
+        "lambda": _stack_nested(spec.get("lambda")).astype(np.float32, copy=False),
+        "mask": _stack_nested(spec.get("mask")).astype(bool, copy=False),
+    }
+
+
+def decode_crossmatch_row(row: Mapping) -> dict:
+    """Decode one ``desi ⋈ legacy`` crossmatch row (ADR 0015 spectra test).
+
+    Most rows carry a spectrum (DESI drives the pixel-level join); the
+    legacy image and legacy-sourced scalars (suffixed ``_legacy``) are
+    present only when a LegacySurvey counterpart matched within the radius.
+    With ``outer_crossmatch.OuterKdTreeCrossmatch``, a row can also be
+    Legacy-only (no DESI match at all -- ``object_id`` itself is null),
+    recovered from otherwise-discarded bytes; ``object_id`` then falls back
+    to ``object_id_legacy``. A null scalar comes through as ``pandas.NA``,
+    not ``None`` (confirmed against real crossmatch data), so this checks
+    ``pd.isna`` rather than ``is None`` -- that also covers ``None``, so
+    plain-dict test fixtures are unaffected.
+    """
+    object_id = row.get("object_id")
+    if pd.isna(object_id):
+        object_id = row.get(f"object_id{_CROSSMATCH_LEGACY_SUFFIX}")
+        if pd.isna(object_id):
+            raise ValueError("crossmatched row has no object_id or object_id_legacy")
+    record: dict = {"object_id": str(object_id)}
+
+    spectrum_value = row.get("spectrum")
+    if spectrum_value is not None:
+        record["spectrum"] = _decode_spectrum(spectrum_value)
+
+    image_key = f"image{_CROSSMATCH_LEGACY_SUFFIX}"
+    image_value = row.get(image_key)
+    fwhm_value = None
+    if image_value is not None:
+        image = _as_mapping(image_value)
+        bands = [str(band) for band in image.get("band", ())]
+        flux = _stack_nested(image.get("flux")).astype(np.float32, copy=False)
+        if flux.shape == IMAGE_SHAPE and len(bands) == IMAGE_SHAPE[0]:
+            record["image"] = {"flux": flux, "band": bands}
+            fwhm_value = image.get("psf_fwhm")
+
+    skip = {
+        "object_id",
+        f"object_id{_CROSSMATCH_LEGACY_SUFFIX}",
+        "spectrum",
+        image_key,
+        "ra",
+        "dec",
+        f"ra{_CROSSMATCH_LEGACY_SUFFIX}",
+        f"dec{_CROSSMATCH_LEGACY_SUFFIX}",
+        "_dist_arcsec",
+    }
+    for key, value in row.items():
+        if key in skip:
+            continue
+        base_key = (
+            key[: -len(_CROSSMATCH_LEGACY_SUFFIX)]
+            if key.endswith(_CROSSMATCH_LEGACY_SUFFIX)
+            else key
+        )
+        number = _finite_scalar(value)
+        if number is not None:
+            record[base_key] = number
+
+    if fwhm_value is not None:
+        bands = record["image"]["band"]
+        if len(fwhm_value) == len(bands):
+            for band, value in zip(bands, fwhm_value):
+                number = _finite_scalar(value)
+                if number is not None and 0 < number < 5:
+                    record[f"psf_fwhm_{band}"] = number
+    return record
+
+
+def consumer_seed(seed: int, rank: int, worker: int, retry_generation: int) -> int:
+    """Stable independent seed for one DP-rank/worker/fresh-stream consumer."""
+    return zlib.crc32(f"{seed}:{rank}:{worker}:{retry_generation}".encode())
+
+
+def _retryable(error: Exception) -> bool:
+    if isinstance(error, (httpx.HTTPError, OSError, TimeoutError)):
+        return True
+    return isinstance(error, RuntimeError) and "client has been closed" in str(error)
+
+
+def _lsdb_version() -> str:
+    try:
+        return version("lsdb")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _log_provenance(
+    catalog, columns: list[str], rank: int, worker: int, catalog_desc: str = LEGACY_CATALOG
+) -> None:
+    info = getattr(getattr(catalog, "hc_structure", None), "catalog_info", None)
+    metadata = {}
+    for key in ("catalog_name", "catalog_type", "hats_builder", "hats_version"):
+        value = getattr(info, key, None)
+        if value is not None:
+            metadata[key] = str(value)
+    suffix = f" provenance={metadata}" if metadata else ""
+    print(
+        f"[data] dp={rank} worker={worker} lsdb={_lsdb_version()} "
+        f"catalog={catalog_desc} columns={columns}{suffix}",
+        flush=True,
+    )
+
+
+class PackedMicroBatches(torch.utils.data.IterableDataset):
+    """Endless LSDB records packed into fixed-shape nanotron micro-batches."""
 
     def __init__(
         self,
@@ -167,323 +428,262 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         micro_batch_size: int,
         seq_len: int,
         *,
-        data_root: str = SYNTHETIC_ROOT,
-        match_index: str | None = None,
-        synthetic_image_only_fraction: float = 0.3,
-        synthetic_spectrum_only_fraction: float = 0.0,
         rank: int = 0,
-        world_size: int = 1,
         seed: int = 0,
-        split: str = "train",
-        object_id_log: str | Path | None = None,
-        stateful: bool = True,
+        ar_replicas: int = 1,
+        replica_placement: str = "decorrelated",
+        crossmatch_desi: bool = False,
     ):
         super().__init__()
+        if ar_replicas < 1:
+            raise ValueError(f"ar_replicas must be >= 1, got {ar_replicas}")
+        if replica_placement not in ("decorrelated", "adjacent"):
+            raise ValueError(
+                "replica_placement must be 'decorrelated' or 'adjacent', "
+                f"got {replica_placement!r}"
+            )
+        if replica_placement == "decorrelated" and ar_replicas > micro_batch_size:
+            raise ValueError(
+                f"ar_replicas={ar_replicas} exceeds micro_batch_size="
+                f"{micro_batch_size}; each replica needs its own packed row"
+            )
         self.config = config
         self.micro_batch_size = micro_batch_size
         self.seq_len = seq_len
-        self.data_root = str(data_root)
-        if self.data_root not in (SYNTHETIC_ROOT, MMU_ROOT):
-            # a stale path to the deleted local reshard must fail loudly, not
-            # silently stream something else (ADR 0006 §7)
-            raise ValueError(
-                f"data_root must be {SYNTHETIC_ROOT!r} or {MMU_ROOT!r}, got "
-                f"{self.data_root!r}; the local parquet corpus was removed by "
-                "ADR 0006 — the MMU catalogs are streamed live"
-            )
-        # The MMU branch has one assembly and requires its precomputed index.
-        self.match_index = match_index
-        self.synthetic_image_only_fraction = synthetic_image_only_fraction
-        self.synthetic_spectrum_only_fraction = synthetic_spectrum_only_fraction
         self.rank = rank
-        self.world_size = world_size
         self.seed = seed
-        self.split = split
-        self.object_id_log = None if object_id_log is None else str(object_id_log)
-        self._stateful = stateful
-        self._resume_state: dict | None = None  # applied on next __iter__
-        self._ckpt_state: dict | None = None  # updated at every yield
-        self._stream = None  # the live datasets stream, once iteration starts
-        self._epoch = 0
-
+        self.ar_replicas = ar_replicas
+        self.replica_placement = replica_placement
+        self.desi_columns = _desi_columns(config) if crossmatch_desi else None
+        if crossmatch_desi and self.desi_columns is None:
+            raise ValueError(
+                "crossmatch_desi=True but no active modality sources from DESI"
+            )
+        self.columns = _catalog_columns(config, include_position=self.desi_columns is not None)
+        self._epoch = 0  # InfiniteStream partition-draw nonce for span ordering
         self.sequencer = ObjectSequencer(config)
         self.collator = PackedCollator(config, seq_len=seq_len)
 
-    # -- checkpoint state ---------------------------------------------------
-
-    @property
-    def _source_assembly(self) -> str:
-        return SOURCE_ASSEMBLY if self.data_root == MMU_ROOT else SYNTHETIC_ROOT
-
-    def state_dict(self) -> dict | None:
-        """Stream position at the start of the current partial row.
-
-        Returns None only from the never-iterated main-process copy of a
-        plain ``num_workers > 0`` DataLoader (``stateful=False`` and nothing
-        consumed): the real state lives in the worker copies, which a
-        StatefulDataLoader collects through this same method.
-        """
-        if self._ckpt_state is not None:
-            return dict(self._ckpt_state)
-        if self._resume_state is not None:
-            return dict(self._resume_state)
-        if not self._stateful:
-            return None
-        return {
-            "records": 0,
-            "epoch": 0,
-            "stream_state": None,
-            "data_root": self.data_root,
-            "source_assembly": self._source_assembly,
-        }
-
-    def load_state_dict(self, state: dict | None) -> None:
-        if state is None:  # a worker snapshotted before its first yield
-            return
-        if state.get("data_root") not in (None, self.data_root):
-            raise ValueError(
-                f"dataset state was saved for data_root={state['data_root']!r}, "
-                f"this stream reads {self.data_root!r}"
-            )
-        saved_assembly = state.get("source_assembly")
-        if saved_assembly != self._source_assembly:
-            raise ValueError(
-                f"dataset state uses source_assembly={saved_assembly!r}; "
-                f"this branch requires {self._source_assembly!r}. Start a new "
-                "run rather than restoring a checkpoint from another corpus."
-            )
-        self._resume_state = dict(state)
-
-    def _snapshot(self, records: int) -> dict:
-        """State AFTER ``records`` records have been consumed by the packer."""
-        return {
-            "records": records,
-            "epoch": self._epoch,
-            "stream_state": None if self._stream is None else self._stream.state_dict(),
-            "data_root": self.data_root,
-            "source_assembly": self._source_assembly,
-        }
-
-    # -- record sources -----------------------------------------------------
-
-    def _synthetic_records(self, start_count: int, worker):
-        """Endless deterministic stream; index striding keeps ranks/workers disjoint."""
-        n_workers = worker.num_workers if worker else 1
+    def _open_records(self, worker):
         worker_id = worker.id if worker else 0
-        offset = self.rank * n_workers + worker_id
-        stride = self.world_size * n_workers
-        for k in itertools.count(start_count):
-            yield make_record(
-                offset + k * stride,
-                image_only_fraction=self.synthetic_image_only_fraction,
-                spectrum_only_fraction=self.synthetic_spectrum_only_fraction,
-            )
-
-    def _mmu_records(self, start_epoch, stream_state, worker):
-        """Repeat finite crossmatch-only epochs and restore their exact state."""
-        import itertools
-
-        from .streaming import open_stream
-
-        for epoch in itertools.count(start_epoch):
-            self._epoch = epoch  # seeds the ADR 0008 span shuffle
-            stream = open_stream(
-                split=self.split,
-                seed=self.seed,
-                epoch=epoch,
-                shard=self.rank,
-                num_shards=self.world_size,
-                match_index=self.match_index,
-            )
-            # datasets splits this rank's shards across the loader workers and
-            # only WARNS when it runs short ("Stopping N-M dataloader
-            # workers"), so an over-subscribed run silently trains on a
-            # fraction of its workers. The crossmatch-only corpus is ~165 cells
-            # total, not the ~5.5k of the retired images source, so this binds
-            # at pilot dp.
-            if worker is not None and worker.num_workers > stream.n_shards:
-                raise ValueError(
-                    f"dp rank {self.rank} owns {stream.n_shards} crossmatch "
-                    f"train partitions but num_loading_workers is "
-                    f"{worker.num_workers} — reduce num_loading_workers to "
-                    f"<= {stream.n_shards}, or reduce dp({self.world_size}) "
-                    f"so each rank owns more partitions"
-                )
-            if epoch == start_epoch and stream_state is not None:
-                stream.load_state_dict(stream_state)
-            self._stream = stream
-            iterator = iter(stream)
-            while True:
-                try:
-                    yield next(iterator)
-                except StopIteration:
-                    break
-
-    def _open_records(self, state, worker):
-        """(Re)open the record source at ``state`` (None = fresh start)."""
-        if self.data_root == SYNTHETIC_ROOT:
-            return self._synthetic_records(state["records"] if state else 0, worker)
-        return self._mmu_records(
-            state["epoch"] if state else 0,
-            state.get("stream_state") if state else None,
-            worker,
+        retry_generation = 0
+        consecutive_failures = 0
+        draw = 0
+        # InfiniteStream's own submit-next-before-returning-current prefetch
+        # (catalog_streams.CatalogIterator.__next__) only overlaps with
+        # anything when given a real dask client -- with client=None it calls
+        # Future.compute() synchronously, so partition N+1's fetch fully
+        # blocks the call that returns partition N (profiled: draining a
+        # partition's records now costs ~10ms, entirely hidden behind
+        # 10-40s network fetches otherwise). processes=False keeps this to
+        # in-process threads, not a distributed cluster -- one scheduler +
+        # one worker thread per DataLoader worker (~30ms/1.5MiB to start).
+        # dashboard_address must go through LocalCluster directly: Client()
+        # doesn't forward it to the LocalCluster it builds implicitly, and
+        # falls back to :8787. The scheduler's status HTTP server binds a
+        # port regardless of dashboard_address (only the bokeh UI routes are
+        # actually optional) -- ":0" picks a free one per worker instead of
+        # every one of the 8 workers colliding on the fixed default.
+        # threads_per_worker > 1 so a >1 partitions_per_chunk draw fetches its
+        # partitions concurrently too, not serialized on a single thread.
+        dask_cluster = LocalCluster(
+            processes=False,
+            n_workers=1,
+            threads_per_worker=_PARTITIONS_PER_CHUNK,
+            dashboard_address=":0",
         )
+        dask_client = Client(dask_cluster)
+        while True:
+            catalog = stream = iterator = None
+            try:
+                legacy_catalog = getattr(lsdb, "open_catalog")(
+                    LEGACY_CATALOG, columns=self.columns
+                )
+                if self.desi_columns is not None:
+                    desi_catalog = getattr(lsdb, "open_catalog")(
+                        DESI_CATALOG, columns=self.desi_columns
+                    )
+                    catalog = desi_catalog.crossmatch(
+                        legacy_catalog,
+                        algorithm=OuterKdTreeCrossmatch(radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC),
+                        how="left",
+                        suffixes=("", _CROSSMATCH_LEGACY_SUFFIX),
+                        suffix_method="all_columns",
+                    )
+                    catalog_desc = f"{DESI_CATALOG} x {LEGACY_CATALOG}"
+                    columns_desc = self.desi_columns + self.columns
+                else:
+                    catalog = legacy_catalog
+                    catalog_desc = LEGACY_CATALOG
+                    columns_desc = self.columns
+                _log_provenance(
+                    catalog, columns_desc, self.rank, worker_id, catalog_desc
+                )
+                stream = InfiniteStream(
+                    catalog,
+                    client=dask_client,
+                    partitions_per_chunk=_PARTITIONS_PER_CHUNK,
+                    seed=consumer_seed(
+                        self.seed, self.rank, worker_id, retry_generation
+                    ),
+                )
+                iterator = iter(stream)
+            except Exception as error:
+                if not _retryable(error):
+                    raise
+                consecutive_failures += 1
+                if consecutive_failures > _MAX_NET_RETRIES:
+                    raise
+                wait = min(
+                    5 * 2 ** (consecutive_failures - 1), _MAX_NET_RETRY_WAIT
+                )
+                print(
+                    f"[data] {type(error).__name__}: opening a fresh LSDB stream "
+                    f"in {wait}s (retry {consecutive_failures}/{_MAX_NET_RETRIES})",
+                    flush=True,
+                )
+                time.sleep(wait)
+                retry_generation += 1
+                continue
 
-    # -- iteration ------------------------------------------------------------
+            if iterator is None:
+                raise AssertionError("LSDB stream opened without an iterator")
+            active_iterator: Any = iterator
+            reopen = False
+            while not reopen:
+                try:
+                    frame: Any = next(active_iterator)
+                except StopIteration:
+                    reopen = True
+                    retry_generation += 1
+                    continue
+                except Exception as error:
+                    if not _retryable(error):
+                        raise
+                    consecutive_failures += 1
+                    if consecutive_failures > _MAX_NET_RETRIES:
+                        raise
+                    wait = min(
+                        5 * 2 ** (consecutive_failures - 1), _MAX_NET_RETRY_WAIT
+                    )
+                    print(
+                        f"[data] {type(error).__name__}: discarding the LSDB "
+                        f"iterator and opening a fresh stream in {wait}s "
+                        f"(retry {consecutive_failures}/{_MAX_NET_RETRIES})",
+                        flush=True,
+                    )
+                    active_iterator = iter(())
+                    iterator = stream = catalog = None
+                    gc.collect()
+                    time.sleep(wait)
+                    retry_generation += 1
+                    reopen = True
+                    continue
+
+                consecutive_failures = 0
+                self._epoch = draw
+                draw += 1
+                decode_row = (
+                    decode_crossmatch_row
+                    if self.desi_columns is not None
+                    else decode_legacy_row
+                )
+                nested = (
+                    _CROSSMATCH_NESTED
+                    if self.desi_columns is not None
+                    else _LEGACY_NESTED
+                )
+                # map_rows delivers nested sub-columns as numpy arrays (no
+                # per-row DataFrame materialization), which is what makes
+                # this ~2.5-4x faster end to end than frame.iterrows() +
+                # decode_row -- see _row_from_map_rows.
+                decoded = frame.map_rows(
+                    lambda mapped: {"record": decode_row(_row_from_map_rows(mapped, nested))},
+                    columns=_map_rows_columns(frame, nested),
+                    infer_nesting=False,
+                )
+                yield from decoded["record"]
+
+    def _replica_objects(self, record: dict) -> list:
+        """Build the base sequence and distinct autoregressive reorderings."""
+        base_id = str(record.get("object_id", ""))
+        first = self.sequencer.build(record, epoch=self._epoch)
+        names = sorted(first.order)
+        if self.ar_replicas == 1 or len(names) < 2:
+            return [first]
+
+        wanted = min(self.ar_replicas, math.factorial(len(names)))
+        objects, seen = [first], {first.order}
+        attempt = 1
+        while len(objects) < wanted and attempt <= _MAX_REPLICA_ATTEMPTS:
+            replica_id = f"{base_id}#{attempt}"
+            order = tuple(span_order(names, replica_id, self._epoch))
+            attempt += 1
+            if order in seen:
+                continue
+            seen.add(order)
+            objects.append(
+                self.sequencer.build(
+                    {**record, "object_id": replica_id},
+                    epoch=self._epoch,
+                    modality_order=list(order),
+                )
+            )
+        return objects
+
+    def _place(self, objects: list, used: list[int]) -> list[int] | None:
+        """Assign a record's base sequence and replicas to packed rows."""
+        order = sorted(range(len(used)), key=lambda row: (used[row], row))
+        if self.replica_placement == "adjacent":
+            span = sum(len(obj) for obj in objects)
+            for row_index in order:
+                if used[row_index] + span <= self.seq_len:
+                    return [row_index] * len(objects)
+            return None
+        chosen: list[int] = []
+        for obj in objects:
+            for row_index in order:
+                if row_index not in chosen and used[row_index] + len(obj) <= self.seq_len:
+                    chosen.append(row_index)
+                    break
+            else:
+                return None
+        return chosen
 
     def __iter__(self):
         worker = torch.utils.data.get_worker_info()
-        # Worker copies are always stateful: a StatefulDataLoader snapshots
-        # them via state_dict() inside the worker process (under a plain
-        # DataLoader the bookkeeping is dead weight but harmless). The
-        # main-process copy honors the ctor flag as before.
-        stateful = self._stateful or worker is not None
-        state = self._resume_state if stateful else None
+        install_byte_probe(self.rank, worker.id if worker else 0)
+        records = self._open_records(worker)
+        rows: list[list] = [[] for _ in range(self.micro_batch_size)]
+        used = [0] * self.micro_batch_size
 
-        count = state["records"] if state else 0
-        start_epoch = state["epoch"] if state else 0
-        stream_state = state.get("stream_state") if state else None
-        self._epoch = start_epoch
-        self._stream = None
-
-        records = self._open_records(state, worker)
-
-        log = None
-        if self.object_id_log is not None:
-            worker_suffix = f".w{worker.id}" if worker else ""
-            log_path = Path(f"{self.object_id_log}.dp{self.rank}{worker_suffix}")
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                log = open(log_path, "a")
-            except OSError as error:
-                raise RuntimeError(
-                    f"cannot open object audit log {log_path}"
-                ) from error
-
-        # prev_state = stream position BEFORE the record about to be drawn;
-        # row_start = position at the first record of the current partial row.
-        # On resume that position is the loaded state itself (the MMU dataset
-        # object does not exist until the record generator first runs).
-        prev_state = (
-            dict(state) if state else (self._snapshot(count) if stateful else None)
-        )
-        row_start = prev_state
-        rows: list[list] = []
-        row: list = []
-        used = 0
-
-        net_retries = 0
-        try:
-            while True:
-                error = None
-                record = None
-                try:
-                    record = next(records)
-                except StopIteration:
-                    break
-                except httpx.HTTPError as caught:
-                    error = caught
-                except OSError as caught:
-                    error = caught
-                except RuntimeError as caught:
-                    error = caught
-                if error is not None:
-                    # hub's http_backoff close_session() on a ConnectError
-                    # races datasets' prefetch threads sharing the global
-                    # httpx client -> plain RuntimeError; a rebuild gets a
-                    # fresh client from get_session(). Match the message:
-                    # a blanket RuntimeError catch would mask real bugs.
-                    if isinstance(
-                        error, RuntimeError
-                    ) and "client has been closed" not in str(error):
-                        raise error
-                    # transient network failure: rebuild the stream from the
-                    # last per-record snapshot — exact, nothing replayed or
-                    # skipped (prev_state is the position BEFORE the record
-                    # that failed to draw). Only possible when stateful.
-                    if prev_state is None:
-                        raise error
-                    net_retries += 1
-                    if net_retries > _MAX_NET_RETRIES:
-                        raise error
-                    wait = min(5 * 2 ** (net_retries - 1), _MAX_NET_RETRY_WAIT)
-                    print(
-                        f"[data] {type(error).__name__}: rebuilding the stream from "
-                        f"the last record snapshot in {wait}s "
-                        f"(retry {net_retries}/{_MAX_NET_RETRIES})",
-                        flush=True,
-                    )
-                    time.sleep(wait)
-                    # Reclaim the abandoned stream before rebuilding, or its
-                    # datasets/pyarrow prefetch buffers leak per rebuild and RSS
-                    # climbs to the cgroup OOM. Drop our last live reference
-                    # (self._stream — the dead generator's own frame is already
-                    # cleared by the exception) and force a collection. An offline
-                    # 3-arm probe over the real datasets machinery: +79 MiB / 40
-                    # rebuilds abandoned vs +2 MiB with gc.collect(); an explicit
-                    # records.close() adds nothing (the generator died by
-                    # exception, so close() is a no-op here).
-                    self._stream = None
-                    self._epoch = prev_state["epoch"]
-                    gc.collect()
-                    records = self._open_records(prev_state, worker)
-                    continue
-                if record is None:
-                    raise AssertionError("record source returned None")
-                net_retries = 0  # a successful draw resets the blip budget
-                # live epoch feeds the modality-order parity (ADR 0005
-                # amendment); pure function of (object_id, epoch), so the
-                # resumed stream rebuilds identical sequences
-                obj = self.sequencer.build(record, epoch=self._epoch)
+        for record in records:
+            objects = self._replica_objects(record)
+            for obj in objects:
                 if len(obj) > self.seq_len:
                     raise ValueError(
                         f"object of length {len(obj)} exceeds seq_len {self.seq_len}"
                     )
-                if used + len(obj) > self.seq_len:
-                    rows.append(row)
-                    row, used = [], 0
-                    row_start = prev_state  # the new row starts at this record
-                    if len(rows) == self.micro_batch_size:
-                        batch = self.collator([o for r in rows for o in r])
-                        expected_shape = (self.micro_batch_size, self.seq_len)
-                        if batch["input_ids"].shape != expected_shape:
-                            raise AssertionError(
-                                f"greedy repack mismatch: {batch['input_ids'].shape} != "
-                                f"{expected_shape}"
-                            )
-                        if stateful:
-                            self._ckpt_state = row_start
-                        if log is not None:
-                            log.writelines(f"{o.object_id}\n" for r in rows for o in r)
-                            log.flush()
-                        rows = []
-                        yield flatten_packed_batch(batch, self.config, self.seq_len)
-                row.append(obj)
-                used += len(obj)
-                count += 1
-                if stateful:
-                    prev_state = self._snapshot(count)
-        finally:
-            if log is not None:
-                log.close()
-
-
-def loader_state_dict(dataloader) -> dict | None:
-    """Checkpointable stream state of a :func:`build_astropt3_dataloader` loader.
-
-    A StatefulDataLoader's state (which embeds every worker's row-start
-    snapshot plus torchdata's prefetch/round-robin bookkeeping) is wrapped
-    with the worker count so resume can insist on the same layout. A plain
-    DataLoader defers to its dataset, which returns None when it holds no
-    state — the caller skips saving in that case.
-    """
-    if hasattr(dataloader, "state_dict"):  # torchdata StatefulDataLoader
-        return {
-            "format": LOADER_STATE_FORMAT,
-            "num_workers": dataloader.num_workers,
-            "loader": dataloader.state_dict(),
-        }
-    return dataloader.dataset.state_dict()
+            placement = self._place(objects, used)
+            if placement is None:
+                batch = self.collator.collate_rows(rows)
+                expected_shape = (self.micro_batch_size, self.seq_len)
+                if batch["input_ids"].shape != expected_shape:
+                    raise AssertionError(
+                        f"packing mismatch: {batch['input_ids'].shape} != {expected_shape}"
+                    )
+                yield flatten_packed_batch(batch, self.config, self.seq_len)
+                rows = [[] for _ in range(self.micro_batch_size)]
+                used = [0] * self.micro_batch_size
+                placement = self._place(objects, used)
+                if placement is None:
+                    raise AssertionError(
+                        f"record {record.get('object_id')!r} cannot be placed "
+                        f"into {self.micro_batch_size} rows x {self.seq_len} tokens"
+                    )
+            for obj, row_index in zip(objects, placement):
+                rows[row_index].append(obj)
+                used[row_index] += len(obj)
 
 
 def build_astropt3_dataloader(
@@ -495,25 +695,14 @@ def build_astropt3_dataloader(
     dp_size: int,
     num_workers: int = 0,
     seed: int = 0,
-    resume_state_dir: str | Path | None = None,
-) -> torch.utils.data.DataLoader:
-    """Entry point called by the fork's ``run_train.py`` (astropt3_streaming).
-
-    ``dataset_args`` is nanotron's ``AstroPT3StreamingDatasetsArgs`` and
-    ``model_config`` its ``AstroPT3Config`` — both duck-typed so this module
-    never imports nanotron. ``resume_state_dir`` points at a checkpoint's
-    ``dataset_state/`` directory. Loader-format states (written via
-    :func:`loader_state_dict` from a StatefulDataLoader) restore per-worker
-    stream positions and require the same ``num_workers`` as the saving run;
-    legacy dataset-format states require ``num_workers == 0``.
-    """
+    multiprocessing_context: str | None = None,
+) -> Any:
+    """Build the plain DataLoader used by nanotron's astropt3 dataset type."""
     config = hf_config_from_modalities(
         model_config.modalities,
-        getattr(model_config, "tokeniser", "affine"),
-        # getattr with defaults so older fork configs still load
         **{
-            f: getattr(model_config, f, d)
-            for f, d in [
+            field: getattr(model_config, field, default)
+            for field, default in [
                 ("jetformer_flow_steps", 4),
                 ("jetformer_flow_hidden", 128),
                 ("jetformer_gmm_k", 4),
@@ -530,57 +719,18 @@ def build_astropt3_dataloader(
         config,
         micro_batch_size,
         sequence_length,
-        data_root=dataset_args.data_root,
-        match_index=getattr(dataset_args, "match_index", None),
-        synthetic_image_only_fraction=getattr(
-            dataset_args, "synthetic_image_only_fraction", 0.3
-        ),
-        synthetic_spectrum_only_fraction=getattr(
-            dataset_args, "synthetic_spectrum_only_fraction", 0.0
-        ),
         rank=dp_rank,
-        world_size=dp_size,
         seed=seed,
-        object_id_log=getattr(dataset_args, "object_id_log", None),
-        stateful=num_workers == 0,
+        ar_replicas=getattr(dataset_args, "ar_replicas", 1) or 1,
+        replica_placement=getattr(dataset_args, "replica_placement", None)
+        or "decorrelated",
+        crossmatch_desi=getattr(dataset_args, "crossmatch_desi", False),
     )
-    try:
-        from torchdata.stateful_dataloader import StatefulDataLoader as loader_cls
-    except ImportError:
-        if num_workers > 0:
-            # never train unresumable: with workers the stream position lives
-            # in the worker processes and only a StatefulDataLoader can save it
-            raise ImportError(
-                "num_loading_workers > 0 requires torchdata's StatefulDataLoader "
-                "to checkpoint the stream position (`uv pip install torchdata`); "
-                "either install it or set num_loading_workers: 0"
-            )
-        loader_cls = torch.utils.data.DataLoader
-    # persistent_workers deliberately unset: the stream is endless, so the
-    # loader is never re-iterated and the flag only adds state-restore risk
-    loader = loader_cls(
+    loader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=None,  # items are already whole micro-batches
+        batch_size=None,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
+        multiprocessing_context=multiprocessing_context,
     )
-    if resume_state_dir is not None:
-        state_file = Path(resume_state_dir) / STATE_FILE_TEMPLATE.format(rank=dp_rank)
-        if state_file.exists():
-            state = torch.load(state_file, weights_only=True)
-            if isinstance(state, dict) and state.get("format") == LOADER_STATE_FORMAT:
-                if state["num_workers"] != num_workers:
-                    raise ValueError(
-                        f"stream state was saved with num_loading_workers="
-                        f"{state['num_workers']}, this run uses {num_workers}; "
-                        "per-worker stream positions only map onto the same count"
-                    )
-                cast(Any, loader).load_state_dict(state["loader"])
-            else:  # legacy dataset-format state (pre-StatefulDataLoader)
-                if num_workers != 0:
-                    raise ValueError(
-                        "resuming a dataset-format stream state requires "
-                        f"num_loading_workers == 0 (got {num_workers})"
-                    )
-                dataset.load_state_dict(state)
-    return loader
+    return instrument(loader)
