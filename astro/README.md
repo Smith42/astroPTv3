@@ -1,99 +1,75 @@
-# AstroPT3
+# AstroPTv3
 
-SmolLM3-architecture multimodal astronomical foundation models, pretrained
-from scratch on the [Multimodal Universe](https://huggingface.co/collections/UniverseTBD/multimodal-universe-hats)
-with AstroPT-style continuous-token regression (NAIRR260009).
+AstroPTv3 (NAIRR260009) is a from-scratch suite of astronomical foundation
+model configurations spanning 70M–12B parameters. Its Pythia-mirrored sizes
+and checkpoint schedule support a research question: **how does learning from
+continuous sky-survey measurements change as model size and training progress
+increase?** The size ladder is an experimental design, not a claim that every
+size has been trained or evaluated.
 
-- **Architecture**: SmolLM3 decoder body (GQA, NoPE every 4th layer) with a
-  64-id special-token vocabulary; images/spectra enter as affine-projected
-  continuous patch tokens and leave through per-modality regression decoders
-  (Huber next-token loss). See `src/astropt3/modeling_astropt3.py`.
-- **Training** runs on the nanotron fork (git submodule at `../nanotron`);
-  the transformers implementation here is the release/probing artifact and
-  the CPU test target.
-- **Pilot data (ADR 0015, experimental)**: the uncrossmatched
-  `UniverseTBD/mmu_ssl_legacysurvey_north` HATS catalog, streamed through
-  LSDB's `InfiniteStream` — image only, with the image-side catalog scalars.
+## Astronomy pilot
 
-## Setup
+The current pilot draws from two [Multimodal Universe](https://huggingface.co/collections/UniverseTBD/multimodal-universe-hats)
+HATS catalogs:
 
-```bash
-cd astro
-uv sync --extra dev          # CPU-safe: model, packing, tests, lsdb
-uv sync --extra train        # + nanotron/flash-attn (any GPU box, this one included)
-```
+- **LegacySurvey North:** three-band (g/r/z) optical image cutouts, with
+  associated image-side measurements.
+- **DESI EDR SV3:** optical spectra sampled on a wavelength grid, with
+  associated spectroscopic measurements.
 
-## Develop / verify (CPU, no network)
+The live LSDB path can supply image+spectrum matches and spectrum-only
+sources, plus image-only sources recovered from LegacySurvey partitions
+visited by the crossmatch. **This is not a complete pass over all LegacySurvey
+images.** Available modalities vary by source and by model config; the model
+learns from whichever spans a record actually carries. The ingestion design
+is still experimental, so consult the [training guide](docs/training.md) and
+active [run configs](configs/nanotron/) rather than treating any one stream
+implementation as permanent.
 
-```bash
-uv run pytest                          # unit tests (gpu-marked tests excluded)
-uv run python scripts/count_params.py  # size table, ±10% assert
-```
+## From measurements to predictions
 
-The synthetic-dependent `train_smoke` gate is **temporarily gone** under the
-ADR 0015 cutover; this branch is experimental and is not declared complete
-against the old repo contract until an LSDB-backed smoke exists (ADR 0015
-§Interim evidence). Offline decode/sequence/pack fixtures live in
-`tests/legacy_fixture.py`; one bounded `pytest.mark.network` test opens the
-live catalog (`tests/test_lsdb_stream.py`).
+A LegacySurvey image arrives as a 3×152×152 flux cube; the sequencer takes a
+central 96×96 crop, physically normalizes each named band, and forms 144
+8×8×3 patches. DESI spectra are normalized onto an AB-flux scale and form
+31 patches of 256 bins with wavelength positions. There is **no per-patch
+standardization**: the flow-based likelihood needs the record-to-token
+mapping to retain patch information. Optional catalog scalars can become
+one-token spans when included in the config.
 
-Model-size configs live in `configs/model/` (Pythia-mirrored 70M–12B).
-The implementation plan (phases, verification, parallelism recipes) is
-[`PLAN.md`](PLAN.md).
+A small 64-id vocabulary marks modality spans; it is **not** a text
+vocabulary. The SmolLM3 decoder predicts the next continuous patch using a
+per-modality JetFormer flow and Gaussian-mixture likelihood head. Whole
+astronomical sources are packed into training sequences without splitting an
+object. The nanotron fork (`../nanotron`) runs pretraining; the transformers
+implementation in `src/astropt3/` supports checkpoint conversion, generation,
+and probing. See [architecture](docs/architecture.md) for the model contract
+and [the plan](PLAN.md) for the size ladder.
 
-**Docs**: [`docs/architecture.md`](docs/architecture.md) — what the model is
-and why; [`docs/training.md`](docs/training.md) — how to run it.
+## Set up and verify
 
-## Training data (LSDB InfiniteStream, ADR 0015)
-
-The training-record path is:
-
-```
-lsdb.open_catalog("hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north")
-→ lsdb.streams.InfiniteStream(client=None, partitions_per_chunk=1, seed)
-→ decode rows → ObjectSequencer → greedy packing → torch DataLoader → nanotron
-```
-
-- **One catalog, no crossmatch.** Image rows plus the image-side scalars the
-  active registry uses. The full multimodal model shape is retained so later
-  crossmatches don't need an architecture migration.
-- **Concurrency is the DataLoader's.** LSDB runs synchronously with
-  `client=None`; keep `num_loading_workers` at the configured 6–8 per rank.
-  Each consumer derives its stream seed from `(run seed, dp rank, worker id,
-  retry generation)`. Overlap between consumers, repeats, and incomplete
-  coverage are accepted.
-- **No dataset checkpoint state.** Resume restores model/optimizer/scheduler
-  state and starts a fresh stream. There is no cursor and no replay audit.
-- **Failure policy.** Recognized transport/storage errors reopen a fresh
-  stream under bounded exponential backoff; decode/validation and unknown
-  errors fail immediately.
-- **Floating revisions.** LSDB and the catalog float to latest; `uv.lock`
-  records the resolved package graph and runs log the resolved LSDB version.
-  Worker memory is the known risk: `InfiniteStream` can retain ~2 whole
-  pandas partitions, so lower `num_loading_workers` on an observed OOM.
-
-Evaluation (validation loss, probes, sample sweeps) is deferred (ADR 0015
-§Evaluation and generation): `astropt3.eval` keeps only the pure model-side
-functions consuming provided records/objects/batches; the source-driven
-CLIs, `run_probe_sweep.py`, and the eval co-launch hooks are removed.
-
-Image normalization is physical (band-registry-keyed rescale → bright-pixel
-clamp → arcsinh; `data/band_registry.py`), so there is no per-corpus
-calibration step.
-
-## Training (nanotron fork)
+From this directory:
 
 ```bash
-cd .. && CUDA_DEVICE_MAX_CONNECTIONS=1 \
-  torchrun --nproc_per_node=1 nanotron/run_train.py \
-    --config-file astro/configs/nanotron/<config>.yaml
+uv sync --extra dev
+uv run pytest -m 'not gpu and not network'  # offline CPU checks
+uv run python scripts/count_params.py       # nominal-size tolerance
 ```
 
-All run configs use `is_astropt3_streaming: true` — no dataset block knobs
-beyond `ar_replicas`/`replica_placement`. Checkpoints store weights
-(bf16), optimizer + LR-scheduler state, RNG states, and `model_config.json`
-under the Pythia schedule (`checkpoint_schedule.py`); `latest.txt` marks the
-last complete checkpoint.
+Live data checks need Hub access:
 
-GPU-marked tests (any reserved GPU, this box included):
-`pytest -m gpu tests/test_nanotron_gpu.py`.
+```bash
+uv run pytest -m network tests/test_lsdb_stream.py
+```
+
+Training needs nanotron, flash-attn, GPUs, and access to the live catalogs;
+see [training.md](docs/training.md) for the environment, launch, and resume
+instructions. The former synthetic-dependent `train_smoke` gate and
+source-backed evaluation sweep are not currently available under the
+experimental LSDB cutover; do not interpret the checks above as a completed
+training-phase verification. Pure model-side evaluation and sample rendering
+remain in `src/astropt3/eval/` and `scripts/generate.py`.
+
+The [loader experiment log](EXPERIMENTS.md) records measured throughput and
+coverage limits. [ADR 0015](docs/adr/0015-lsdb-infinite-stream-training.md)
+documents the initial LSDB cutover; its original image-only source decision
+is historical, not a description of every subsequent pilot config.

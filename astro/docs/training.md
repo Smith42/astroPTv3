@@ -1,11 +1,11 @@
 # Training AstroPTv3 models with nanotron
 
-*The operational guide: environments, data, launching, checkpoint/resume.
-Background on the model is in [`architecture.md`](architecture.md). The
-current record-source decision is
-[`adr/0015-lsdb-infinite-stream-training.md`](adr/0015-lsdb-infinite-stream-training.md)
-— **experimental/incomplete**: the old contract's `train_smoke` gate is
-absent on this branch.*
+*The operational guide: environments, live survey data, launching, and
+checkpoint/resume. Background on the model is in
+[`architecture.md`](architecture.md). The initial experimental LSDB cutover
+is recorded in [ADR 0015](adr/0015-lsdb-infinite-stream-training.md);
+subsequent run configs can also use DESI×LegacySurvey crossmatching. The old
+contract's `train_smoke` gate remains absent on this branch.*
 
 ## 1. Environments
 
@@ -26,69 +26,56 @@ uv pip install torch==2.8.0 \
 
 Verify the env on a GPU box: `pytest -m gpu tests/test_nanotron_gpu.py`.
 
-## 2. Data (LSDB InfiniteStream — ADR 0015)
+## 2. Live pilot data
 
-There is **no prep step** and no local corpus. Each DataLoader worker opens
-
-```
-lsdb.open_catalog("hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north", columns=<active registry projection>)
-→ lsdb.streams.InfiniteStream(client=None, partitions_per_chunk=1, seed)
-```
-
-decodes rows, sequences/packs them, and feeds nanotron through a plain
-`DataLoader(batch_size=None)`.
+There is **no prep step** and no local corpus. `data/nanotron_loader.py` opens
+Multimodal Universe HATS catalogs via LSDB inside each DataLoader worker,
+decodes rows into the shared record shape, then sequences and packs them for
+nanotron. Image-only configs read LegacySurvey North; crossmatch-enabled
+configs also include DESI EDR SV3 spectra. Depending on survey overlap,
+records can carry an image, a spectrum, or both. Recovered image-only rows
+come from LegacySurvey partitions visited by the join, **not** from every
+LegacySurvey partition. The active YAML and loader are the sources for the
+stream implementation; its fetch and prefetch settings are experimental.
 
 Facts to know:
 
-- **Network is a hard dependency.** Hub downtime stalls training with no
-  local fallback.
-- **Image only, uncrossmatched.** Records carry the image cube and the
-  catalog's image-side scalars (`ebv`, `flux_g/r/z`, optionally fiber/psf
-  fields when active). The multimodal model shape is retained so future
-  crossmatches don't need an architecture migration; spectra stay allocated
-  but untrained (rates, losses read as `spectra: 0.0`).
-- **Concurrency is the DataLoader's.** LSDB runs synchronously
-  (`client=None`) — do not create a Dask client. `num_loading_workers` is
-  6–8 per rank. Seeds are `(run seed, dp rank, worker id, retry generation)`.
-- **No cursors, no coverage guarantee.** Overlap between consumers,
-  repeated records, and revisits after retries/resumes are accepted.
-- **Memory risk.** `InfiniteStream` can hold ~2 whole pandas partitions
-  (~1.5 GiB) per worker. If RSS overflows, lower `num_loading_workers` —
-  this is runbook, not a preflight gate.
-- **Floating revisions.** LSDB and the catalog float; `uv.lock` records
-  what's installed in a checkout, and `[data]` startup lines log the
-  resolved LSDB version per worker.
+- **Network is a hard dependency.** The Hub must remain accessible; there is
+  no local training-corpus fallback.
+- **Workers and memory.** `num_loading_workers` controls concurrent readers
+  per DP rank; each may buffer large image partitions. Monitor box-wide RSS
+  and lower the worker count after an observed OOM.
+- **No cursors or coverage guarantee.** Consumer seeds reduce identical
+  draws, but consumers may overlap; retries and resumes can revisit records.
+- **Provenance.** `uv.lock` records the resolved LSDB dependency, and `[data]`
+  startup lines log its version and catalog information when available.
 
-Streaming specifics:
-
-- **Resume is fresh.** Checkpoints restore weights/optimizer/scheduler/RNG;
-  the record stream is cursorless and restarts on resume. Old checkpoint
-  `dataset_state/` files are ignored.
-- **Transient failures rebuild.** Recognized transport/storage errors
-  (HTTP, OS, the hub's closed-client RuntimeError) discard the iterator and
-  reopen with bounded exponential backoff (60 retries, ≤120 s cap,
-  `gc.collect()` before reopening). Decode/validation/unknown errors fail
-  immediately.
+On resume, checkpoints restore weights/optimizer/scheduler/RNG, **not** the
+LSDB record position. Recognized transport/storage errors discard the failed
+iterator and reopen under bounded backoff; decode/validation and unknown
+errors fail immediately.
 
 ## 3. Configs
 
-Full nanotron run configs live in `astro/configs/nanotron/`. The dataset
-block is minimal:
+Full nanotron run configs live in `astro/configs/nanotron/`. For the imaging
++ spectra pilot, the dataset block includes:
 
 ```yaml
 data_stages:
 - data:
     dataset:
-      is_astropt3_streaming: true   # the only source (ADR 0015)
+      is_astropt3_streaming: true
+      crossmatch_desi: true         # include DESI spectra where present
       # ar_replicas: 1              # optional: distinct AR factorisations
       # replica_placement: decorrelated
     num_loading_workers: 8          # concurrent LSDB readers per DP rank
     seed: 42
 ```
 
-Everything else — catalog, columns, stream policy — is fixed in
-`astropt3.data.nanotron_loader`. The old knobs (`data_root`,
-`match_index`, synthetic fractions, `object_id_log`) are gone.
+The catalog projections and stream policy live in
+`astropt3.data.nanotron_loader`. Without `crossmatch_desi: true`, the source
+is LegacySurvey-only. The retired knobs (`data_root`, `match_index`,
+synthetic fractions, `object_id_log`) are not supported.
 
 Governing knobs, top to bottom:
 
@@ -114,9 +101,8 @@ checkpoints:
   resume_checkpoint_path: null # set to the checkpoints dir to resume
 ```
 
-Per-size recipes are unchanged (the PLAN table in
-[`docs/adr/0014-byte-efficiency-and-mfu-programme.md`](adr/0014-byte-efficiency-and-mfu-programme.md)
-and `architecture.md`).
+Use the actual run YAML for batch sizes and parallelism; the historical
+recipe and size-ladder rationale live in [`../PLAN.md`](../PLAN.md).
 
 ## 4. Launching
 
@@ -139,11 +125,9 @@ The launcher sources `$ASTROPT3_ENV` (default `../astroPTv3_gpuenv`) and
 rendezvous on the first node. **Always dry-run first**, checking
 tokens/s/GPU, MFU, and memory, before committing a real run.
 
-**Notes after the ADR 0015 cutover:**
-
-- `HF_DATASETS_OFFLINE=1` must NOT be set — the stream needs the hub.
-- The eval sidecar (`run_probe_sweep.py`) and the `EVAL_GPU` co-launch hook
-  are removed; §Evaluation is deferred to a future LSDB-backed seam.
+Do not set `HF_DATASETS_OFFLINE=1` — training streams from the Hub. The
+source-backed evaluation sidecar (`run_probe_sweep.py`) and `EVAL_GPU`
+co-launch hook are removed; §6 describes the remaining model-side tools.
 
 ## 5. Checkpoints and resume
 
@@ -163,24 +147,27 @@ LSDB stream is cursorless: resume opens a fresh stream and records may be
 revisited immediately. There is no exact-sequence continuation, no replay
 audit, and no worker-count constraint on resume.
 
-Watch the logs: `lm_loss`, per-modality `images_loss` (spectra_loss stays
-untrained), `tokens_per_sec_per_gpu`, `model_tflops_per_gpu`, memory lines.
+Watch the logs: `lm_loss`, per-modality `images_loss` and (when DESI is
+included) `spectra_loss`, `tokens_per_sec_per_gpu`, `model_tflops_per_gpu`,
+and memory lines. Exact-likelihood losses can be negative.
 
 ## 6. Evaluation status
 
-Deferred. `astropt3.eval` keeps pure model-side functions — `evaluate`
-(mean loss over provided batches), `embed_objects` + `ridge_r2` (linear
-probe on objects you supply), `scalar_head_metrics`, sampling/rendering —
-that callers drive with their own records or batches. The source-backed
-CLIs (`val_loss`, `linear_probe`, `scalar_head` mains, run_probe_sweep,
-generate) and their GPU sweep tests are removed until an LSDB-backed
-evaluation seam is designed.
+Source-backed validation/probe checkpoint sweeps are deferred.
+`astropt3.eval` keeps model-side functions — `evaluate` (loss on provided
+batches), `embed_objects` + `ridge_r2` (probe on supplied objects),
+`scalar_head_metrics`, and sampling/rendering. `scripts/generate.py` remains
+a separate live-sample CLI; it is **not** a fixed validation suite or an
+automated checkpoint sweep.
 
 ## 7. Verification gates
 
-1. `uv run pytest` (CPU suite) green in `astro/`.
-2. `uv run python scripts/count_params.py` green.
-3. The synthetic-dependent `train_smoke` gate is suspended (see top note).
+1. `uv run pytest -m 'not gpu and not network'` for offline CPU checks in
+   `astro/`. Plain `uv run pytest` also selects network-marked tests, which
+   may fail when the Hub is unavailable.
+2. `uv run python scripts/count_params.py` for current size totals.
+3. The former synthetic-dependent `train_smoke` gate is suspended; these
+   checks do **not** complete that phase gate.
 
-A bounded live check exists for hub outages:
+For a bounded live check with Hub access:
 `uv run pytest -m network tests/test_lsdb_stream.py`.
