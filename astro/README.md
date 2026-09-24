@@ -1,6 +1,6 @@
 # AstroPTv3
 
-AstroPTv3 (NAIRR260009) is a from-scratch suite of astronomical foundation
+AstroPTv3 is a from-scratch suite of astronomical foundation
 model configurations spanning 70M–12B parameters. Its Pythia-mirrored sizes
 and checkpoint schedule support a research question: **how does learning from
 continuous sky-survey measurements change as model size and training progress

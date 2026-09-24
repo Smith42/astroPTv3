@@ -12,7 +12,7 @@ this document focuses on the survey-to-model contract.
 
 ## What this is
 
-AstroPTv3 (NAIRR260009) is a from-scratch suite of **multimodal astronomical
+AstroPTv3 is a from-scratch suite of **multimodal astronomical
 foundation models** spanning 70M–12B parameters, mirroring the Pythia suite's
 sizes and checkpoint schedule so that scaling behaviour can be studied across
 the whole family. The recipe combines two lineages:

@@ -2,7 +2,7 @@
 
 ## Context
 
-AstroPTv3 (NAIRR260009) trains an open, from-scratch suite of multimodal
+AstroPTv3 trains an open, from-scratch suite of multimodal
 astronomical foundation models (70M–12B, Pythia-mirrored sizes and
 checkpointing) by porting the AstroPT approach — autoregressive next-token
 **regression** over continuous embeddings of images/spectra — onto the SmolLM3
