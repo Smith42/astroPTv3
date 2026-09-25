@@ -25,17 +25,18 @@ Re-run once; steady-state runs are bitwise stable (verified 4/4 on GH200).
 import sys
 import zlib
 from pathlib import Path
+from typing import cast
 
 import torch
 
-import nanotron.models
 from nanotron import distributed as dist
-from nanotron.config import AstroPT3Config
 from nanotron.config import (
+    AstroPT3Config,
     OneForwardOneBackwardPipelineEngine,
     ParallelismArgs,
     TensorParallelLinearMode,
 )
+import nanotron.models
 from nanotron.models.astropt3 import AstroPT3ForTraining
 from nanotron.parallel import ParallelContext
 from nanotron.random import (
@@ -46,7 +47,10 @@ from nanotron.random import (
 from nanotron.trainer import mark_tied_parameters
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from astropt3.data.nanotron_loader import PackedMicroBatches, hf_config_from_modalities  # noqa: E402
+from astropt3.data.nanotron_loader import (  # noqa: E402
+    PackedMicroBatches,
+    hf_config_from_modalities,
+)
 
 MBS = 2
 SEQ_LEN = 896
@@ -136,6 +140,7 @@ def main():
         dtype=torch.bfloat16,
         device=torch.device("cuda"),
     )
+    model = cast(AstroPT3ForTraining, model)
     mark_tied_parameters(model=model, parallel_context=parallel_context)
     deterministic_init(model)
     # frac=0 -> sigma = noise_max: the noise path must stay TP-identical
