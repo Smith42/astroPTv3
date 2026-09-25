@@ -59,7 +59,7 @@ def fake_stream(frames_per_epoch=2, rows_per_frame=4):
 @pytest.fixture
 def fake_lsdb(monkeypatch):
     monkeypatch.setattr(
-        nanotron_loader.lsdb, "open_catalog", lambda *a, **k: _FakeCatalog()
+        nanotron_loader, "open_catalog", lambda *a, **k: _FakeCatalog()
     )
     monkeypatch.setattr(nanotron_loader, "_log_provenance", lambda *a, **k: None)
 
@@ -259,7 +259,7 @@ def test_transient_error_reopens_fresh_stream(tiny_config, monkeypatch):
                 yield nested_frame([legacy_row(i) for i in range(6)], ("image",))
 
     monkeypatch.setattr(
-        nanotron_loader.lsdb, "open_catalog", lambda *a, **k: _FakeCatalog()
+        nanotron_loader, "open_catalog", lambda *a, **k: _FakeCatalog()
     )
     monkeypatch.setattr(nanotron_loader, "_log_provenance", lambda *a, **k: None)
     monkeypatch.setattr(nanotron_loader, "InfiniteStream", FlakyStream)
@@ -271,6 +271,75 @@ def test_transient_error_reopens_fresh_stream(tiny_config, monkeypatch):
     assert len(batches) == 3
     for flat in batches:
         assert flat["input_ids"].shape == (MBS, SEQ_LEN)
+
+
+def test_swallowed_hub_error_reopens_fresh_stream(tiny_config, monkeypatch):
+    """Regression: fsspec's parquet reader stores cat_ranges() results --
+    gathered with return_exceptions=True -- as KnownPartsOfAFile block data
+    without exception checks, so a transient HfHubHTTPError surfaces as
+    ``TypeError: can't concat HfHubHTTPError to bytes`` (killed the v3 run
+    at step 46,767, 2026-09-04). It must retry like any transport blip."""
+    builds = {"n": 0}
+
+    class SwallowedErrorStream:
+        def __init__(self, *a, **k):
+            builds["n"] += 1
+            self.built = builds["n"]
+
+        def __iter__(self):
+            if self.built == 1:
+                yield nested_frame([legacy_row(i) for i in range(6)], ("image",))
+                raise TypeError("can't concat HfHubHTTPError to bytes")
+            while True:
+                yield nested_frame([legacy_row(i) for i in range(6)], ("image",))
+
+    monkeypatch.setattr(
+        nanotron_loader, "open_catalog", lambda *a, **k: _FakeCatalog()
+    )
+    monkeypatch.setattr(nanotron_loader, "_log_provenance", lambda *a, **k: None)
+    monkeypatch.setattr(nanotron_loader, "InfiniteStream", SwallowedErrorStream)
+    monkeypatch.setattr(nanotron_loader.time, "sleep", lambda *_: None)
+
+    stream = PackedMicroBatches(tiny_config, MBS, SEQ_LEN)
+    batches = list(islice(iter(stream), 3))
+    assert builds["n"] >= 2, "no fresh stream was opened after the swallow"
+    assert len(batches) == 3
+
+
+def test_swallowed_hub_error_signature_matches_real_fsspec_message():
+    """Canary: the TypeErrors _retryable matches are the ones fsspec's
+    KnownPartsOfAFile actually raises when a cat_ranges() result is an
+    exception object -- if fsspec rewords them, fail here instead of
+    silently un-matching real hub blips at 3am. Two shapes seen in the
+    wild: block merge (concat) and footer slicing (subscript)."""
+    import httpx
+    from fsspec.caching import KnownPartsOfAFile
+    from huggingface_hub.errors import HfHubHTTPError
+
+    error = HfHubHTTPError(
+        "transient 503",
+        response=httpx.Response(
+            503, request=httpx.Request("GET", "https://hf.co/f.parquet")
+        ),
+    )
+    with pytest.raises(TypeError) as raised:
+        KnownPartsOfAFile(
+            blocksize=4,
+            fetcher=lambda a, b: b"",
+            size=8,
+            data={(0, 4): b"PAR1", (4, 8): error},  # type: ignore[arg-type]  # the bug: an exception stored as block data
+        )
+    assert nanotron_loader._retryable(raised.value)
+    # footer-slicing shape (killed the bench arm at step 302, 2026-09-24)
+    assert nanotron_loader._retryable(
+        TypeError("'HfHubHTTPError' object is not subscriptable")
+    )
+    # ordinary TypeErrors stay fatal -- including subscript errors on
+    # non-exception types
+    assert not nanotron_loader._retryable(TypeError("ordinary"))
+    assert not nanotron_loader._retryable(
+        TypeError("'str' object is not subscriptable")
+    )
 
 
 def test_non_retryable_error_fails_immediately(tiny_config, monkeypatch):
@@ -285,7 +354,7 @@ def test_non_retryable_error_fails_immediately(tiny_config, monkeypatch):
             raise ValueError("decode blew up")
 
     monkeypatch.setattr(
-        nanotron_loader.lsdb, "open_catalog", lambda *a, **k: _FakeCatalog()
+        nanotron_loader, "open_catalog", lambda *a, **k: _FakeCatalog()
     )
     monkeypatch.setattr(nanotron_loader, "_log_provenance", lambda *a, **k: None)
     monkeypatch.setattr(nanotron_loader, "InfiniteStream", BadStream)
@@ -306,7 +375,7 @@ def test_one_span_records_get_no_replica(tiny_config):
     stream = _bipartite_stream(tiny_config)
     record = make_record(2, image_only_fraction=1.0)
     objects = stream._replica_objects(record)
-    assert len(objects) == len(set(id(obj) for obj in objects))
+    assert len(objects) == len({id(obj) for obj in objects})
     assert all(set(obj.order) == set(objects[0].order) for obj in objects)
 
 

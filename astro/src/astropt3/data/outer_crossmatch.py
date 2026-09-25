@@ -34,7 +34,7 @@ import nested_pandas as npd
 from lsdb.core.crossmatch.abstract_crossmatch_algorithm import _na_series_for_dtype
 from lsdb.core.crossmatch.crossmatch_args import CrossmatchArgs
 from lsdb.core.crossmatch.kdtree_match import KdTreeCrossmatch
-from lsdb.dask.merge_catalog_functions import apply_suffixes
+from lsdb.operations.functions.merge_catalog_functions import apply_suffixes
 
 
 class OuterKdTreeCrossmatch(KdTreeCrossmatch):

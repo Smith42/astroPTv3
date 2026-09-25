@@ -62,7 +62,7 @@ def _draw_live_records(config, rows: list[int], stream_seed: int) -> list[dict]:
 
     from astropt3.data.nanotron_loader import (
         DESI_CATALOG,
-        _CROSSMATCH_LEGACY_SUFFIX,
+        _CROSSMATCH_COUNT_FRACTION_THRESHOLD,
         _CROSSMATCH_NESTED,
         _CROSSMATCH_RADIUS_ARCSEC,
         _map_rows_columns,
@@ -70,19 +70,23 @@ def _draw_live_records(config, rows: list[int], stream_seed: int) -> list[dict]:
         decode_crossmatch_row,
     )
     from astropt3.data.outer_crossmatch import OuterKdTreeCrossmatch
+    from lsdb.streams.catalog_streams import CrossMatchStream
 
     legacy_cat = open_catalog(
         LEGACY_CATALOG, columns=_catalog_columns(config, include_position=True)
-    )
+    ).rename_catalog("legacy")  # see nanotron_loader._open_records for why
     desi_cat = open_catalog(DESI_CATALOG, columns=desi_columns)
-    catalog = desi_cat.crossmatch(
-        legacy_cat,
-        algorithm=OuterKdTreeCrossmatch(radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC),
-        how="left",
-        suffixes=("", _CROSSMATCH_LEGACY_SUFFIX),
-        suffix_method="all_columns",
+    stream = CrossMatchStream(
+        desi_cat,
+        {
+            "other": legacy_cat,
+            "algorithm": OuterKdTreeCrossmatch(radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC),
+        },
+        client=None,
+        partitions_per_chunk=1,
+        seed=stream_seed,
+        count_fraction_threshold=_CROSSMATCH_COUNT_FRACTION_THRESHOLD,
     )
-    stream = InfiniteStream(catalog, client=None, partitions_per_chunk=1, seed=stream_seed)
     frame = next(iter(stream))
 
     columns = _map_rows_columns(frame, _CROSSMATCH_NESTED)

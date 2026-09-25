@@ -53,14 +53,18 @@ def test_live_lsdb_stream_decodes_and_selects(tiny_config, tiny_model):
 
 
 def test_live_desi_crossmatch_stream_decodes_and_selects(tiny_config, tiny_model):
-    """ADR 0015 spectra experiment: the real DESI-left ``desi x legacy`` join,
+    """ADR 0015 spectra experiment: the real DESI-left ``desi x legacy`` join
+    via ``lsdb.streams.CrossMatchStream`` (astronomy-commons/lsdb#1584),
     extended by ``OuterKdTreeCrossmatch`` to also recover Legacy rows with no
     DESI match (image-only) from bytes the plain left-join already fetches
-    and discards -- see outer_crossmatch.py."""
+    and discards -- see outer_crossmatch.py. CrossMatchStream additionally
+    skips the Legacy fetch outright for low-density pixels
+    (_CROSSMATCH_COUNT_FRACTION_THRESHOLD); a bounded single-partition draw
+    may or may not hit one, so this isn't separately asserted here."""
     from astropt3.data.nanotron_loader import (
         DESI_CATALOG,
         LEGACY_CATALOG,
-        _CROSSMATCH_LEGACY_SUFFIX,
+        _CROSSMATCH_COUNT_FRACTION_THRESHOLD,
         _CROSSMATCH_NESTED,
         _CROSSMATCH_RADIUS_ARCSEC,
         _catalog_columns,
@@ -73,20 +77,23 @@ def test_live_desi_crossmatch_stream_decodes_and_selects(tiny_config, tiny_model
     from astropt3.data.packing import ObjectSequencer
 
     from lsdb.loaders.hats.read_hats import open_catalog
-    from lsdb.streams.catalog_streams import InfiniteStream
+    from lsdb.streams.catalog_streams import CrossMatchStream
 
     legacy_cat = open_catalog(
         LEGACY_CATALOG, columns=_catalog_columns(tiny_config, include_position=True)
-    )
+    ).rename_catalog("legacy")  # see nanotron_loader._open_records for why
     desi_cat = open_catalog(DESI_CATALOG, columns=_desi_columns(tiny_config))
-    catalog = desi_cat.crossmatch(
-        legacy_cat,
-        algorithm=OuterKdTreeCrossmatch(radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC),
-        how="left",
-        suffixes=("", _CROSSMATCH_LEGACY_SUFFIX),
-        suffix_method="all_columns",
+    stream = CrossMatchStream(
+        desi_cat,
+        {
+            "other": legacy_cat,
+            "algorithm": OuterKdTreeCrossmatch(radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC),
+        },
+        client=None,
+        partitions_per_chunk=1,
+        seed=0,
+        count_fraction_threshold=_CROSSMATCH_COUNT_FRACTION_THRESHOLD,
     )
-    stream = InfiniteStream(catalog, client=None, partitions_per_chunk=1, seed=0)
     frame = next(iter(stream))
     assert len(frame) > 0
 

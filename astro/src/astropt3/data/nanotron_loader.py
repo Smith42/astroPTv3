@@ -1,15 +1,17 @@
 """Adapter from the LSDB LegacySurvey stream to nanotron micro-batches.
 
 Each DataLoader worker opens the fixed catalog and owns one synchronous
-``lsdb.streams.InfiniteStream``. Items yielded by this module are already
-whole micro-batches, flattened because nanotron only moves top-level tensors
-to the device.
+``lsdb.streams.InfiniteStream`` (plain LegacySurvey) or
+``lsdb.streams.CrossMatchStream`` (DESI x LegacySurvey, ``crossmatch_desi``).
+Items yielded by this module are already whole micro-batches, flattened
+because nanotron only moves top-level tensors to the device.
 """
 
 from __future__ import annotations
 
 import gc
 import math
+import re
 import time
 import zlib
 from collections.abc import Mapping
@@ -17,12 +19,12 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 import httpx
-import lsdb
 import numpy as np
 import pandas as pd
 import torch
 from dask.distributed import Client, LocalCluster
-from lsdb.streams.catalog_streams import InfiniteStream
+from lsdb.loaders.hats.read_hats import open_catalog
+from lsdb.streams.catalog_streams import CrossMatchStream, InfiniteStream
 
 from ..configuration_astropt3 import AstroPT3Config
 from .band_registry import _DIV_FACTOR
@@ -40,6 +42,24 @@ _MAX_REPLICA_ATTEMPTS = 32
 # PLAN.md's pilot crossmatch radius (mmu_desi_edr_sv3 x mmu_ssl_legacysurvey_north).
 _CROSSMATCH_RADIUS_ARCSEC = 1.0
 _CROSSMATCH_LEGACY_SUFFIX = "_legacy"
+# CrossMatchStream (lsdb PR astronomy-commons/lsdb#1584, selective-x-match)
+# skips the Legacy crossmatch for a drawn pixel -- no right-partition fetch
+# at all, not even for OuterKdTreeCrossmatch to recover from -- when the
+# skymap-density-estimated match fraction falls below this. Was forced to
+# 0.0 (never skip) 2026-09-03 for a confirmed upstream KeyError bug in
+# _to_delayed (10/336 pixels in our alignment); fixed upstream the same day
+# in commit d7302b548 (_to_delayed now builds from build.keys instead of
+# indexing pixel_to_key_map, and handles the zero-pixel case). 0.1 showed no
+# throughput or composition-mix change vs. no-skip (see wandb run 013174gy
+# vs u1kyayfj); 0.5 was benched 2026-09-24 and REJECTED: it saved 31%
+# Legacy bytes but cost ~20% end-to-end non-pad tokens/s AND dropped image
+# coverage (loss-token share 72% -> 58%) -- the skip removes the image-heavy
+# rows while skipped pixels still pay the per-pixel fixed costs, and the
+# loader is latency-bound, not bandwidth-bound (EXPERIMENTS.md §9). Set to
+# 0.0 on v3 adoption: CrossMatchStream is the pipeline for its multi-
+# catalog capability and upstream alignment; re-enable only after lsdb
+# moves the skip decision off the loader's critical path.
+_CROSSMATCH_COUNT_FRACTION_THRESHOLD = 0.0
 # Partitions fetched per InfiniteStream draw. >1 gives each worker a bigger
 # ready-buffer to drain, widening the wall-clock window during which the
 # background prefetch (see _open_records' dask_client) has a chance to
@@ -235,7 +255,7 @@ def decode_legacy_row(row: Mapping) -> dict:
 
     fwhm = image.get("psf_fwhm")
     if fwhm is not None and len(fwhm) == len(bands):
-        for band, value in zip(bands, fwhm):
+        for band, value in zip(bands, fwhm, strict=True):
             number = _finite_scalar(value)
             if number is not None and 0 < number < 5:
                 record[f"psf_fwhm_{band}"] = number
@@ -330,9 +350,9 @@ def decode_crossmatch_row(row: Mapping) -> dict:
     plain-dict test fixtures are unaffected.
     """
     object_id = row.get("object_id")
-    if pd.isna(object_id):
+    if bool(pd.isna(object_id)):
         object_id = row.get(f"object_id{_CROSSMATCH_LEGACY_SUFFIX}")
-        if pd.isna(object_id):
+        if bool(pd.isna(object_id)):
             raise ValueError("crossmatched row has no object_id or object_id_legacy")
     record: dict = {"object_id": str(object_id)}
 
@@ -377,7 +397,7 @@ def decode_crossmatch_row(row: Mapping) -> dict:
     if fwhm_value is not None:
         bands = record["image"]["band"]
         if len(fwhm_value) == len(bands):
-            for band, value in zip(bands, fwhm_value):
+            for band, value in zip(bands, fwhm_value, strict=True):
                 number = _finite_scalar(value)
                 if number is not None and 0 < number < 5:
                     record[f"psf_fwhm_{band}"] = number
@@ -389,10 +409,33 @@ def consumer_seed(seed: int, rank: int, worker: int, retry_generation: int) -> i
     return zlib.crc32(f"{seed}:{rank}:{worker}:{retry_generation}".encode())
 
 
+_EXCEPTION_AS_DATA_SUBSCRIPT = re.compile(
+    r"'(\w*(Error|Exception))' object is not subscriptable"
+)
+
+
 def _retryable(error: Exception) -> bool:
     if isinstance(error, (httpx.HTTPError, OSError, TimeoutError)):
         return True
-    return isinstance(error, RuntimeError) and "client has been closed" in str(error)
+    if isinstance(error, RuntimeError) and "client has been closed" in str(error):
+        return True
+    # fsspec's parquet reader feeds cat_ranges() results -- gathered with
+    # return_exceptions=True, so transient read errors sit in the list as
+    # objects -- straight into KnownPartsOfAFile block data and footer
+    # handling without exception checks. The swallowed error then surfaces
+    # as a TypeError whose message names the exception class, in one of two
+    # shapes seen in the wild: ``can't concat HfHubHTTPError to bytes``
+    # (block merge) or ``'HfHubHTTPError' object is not subscriptable``
+    # (footer slicing). The original error is unrecoverable (never raised,
+    # only used as data), so match the family and let the bounded retry
+    # loop reopen the stream. (fsspec 2026.4.0; regressions: v3 run died at
+    # step 46,767 2026-09-04; bench arm died at step 302 2026-09-24.)
+    if isinstance(error, TypeError):
+        message = str(error)
+        if "can't concat" in message and "to bytes" in message:
+            return True
+        return bool(_EXCEPTION_AS_DATA_SUBSCRIPT.search(message))
+    return False
 
 
 def _lsdb_version() -> str:
@@ -496,37 +539,59 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
         while True:
             catalog = stream = iterator = None
             try:
-                legacy_catalog = getattr(lsdb, "open_catalog")(
+                legacy_catalog = open_catalog(
                     LEGACY_CATALOG, columns=self.columns
                 )
                 if self.desi_columns is not None:
-                    desi_catalog = getattr(lsdb, "open_catalog")(
+                    catalog = desi_catalog = open_catalog(
                         DESI_CATALOG, columns=self.desi_columns
                     )
-                    catalog = desi_catalog.crossmatch(
-                        legacy_catalog,
-                        algorithm=OuterKdTreeCrossmatch(radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC),
-                        how="left",
-                        suffixes=("", _CROSSMATCH_LEGACY_SUFFIX),
-                        suffix_method="all_columns",
+                    catalog_desc = (
+                        f"{DESI_CATALOG} x {LEGACY_CATALOG} (CrossMatchStream, "
+                        f"count_fraction_threshold={_CROSSMATCH_COUNT_FRACTION_THRESHOLD})"
                     )
-                    catalog_desc = f"{DESI_CATALOG} x {LEGACY_CATALOG}"
                     columns_desc = self.desi_columns + self.columns
+                    _log_provenance(
+                        catalog, columns_desc, self.rank, worker_id, catalog_desc
+                    )
+                    stream = CrossMatchStream(
+                        desi_catalog,
+                        {
+                            # CrossMatchStream derives its column suffix from
+                            # the right catalog's own .name ("_" +
+                            # other.name), not from a suffixes= kwarg (it
+                            # overwrites that unconditionally) -- rename to
+                            # "legacy" so the suffix lands on "_legacy",
+                            # matching _CROSSMATCH_LEGACY_SUFFIX and every
+                            # decode function keyed on it. Metadata-only, no
+                            # data fetch.
+                            "other": legacy_catalog.rename_catalog("legacy"),
+                            "algorithm": OuterKdTreeCrossmatch(
+                                radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC
+                            ),
+                        },
+                        client=dask_client,
+                        partitions_per_chunk=_PARTITIONS_PER_CHUNK,
+                        seed=consumer_seed(
+                            self.seed, self.rank, worker_id, retry_generation
+                        ),
+                        count_fraction_threshold=_CROSSMATCH_COUNT_FRACTION_THRESHOLD,
+                    )
                 else:
                     catalog = legacy_catalog
                     catalog_desc = LEGACY_CATALOG
                     columns_desc = self.columns
-                _log_provenance(
-                    catalog, columns_desc, self.rank, worker_id, catalog_desc
-                )
-                stream = InfiniteStream(
-                    catalog,
-                    client=dask_client,
-                    partitions_per_chunk=_PARTITIONS_PER_CHUNK,
-                    seed=consumer_seed(
-                        self.seed, self.rank, worker_id, retry_generation
-                    ),
-                )
+                    _log_provenance(
+                        catalog, columns_desc, self.rank, worker_id, catalog_desc
+                    )
+                    stream = InfiniteStream(
+                        catalog,
+                        client=dask_client,
+                        partitions_per_chunk=_PARTITIONS_PER_CHUNK,
+                        seed=consumer_seed(
+                            self.seed, self.rank, worker_id, retry_generation
+                        ),
+                    )
                 iterator = iter(stream)
             except Exception as error:
                 if not _retryable(error):
@@ -538,7 +603,8 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                     5 * 2 ** (consecutive_failures - 1), _MAX_NET_RETRY_WAIT
                 )
                 print(
-                    f"[data] {type(error).__name__}: opening a fresh LSDB stream "
+                    f"[data] {type(error).__name__}({str(error)[:200]}): "
+                    f"opening a fresh LSDB stream "
                     f"in {wait}s (retry {consecutive_failures}/{_MAX_NET_RETRIES})",
                     flush=True,
                 )
@@ -567,7 +633,8 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                         5 * 2 ** (consecutive_failures - 1), _MAX_NET_RETRY_WAIT
                     )
                     print(
-                        f"[data] {type(error).__name__}: discarding the LSDB "
+                        f"[data] {type(error).__name__}({str(error)[:200]}): "
+                        f"discarding the LSDB "
                         f"iterator and opening a fresh stream in {wait}s "
                         f"(retry {consecutive_failures}/{_MAX_NET_RETRIES})",
                         flush=True,
@@ -598,7 +665,9 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                 # this ~2.5-4x faster end to end than frame.iterrows() +
                 # decode_row -- see _row_from_map_rows.
                 decoded = frame.map_rows(
-                    lambda mapped: {"record": decode_row(_row_from_map_rows(mapped, nested))},
+                    lambda mapped, decode_row=decode_row, nested=nested: {
+                        "record": decode_row(_row_from_map_rows(mapped, nested))
+                    },
                     columns=_map_rows_columns(frame, nested),
                     infer_nesting=False,
                 )
@@ -681,7 +750,7 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                         f"record {record.get('object_id')!r} cannot be placed "
                         f"into {self.micro_batch_size} rows x {self.seq_len} tokens"
                     )
-            for obj, row_index in zip(objects, placement):
+            for obj, row_index in zip(objects, placement, strict=True):
                 rows[row_index].append(obj)
                 used[row_index] += len(obj)
 

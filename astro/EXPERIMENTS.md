@@ -228,6 +228,61 @@ Consistent within normal run-to-run variance — the section-7 numbers hold.
 here: stall_share 85% → 35%, rows/s ~1,000 → ~2,900 (~2.9x), MFU 2.6% →
 11.6% (~4.5x).**
 
+## 9. v3 adoption bench: CrossMatchStream vs manual crossmatch (2026-09-24)
+
+Setup: paired fresh runs, 2,000 steps/arm, DP=2 per arm on 2×H200 each
+(both arms live simultaneously — shared link by design). Same working tree
+except the stream: the v2 arm ran from a detached worktree of HEAD
+(`../AstroPTv3-v2bench`, same retry fix applied) shadowed via PYTHONPATH,
+because the training venv's editable `astropt3` points at the main tree.
+Steady state = steps 21–2000. The v3 arms are
+`lsdb.streams.CrossMatchStream` (astronomy-commons/lsdb#1584) at two
+`count_fraction_threshold` settings.
+
+| arm | link conditions | non-pad tokens/s | rows/s | img values/s | spec values/s | img token share |
+|---|---|---|---|---|---|---|
+| v2 r1 | paired | 100,644 | 2,498 | 26.6M | 14.0M | 71.7% |
+| v3 thr=0.5 r1 | paired | 77,006 | 2,342 | 16.4M | 15.6M | 58.4% |
+| v2 r2 | ~24% contended | 117,769 | 2,923 | 31.1M | 16.4M | 71.7% |
+| v3 thr=0.0 | solo | 110,584 | 2,715 | 29.5M | 15.1M | 72.2% |
+
+Findings:
+
+1. **Mechanism tax ≥ 6% (floor; contention-corrected ~10%).** Even with
+   the skip off, CrossMatchStream is slower than streaming a pre-
+   crossmatched catalog: every drawn pixel pays `PixelSearch` + a fresh
+   crossmatch graph build + the density estimate synchronously on the
+   loader's critical path, where v2 builds the crossmatch graph once. The
+   record mix is identical (72.2% vs 71.7% image share; per-modality value
+   rates track) — pure overhead, semantics verified including
+   OuterKdTreeCrossmatch's unmatched-right recovery.
+2. **The skip at 0.5 is strictly harmful here.** Legacy bytes −31%, but
+   tokens/s −~20% more and image share 72% → 58%: the loader is
+   latency-bound, not bandwidth-bound, skipped pixels still pay the
+   per-pixel fixed costs, and the skip discards the image-heavy rows.
+   (0.1 previously showed no effect either direction.) Threshold set to
+   0.0 on adoption.
+3. **Repeatability**: v2-r2 rows/s 2,923 ≈ §8's solo 2,881–2,997.
+   Pairing costs ~15% (v2 paired 100.6k vs r2 117.8k tokens/s).
+
+**Decision:** adopt v3 at thr=0.0 — for the multi-catalog capability and
+ADR 0015 upstream alignment — accepting the measured tax at 70M scale,
+where 0.36s steps leave the GPU maximally exposed to loader latency; at
+larger model sizes step time grows and the tax should shrink. Two asks
+filed upstream on #1584: precompute/reuse per-pixel crossmatch graphs, and
+move the skip decision off the critical path (which would make the skip a
+pure win whenever bytes bind).
+
+Reliability note from the same bench: a transient `HfHubHTTPError` can be
+swallowed by fsspec's parquet reader (cat_ranges results are gathered with
+`return_exceptions=True` but consumed without exception checks) and
+surfaces as `TypeError: can't concat X to bytes` (block merge) or
+`'X' object is not subscriptable` (footer slicing). The first killed the
+original v3 run at step 46,767; the second killed a bench arm at step 302.
+`_retryable` now classifies the whole family; regression tests cover both
+shapes plus a live-fsspec message canary. Upstream issue drafted against
+fsspec (root fix: check `is_exception` in `_transfer_ranges`).
+
 ## Open items / not pursued
 
 - **`chunk=2`**: not tested after the section-7 re-tune; the win at 4 was

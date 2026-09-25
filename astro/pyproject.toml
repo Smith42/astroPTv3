@@ -36,6 +36,15 @@ dev = [
 
 [tool.uv.sources]
 nanotron = { path = "../nanotron", editable = true }
+# Tracks lsdb PR astronomy-commons/lsdb#1584 ("Filtering cross-match
+# stream", draft, unmerged as of 2026-09-03), branch selective-x-match,
+# which adds streams.CrossMatchStream: an InfiniteStream/CatalogStream
+# subclass that does the left-join crossmatch(es) per drawn partition,
+# optionally skipping a right catalog for a pixel via precomputed skymap
+# count fractions. Tracking the branch (not a pinned commit) is
+# deliberate while the PR is WIP -- re-run `uv lock -P lsdb` to pick up
+# upstream fixes; re-pin to a release once it merges and ships.
+lsdb = { git = "https://github.com/astronomy-commons/lsdb", branch = "selective-x-match" }
 
 [build-system]
 requires = ["hatchling"]
