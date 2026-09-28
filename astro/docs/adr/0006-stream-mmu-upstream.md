@@ -2,13 +2,16 @@
 
 - **Status:** **Closed** (accepted 2026-07-17, implemented and closed
   2026-08-04). The decision — stream MMU's own catalogs at train time instead
-  of pre-resharding them locally — stands and is in production. Two revisions
-  reshaped *what* is streamed without reopening that choice:
+  of pre-resharding them locally — stood and was in production through two
+  revisions that reshaped *what* is streamed without reopening that choice:
   [ADR 0011](0011-skim-crossmatch-scans.md) (row-group streaming, a
   precomputed ids-only cell-keyed match index, the crossmatch-scan demux)
   and its 2026-08-04 amendment (**crossmatch-only**: the match index defines
-  the corpus, one scan, no weights). Remaining open items are listed at the
-  bottom with owners; none of them block this ADR.
+  the corpus, one scan, no weights). **Retired 2026-09-01:**
+  [ADR 0015](0015-lsdb-infinite-stream-training.md) deletes `streaming.py`
+  and the whole match-index mechanism in favor of `lsdb.streams.InfiniteStream`
+  over a single uncrossmatched catalog; this ADR is now the historical record
+  of the streaming decision it made, not a description of current code.
 - **Date:** 2026-07-17
 - **References:**
   - `astro/PLAN.md` "Data pipeline" — the local-shard + `HF_DATASETS_OFFLINE=1`
@@ -335,7 +338,7 @@ schema and three-place dataset-onboarding this ADR removes.
 - **Aggregate throughput at realistic worker counts** is unmeasured; the spike
   extrapolated from one worker on a network-bound stage. Measure before
   trusting any figure above ~40 workers.
-- ~~**Match-index build**~~ — **built** (`scripts/build_match_index.py`), schema
+- ~~**Match-index build**~~ — **built** (`mmu_stream.build_match_index`), schema
   `(image_partition, image_id, spectrum_partition, spectrum_id)` where the
   partition columns are HEALPix `(order, pixel)` cells, so the artifact
   survives MMU adding or dropping partitions. Partition-locality **confirmed**: every image partition in
@@ -376,7 +379,7 @@ changed once the code met the real API; the rest landed as written.
 **Superseded by the Performance revision:** the first implementation used
 lsdb's `CatalogStream` at train time and buffered whole partitions. Both are
 gone — train-time streaming is `pyarrow` + `hats` over row groups, and lsdb
-runs only in `scripts/build_match_index.py`. Notes 1-3 below still hold.
+runs only in `mmu_stream.build_match_index`. Notes 1-3 below still hold.
 
 1. **Weights apply per record, not per partition draw** (§2). Partitions hold
    wildly unequal row counts — measured on the real catalogs: ~5100 rows in a
@@ -449,7 +452,8 @@ Still open (do not block this ADR):
   single-source corpus, but the mechanism returns with the second survey.
 
 Out of scope, deferred to the corpus-expansion work (`mmu-corpus-expansion`
-branch, `docs/mmu_crossmatch_research.md`): Legacy South DR10 × DESI,
+branch; see [ADR 0013](0013-legacy-centred-mmu-expansion.md), and
+`docs/mmu_crossmatch_research.md` (deleted 2026-08-06; in git history)): Legacy South DR10 × DESI,
 HSC PDR3 × SDSS, Gaia DR3 × APOGEE, and JWST. Each needs its own gate — a
 band registry that is source-aware, an SDSS spectrum normalizer, epoch
 propagation for the stellar branch — and none of them is implemented here.

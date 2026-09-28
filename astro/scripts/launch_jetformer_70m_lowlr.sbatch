@@ -37,6 +37,7 @@ source .venv-train/bin/activate
 export CUDA_DEVICE_MAX_CONNECTIONS=1   # required by nanotron's comm overlap
 export HF_DATASETS_OFFLINE=1           # data is local parquet
 export WANDB_MODE=${WANDB_MODE:-online}
+export ASTROPT3_TELEMETRY_DIR=${ASTROPT3_TELEMETRY_DIR:-../astroPTv3_telemetry/${SLURM_JOB_ID:-$$}}
 
 echo "config=$CONFIG gpus=$(nvidia-smi -L | wc -l) run=astropt3-70m-jetformer-lowlr"
 

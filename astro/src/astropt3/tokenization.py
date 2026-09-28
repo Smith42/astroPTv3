@@ -1,17 +1,20 @@
 """Special-token vocabulary and patchification.
 
-The special-token map is FROZEN: released checkpoints depend on these ids.
-64 ids are reserved so that adding modalities never resizes the embedding.
+Existing special-token ids are FROZEN: released checkpoints depend on them.
 Layout: 0 <|pad|>, 1 <|bos|>, then 3 consecutive ids per modality in the
-order the modalities were ADDED (never reordered): <|begin_m|>, <|m|>
-(placeholder), <|end_m|>. ids 8-16 are spent on the ADR 0008 scalar
-modalities; ids 17-63 remain reserved for future modalities.
+order modalities are added: <|begin_m|>, <|m|> (placeholder), <|end_m|>.
+ADR 0013 allocates complete unused blocks in ids 17-63 first, then appends
+blocks above 63 and requires the config to carry the enlarged vocabulary.
 
 Patchification is pinned to the verified MMU schemas:
 - images:  float32 (3, 152, 152) cubes, center-cropped to 96x96 by the
   sequencer -> patch 8 -> 144 tokens of 192 floats
 - spectra: float32 (7781,) flux -> pad to 7936 -> 31 patches of 256 floats
 """
+
+from __future__ import annotations
+
+import math
 
 import einops
 import numpy as np
@@ -22,7 +25,7 @@ VOCAB_SIZE = 64
 PAD_ID = 0
 BOS_ID = 1
 
-# Frozen id assignment. Extend by appending modalities; never reorder.
+# Frozen legacy assignment. New configs carry their complete token blocks.
 _MODALITY_ID_BLOCKS = {
     "images": 2,  # begin=2, placeholder=3, end=4
     "spectra": 5,  # begin=5, placeholder=6, end=7
@@ -33,19 +36,107 @@ _MODALITY_ID_BLOCKS = {
 }
 
 
+def assign_modality_token_ids(modalities: list[dict]) -> list[dict]:
+    """Return config dicts with stable, non-overlapping three-id blocks.
+
+    Declaration order is addition order. Legacy ids are always reserved;
+    unassigned modalities consume bases 17, 20, ..., 59, then 64, 67, ... .
+    """
+    if not modalities:
+        raise ValueError("at least one modality is required")
+    names = [str(modality.get("name")) for modality in modalities]
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate modality names: {names}")
+
+    used = {PAD_ID, BOS_ID}
+    used.update(
+        token_id
+        for base in _MODALITY_ID_BLOCKS.values()
+        for token_id in range(base, base + 3)
+    )
+    assigned = set()
+    out = []
+    next_reserved, next_appended = 17, VOCAB_SIZE
+    for raw in modalities:
+        modality = dict(raw)
+        name = str(modality["name"])
+        raw_ids = modality.get("token_ids")
+        if raw_ids is None and name in _MODALITY_ID_BLOCKS:
+            base = _MODALITY_ID_BLOCKS[name]
+            token_ids = (base, base + 1, base + 2)
+        elif raw_ids is None:
+            while next_reserved <= 59 and any(
+                token_id in used for token_id in range(next_reserved, next_reserved + 3)
+            ):
+                next_reserved += 3
+            if next_reserved <= 59:
+                base = next_reserved
+                next_reserved += 3
+            else:
+                while any(
+                    token_id in used
+                    for token_id in range(next_appended, next_appended + 3)
+                ):
+                    next_appended += 3
+                base = next_appended
+                next_appended += 3
+            token_ids = (base, base + 1, base + 2)
+        else:
+            try:
+                token_ids = tuple(int(token_id) for token_id in raw_ids)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"modality {name!r} has invalid token_ids") from error
+            if len(token_ids) != 3 or token_ids != tuple(
+                range(token_ids[0], token_ids[0] + 3)
+            ):
+                raise ValueError(
+                    f"modality {name!r} token_ids must be three consecutive ids"
+                )
+        overlap = used.intersection(token_ids)
+        legacy_ids = name in _MODALITY_ID_BLOCKS and token_ids == tuple(
+            range(_MODALITY_ID_BLOCKS[name], _MODALITY_ID_BLOCKS[name] + 3)
+        )
+        assigned_overlap = assigned.intersection(token_ids)
+        if assigned_overlap or (overlap and not legacy_ids):
+            raise ValueError(
+                f"modality {name!r} token_ids collide at "
+                f"{sorted(assigned_overlap or overlap)}"
+            )
+        assigned.update(token_ids)
+        used.update(token_ids)
+        modality["token_ids"] = list(token_ids)
+        out.append(modality)
+    return out
+
+
+def required_vocab_size(modalities: list[dict]) -> int:
+    """Embedding rows required by an explicitly tokenized modality config."""
+    return max(
+        VOCAB_SIZE, 1 + max(max(modality["token_ids"]) for modality in modalities)
+    )
+
+
 def modality_token_ids(name: str) -> tuple[int, int, int]:
-    """Return (begin_id, placeholder_id, end_id) for a modality."""
+    """Return the frozen block for a legacy modality."""
     base = _MODALITY_ID_BLOCKS[name]
     return base, base + 1, base + 2
 
 
-def special_token_map() -> dict[str, int]:
-    """Human-readable token -> id map (for docs and released tokenizer config)."""
+def special_token_map(modalities: list[dict] | None = None) -> dict[str, int]:
+    """Human-readable token map for legacy or config-carried modalities."""
     tokens = {"<|pad|>": PAD_ID, "<|bos|>": BOS_ID}
-    for name, base in _MODALITY_ID_BLOCKS.items():
-        tokens[f"<|begin_{name}|>"] = base
-        tokens[f"<|{name}|>"] = base + 1
-        tokens[f"<|end_{name}|>"] = base + 2
+    blocks = (
+        {name: (base, base + 1, base + 2) for name, base in _MODALITY_ID_BLOCKS.items()}
+        if modalities is None
+        else {
+            str(modality["name"]): tuple(modality["token_ids"])
+            for modality in modalities
+        }
+    )
+    for name, (begin, placeholder, end) in blocks.items():
+        tokens[f"<|begin_{name}|>"] = begin
+        tokens[f"<|{name}|>"] = placeholder
+        tokens[f"<|end_{name}|>"] = end
     return tokens
 
 
@@ -53,13 +144,17 @@ def patchify_image(flux: torch.Tensor, patch_size: int) -> torch.Tensor:
     """(c, h, w) image cube -> (n_patches, patch_size*patch_size*c) tokens."""
     c, h, w = flux.shape
     if h % patch_size or w % patch_size:
-        raise ValueError(f"image size {(h, w)} not divisible by patch size {patch_size}")
+        raise ValueError(
+            f"image size {(h, w)} not divisible by patch size {patch_size}"
+        )
     return einops.rearrange(
         flux, "c (h p1) (w p2) -> (h w) (p1 p2 c)", p1=patch_size, p2=patch_size
     )
 
 
-def unpatchify_image(patches: torch.Tensor, patch_size: int, channels: int, side: int) -> torch.Tensor:
+def unpatchify_image(
+    patches: torch.Tensor, patch_size: int, channels: int, side: int
+) -> torch.Tensor:
     """Inverse of :func:`patchify_image`."""
     n_side = side // patch_size
     return einops.rearrange(
@@ -109,18 +204,21 @@ def spiral_index(n: int) -> np.ndarray:
     """Spiral index array of side length n (astroPT local_datasets._spiral)."""
     a = np.arange(n * n)
     b = a.reshape((n, n))
-    m = None
-    for i in range(n, 0, -2):
-        m = np.r_[m, b[0, :], b[1:, -1], b[-1, :-1][::-1], b[1:-1, 0][::-1]]
+    indices = []
+    for _ in range(n, 0, -2):
+        indices.extend(b[0, :])
+        indices.extend(b[1:, -1])
+        indices.extend(b[-1, :-1][::-1])
+        indices.extend(b[1:-1, 0][::-1])
         b = b[1:-1, 1:-1]
-    a[list(m[1:])] = list(a)
+    a[indices] = a.copy()
     a = abs(a - n * n + 1)
     return a.reshape((n, n))
 
 
 def spiralise(patches: torch.Tensor) -> torch.Tensor:
     """Reorder raster-order ViT patches into spiral order (astroPT Fig. 8)."""
-    n = int(np.sqrt(len(patches)))
+    n = math.isqrt(len(patches))
     assert n * n == len(patches), "spiralise needs a square-rootable patch count"
     indices = spiral_index(n).reshape(-1)
     out = torch.empty_like(patches)
@@ -130,7 +228,7 @@ def spiralise(patches: torch.Tensor) -> torch.Tensor:
 
 def antispiralise(patches: torch.Tensor) -> torch.Tensor:
     """Inverse of :func:`spiralise`."""
-    n = int(np.sqrt(len(patches)))
+    n = math.isqrt(len(patches))
     assert n * n == len(patches), "antispiralise needs a square-rootable patch count"
     indices = spiral_index(n).reshape(-1)
     return patches[indices]

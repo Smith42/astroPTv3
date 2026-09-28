@@ -1,5 +1,7 @@
+import pytest
 import torch
 
+from astropt3 import AstroPT3Config
 from astropt3.tokenization import (
     BOS_ID,
     PAD_ID,
@@ -17,20 +19,70 @@ from astropt3.tokenization import (
 
 def test_special_token_ids_frozen():
     assert PAD_ID == 0 and BOS_ID == 1
-    assert modality_token_ids("images") == (2, 3, 4)
-    assert modality_token_ids("spectra") == (5, 6, 7)
-    # ADR 0008 scalar modalities spend ids 8-16
-    assert modality_token_ids("Z") == (8, 9, 10)
-    assert modality_token_ids("ebv") == (11, 12, 13)
-    assert modality_token_ids("photometry") == (14, 15, 16)
+    expected_blocks = {
+        "images": (2, 3, 4),
+        "spectra": (5, 6, 7),
+        "Z": (8, 9, 10),
+        "ebv": (11, 12, 13),
+        "photometry": (14, 15, 16),
+    }
+    assert {
+        name: modality_token_ids(name) for name in expected_blocks
+    } == expected_blocks
     ids = set(special_token_map().values())
     assert len(ids) == 17 and max(ids) < VOCAB_SIZE
+    config = AstroPT3Config()
+    assert config.loss_aggregation == "legacy_modality_mean"
+    assert all(
+        {"family", "source", "record_keys", "token_ids"} <= set(modality)
+        for modality in config.modalities
+    )
+    assert special_token_map(config.modalities) == special_token_map()
+
+
+def test_new_token_blocks_fill_reservation_then_enlarge_vocab():
+    modalities = AstroPT3Config().modalities + [
+        {
+            "name": f"extra_{index}",
+            "input_size": 1,
+            "patch_size": 1,
+            "family": "scalar",
+            "source": "test",
+            "record_keys": [f"extra_{index}"],
+        }
+        for index in range(16)
+    ]
+    config = AstroPT3Config(modalities=modalities)
+    by_name = {modality["name"]: modality for modality in config.modalities}
+    assert by_name["extra_0"]["token_ids"] == [17, 18, 19]
+    assert by_name["extra_14"]["token_ids"] == [59, 60, 61]
+    assert by_name["extra_15"]["token_ids"] == [64, 65, 66]
+    assert config.vocab_size == 67
+    with pytest.raises(ValueError, match="vocab_size=64"):
+        AstroPT3Config(modalities=modalities, vocab_size=64)
+
+
+def test_new_token_block_collision_raises():
+    modalities = AstroPT3Config().modalities + [
+        {
+            "name": "bad",
+            "input_size": 1,
+            "patch_size": 1,
+            "family": "scalar",
+            "source": "test",
+            "record_keys": ["bad"],
+            "token_ids": [2, 3, 4],
+        }
+    ]
+    with pytest.raises(ValueError, match="collide"):
+        AstroPT3Config(modalities=modalities)
 
 
 def test_image_patchify_roundtrip():
     flux = torch.randn(3, 152, 152)
     patches = patchify_image(flux, patch_size=8)
-    assert patches.shape == (361, 192)
+    expected_shape = (361, 192)
+    assert patches.shape == expected_shape
     back = unpatchify_image(patches, patch_size=8, channels=3, side=152)
     assert torch.equal(back, flux)
 
@@ -39,8 +91,10 @@ def test_spectrum_patchify_roundtrip():
     flux = torch.randn(7781)
     lam = torch.linspace(3600.0, 9824.0, 7781)
     patches, lam_mean = patchify_spectrum(flux, lam, patch_size=256)
-    assert patches.shape == (31, 256)
-    assert lam_mean.shape == (31,)
+    expected_patch_shape = (31, 256)
+    expected_position_shape = (31,)
+    assert patches.shape == expected_patch_shape
+    assert lam_mean.shape == expected_position_shape
     back = unpatchify_spectrum(patches, length=7781)
     assert torch.equal(back, flux)
 

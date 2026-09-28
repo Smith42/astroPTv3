@@ -20,34 +20,42 @@ kernel autotune can pick different kernels per rank before the cache warms.
 Re-run once; steady-state runs are bitwise stable (verified 4/4 on GH200).
 """
 
-import argparse
+# Pyright runs in the CPU dev venv; these imports exist in the GPU Nanotron venv.
+# pyright: reportMissingImports=false
 import sys
 import zlib
 from pathlib import Path
+from typing import cast
 
 import torch
 
-import nanotron.models
 from nanotron import distributed as dist
-from nanotron.config import AstroPT3Config
 from nanotron.config import (
+    AstroPT3Config,
     OneForwardOneBackwardPipelineEngine,
     ParallelismArgs,
     TensorParallelLinearMode,
 )
+import nanotron.models
 from nanotron.models.astropt3 import AstroPT3ForTraining
 from nanotron.parallel import ParallelContext
-from nanotron.random import RandomStates, get_current_random_state, get_synced_random_state
+from nanotron.random import (
+    RandomStates,
+    get_current_random_state,
+    get_synced_random_state,
+)
 from nanotron.trainer import mark_tied_parameters
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from astropt3.data.nanotron_loader import PackedMicroBatches, hf_config_from_modalities  # noqa: E402
+from astropt3.data.nanotron_loader import (  # noqa: E402
+    PackedMicroBatches,
+    hf_config_from_modalities,
+)
 
 MBS = 2
 SEQ_LEN = 896
 
 # nanotron parameter prefixes of the TP-replicated modality modules
-# (flows only exist under tokeniser: jetformer)
 REPLICATED_PREFIXES = (
     "model.token_position_embeddings.pp_block.encoders.",
     "model.token_position_embeddings.pp_block.pos_embeds.",
@@ -77,11 +85,7 @@ def gather_across_tp(tensor: torch.Tensor, tp_pg) -> list:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--tokeniser", default="affine", choices=["affine", "jetformer"])
-    args = parser.parse_args()
     config = AstroPT3Config(
-        tokeniser=args.tokeniser,
         hidden_size=64,
         num_hidden_layers=4,
         num_attention_heads=4,
@@ -110,14 +114,20 @@ def main():
         tp_mode=TensorParallelLinearMode.ALL_REDUCE,
         tp_linear_async_communication=False,
     )
-    parallel_context = ParallelContext(data_parallel_size=1, pipeline_parallel_size=1, tensor_parallel_size=2)
+    parallel_context = ParallelContext(
+        data_parallel_size=1, pipeline_parallel_size=1, tensor_parallel_size=2
+    )
     tp_pg = parallel_context.tp_pg
     tp_rank = dist.get_rank(tp_pg)
 
     # jetformer draws curriculum noise under the trainer's tp_synced random
     # state — build one here so the check exercises that path
     random_states = RandomStates(
-        {"tp_synced": get_synced_random_state(random_state=get_current_random_state(), pg=tp_pg)}
+        {
+            "tp_synced": get_synced_random_state(
+                random_state=get_current_random_state(), pg=tp_pg
+            )
+        }
     )
     model = nanotron.models.build_model(
         model_builder=lambda: AstroPT3ForTraining(
@@ -130,16 +140,20 @@ def main():
         dtype=torch.bfloat16,
         device=torch.device("cuda"),
     )
+    model = cast(AstroPT3ForTraining, model)
     mark_tied_parameters(model=model, parallel_context=parallel_context)
     deterministic_init(model)
-    if args.tokeniser == "jetformer":
-        # frac=0 -> sigma = noise_max: the noise path must stay TP-identical
-        model.set_jet_noise_frac(0.0)
+    # frac=0 -> sigma = noise_max: the noise path must stay TP-identical
+    model.set_jet_noise_frac(0.0)
 
     replicated = {
-        name: param for name, param in model.named_parameters() if name.startswith(REPLICATED_PREFIXES)
+        name: param
+        for name, param in model.named_parameters()
+        if name.startswith(REPLICATED_PREFIXES)
     }
-    assert replicated, "no replicated modality parameters found — did the naming change?"
+    assert replicated, (
+        "no replicated modality parameters found — did the naming change?"
+    )
 
     # replicated weights identical across TP after deterministic init
     for name, param in sorted(replicated.items()):
@@ -147,7 +161,7 @@ def main():
             assert torch.equal(param.detach(), other), f"init drift across TP in {name}"
 
     # identical batch on every TP rank (same stream, rank/world untouched)
-    hf_config = hf_config_from_modalities(config.modalities, config.tokeniser)
+    hf_config = hf_config_from_modalities(config.modalities)
     flat = next(iter(PackedMicroBatches(hf_config, MBS, SEQ_LEN)))
     flat = {k: v.cuda() for k, v in flat.items()}
 
@@ -178,7 +192,9 @@ def main():
             assert param.grad is not None and torch.isfinite(param.grad).all(), name
 
     if tp_rank == 0:
-        print(f"TP2 GRAD CHECK PASS ({args.tokeniser}, {checked} replicated params, loss {loss.item():.4f})")
+        print(
+            f"TP2 GRAD CHECK PASS ({checked} replicated params, loss {loss.item():.4f})"
+        )
 
 
 if __name__ == "__main__":

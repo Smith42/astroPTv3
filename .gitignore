@@ -172,3 +172,6 @@ wandb/
 # streams the corpus live, so these are rebuildable and never committed)
 cache/
 tmp/
+
+# AstroPTv3 run telemetry (bench + training scratch; never commit)
+astroPTv3_telemetry/

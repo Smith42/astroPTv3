@@ -115,3 +115,8 @@ messages = [
 - [SmolTalk](https://huggingface.co/datasets/HuggingFaceTB/smoltalk) - Our instruction-tuning dataset
 - [FineMath](https://huggingface.co/datasets/HuggingFaceTB/finemath) - Mathematics pretraining dataset
 - [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) - Educational content pretraining dataset
+
+## AstroPTv3 (experimental)
+
+[AstroPTv3](astro/README.md) explores scaling SmolLM3-based models on
+astronomical images and spectra.

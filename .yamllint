@@ -1,0 +1,9 @@
+# yamllint has never been part of this repo's gates. The nanotron configs in
+# astro/configs/nanotron/ use the generator's own house style (4-space nested
+# lists), and main's untouched files trip yamllint's default rules 100+ times
+# apiece. Rather than reformat 954-line training configs to an unconfigured
+# tool's taste, keep linting everything else and leave configs alone.
+extends: default
+
+ignore: |
+  astro/configs/nanotron/*.yaml

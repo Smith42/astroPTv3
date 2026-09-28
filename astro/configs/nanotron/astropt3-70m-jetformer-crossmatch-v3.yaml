@@ -1,12 +1,22 @@
-# ADR 0011 A/B arm of astropt3-70m-jetformer-mmu — PASSED 2026-07-21 (matched
-# 445-iter window: stalls >=5s 11.0% vs 12.1%, mean step 2897 vs 3178 ms) and
-# the skim became the only assembly whenever match_index is set, so this
-# config no longer needs a flag: the crossmatch scan emits its unmatched
-# image rows as image-only records and there is no standalone images-catalog
-# download. This run continues as the streaming run of record.
+# 70M JETFORMER crossmatch spectra run, v3 (GH200-shaped, DP=2, ZeRO-1).
+# Same as astropt3-70m-jetformer-crossmatch-v2.yaml but the loader streams
+# via lsdb.streams.CrossMatchStream (astronomy-commons/lsdb#1584, branch
+# selective-x-match) instead of a manual desi_catalog.crossmatch(...) +
+# InfiniteStream. Adopted 2026-09-24 after the v2-vs-v3 isolation bench
+# (EXPERIMENTS.md §9): the stream's semantics match the manual crossmatch
+# exactly (record mix and per-modality rates identical at threshold 0.0),
+# and it is kept for its multi-catalog capability and upstream alignment
+# (ADR 0015), accepting a measured ~6-12% non-pad tokens/s mechanism tax
+# at 70M scale -- expected to shrink at larger model sizes where step time
+# hides loader latency. count_fraction_threshold stays 0.0 (skip off):
+# at 0.5 the skip saved 31% Legacy bytes but cost ~20% tokens/s and image
+# coverage; re-enable only after lsdb moves the skip decision off the
+# loader's critical path. See nanotron_loader.py's _open_records and
+# outer_crossmatch.py. Fresh run/checkpoints_path -- this run's whole
+# history is on CrossMatchStream, not a resume of v2.
 general:
   project: astropt3
-  run: astropt3-70m-jetformer-mmu-skim
+  run: astropt3-70m-jetformer-crossmatch-v3-xmatchstream-t01
   seed: 42
   step: null
   consumed_train_samples: null
@@ -39,41 +49,12 @@ model:
         pos_input_size: 1
         max_positions: 1024
         loss_weight: 1.0
-      # ADR 0008 scalar modalities: one-token spans, GMM heads (scalar_gmm_k),
-      # loss_weight 0.1 keeps images/spectra dominant
-      - name: Z
-        input_size: 1
-        patch_size: 1
-        pos_type: index
-        pos_input_size: 1
-        max_positions: 1
-        loss_weight: 0.1
-        scalar: true
-      - name: ebv
-        input_size: 1
-        patch_size: 1
-        pos_type: index
-        pos_input_size: 1
-        max_positions: 1
-        loss_weight: 0.1
-        scalar: true
-      - name: photometry
-        input_size: 3
-        patch_size: 1
-        pos_type: index
-        pos_input_size: 1
-        max_positions: 1
-        loss_weight: 0.1
-        scalar: true
-    tokeniser: jetformer
+    spiral: true # center-outward image patch order (ADR 0004)
     jetformer_flow_steps: 4
     jetformer_flow_hidden: 128
     jetformer_gmm_k: 4
     jetformer_noise_max: 0.1
     jetformer_noise_min: 0.0
-    scalar_gmm_k: 5
-    spectra_norm_divisor: 10.0 # ADR 0007 arcsinh knee (nMgy)
-    huber_delta: 1.0
     hidden_size: 512
     num_hidden_layers: 23
     num_attention_heads: 8
@@ -110,22 +91,14 @@ parallelism:
   tp_linear_async_communication: false
   recompute_layer: false
 data_stages:
-  - name: mmu-stream
+  - name: jetformer-crossmatch-test
     start_training_step: 1
     data:
       dataset:
-        data_root: mmu
-        match_index: hf://datasets/Smith42/mmu_desi_edr_sv3_x_mmu_ssl_legacysurvey_north/match_index.parquet
-        object_id_log: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-skim/objects.log
+        is_astropt3_streaming: true
+        crossmatch_desi: true
       seed: 42
-      # 6/rank (12 total): 8/rank saturated gpu5's 1 Gbit NIC hard enough that
-      # interactive SSH logins to the box timed out, so back off to ~75% of the
-      # link and leave headroom for other users (the run goes proportionally
-      # slower — the link is the ceiling either way). The DNS races (ENOTFOUND
-      # + hub's close_session) are survived by the loader's rebuild-from-
-      # snapshot retry. Full arithmetic in
-      # docs/2026-07-21-streaming-throughput-audit.md.
-      num_loading_workers: 6
+      num_loading_workers: 8
 optimizer:
   accumulate_grad_in_fp32: true
   clip_grad: 1.0
@@ -150,19 +123,15 @@ optimizer:
   zero_stage: 1
 tokens:
   sequence_length: 4096
-  train_steps: 20000
+  train_steps: 60000
   micro_batch_size: 16
   batch_accumulation_per_replica: 1
   val_check_interval: 100
   limit_val_batches: 0
   limit_test_batches: 0
 checkpoints:
-  checkpoints_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-skim
-  # resume from latest.txt when present (nanotron never auto-derives this).
-  # MUST be this run's own dir: pointing it at the non-skim baseline resumes
-  # the baseline's 3-source stream state into the 2-source skim stream, which
-  # dies on the first batch (2026-07-21 crash).
-  resume_checkpoint_path: /beegfs/general/mjsmith/foundation/astroPT_all/astroPTv3_checkpoints/astropt3-70m-jetformer-mmu-skim
+  checkpoints_path: >-
+    ../astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-v3
   checkpoint_interval: 1000
   save_initial_state: false
   save_final_state: true

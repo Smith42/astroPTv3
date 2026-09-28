@@ -46,6 +46,7 @@ MASTER_PORT=$((20000 + SLURM_JOB_ID % 20000))
 export CUDA_DEVICE_MAX_CONNECTIONS=1   # required by nanotron's comm overlap
 export HF_DATASETS_OFFLINE=1           # compute nodes never touch the network
 export WANDB_MODE=${WANDB_MODE:-online}
+export ASTROPT3_TELEMETRY_DIR=${ASTROPT3_TELEMETRY_DIR:-../astroPTv3_telemetry/${SLURM_JOB_ID:-$$}}
 
 # optional dry run: cap train_steps without editing the config
 if [[ -n "${DRY_RUN_STEPS:-}" ]]; then

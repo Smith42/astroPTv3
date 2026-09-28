@@ -1,6 +1,6 @@
 import torch
 
-from astropt3.data.synthetic import record_stream
+from legacy_fixture import record_stream
 
 
 def _batch(sequencer, collator, records):
@@ -18,6 +18,7 @@ def test_forward_backward(tiny_config, sequencer, collator):
     out = model(**batch)
     assert torch.isfinite(out.loss)
     assert set(out.modality_losses) == {"images", "spectra", "Z", "ebv", "photometry"}
+    assert set(out.family_losses) == {"image", "spectrum", "scalar"}
     assert all(torch.isfinite(v) for v in out.modality_losses.values())
     out.loss.backward()
     missing = [
@@ -78,25 +79,64 @@ def test_image_only_batch(tiny_model, sequencer, collator, image_only_record):
     assert torch.isfinite(out.loss)
 
 
+def test_family_loss_matches_adr_0013(tiny_model, sequencer, collator, full_record):
+    batch = collator([sequencer.build(full_record)])
+    with torch.no_grad():
+        out = tiny_model(**batch)
+    scalar_mean = torch.stack(
+        [out.modality_losses[name] for name in ("Z", "ebv", "photometry")]
+    ).mean()
+    assert torch.allclose(out.family_losses["image"], out.modality_losses["images"])
+    assert torch.allclose(out.family_losses["spectrum"], out.modality_losses["spectra"])
+    assert torch.allclose(out.family_losses["scalar"], scalar_mean)
+    expected = (
+        out.family_losses["image"]
+        + out.family_losses["spectrum"]
+        + 0.1 * out.family_losses["scalar"]
+    ) / 2.1
+    assert torch.allclose(out.loss, expected, atol=1e-6)
+
+
+def test_legacy_loss_mode_stays_checkpoint_compatible(
+    tiny_model, tiny_config, sequencer, collator, full_record
+):
+    from astropt3 import AstroPT3Config, AstroPT3Model
+
+    config = AstroPT3Config(
+        **{**tiny_config.to_dict(), "loss_aggregation": "legacy_modality_mean"}
+    )
+    model = AstroPT3Model(config).eval()
+    model.load_state_dict(tiny_model.state_dict())
+    batch = collator([sequencer.build(full_record)])
+    with torch.no_grad():
+        out = model(**batch)
+    weights = {"images": 1.0, "spectra": 1.0, "Z": 0.1, "ebv": 0.1, "photometry": 0.1}
+    expected = torch.stack(
+        [weights[name] * loss for name, loss in out.modality_losses.items()]
+    ).sum() / len(out.modality_losses)
+    assert torch.allclose(out.loss, expected, atol=1e-6)
+
+
 def test_loss_matches_manual_computation(tiny_model, sequencer, collator, full_record):
-    """outputs.loss must equal the Huber losses recomputed from predictions.
+    """outputs.loss must equal NLL_GMM(z) - logdet recomputed from the
+    model's own flow + GMM head, for each patch modality.
 
     Scalar-free build: the scalar spans' GMM NLL terms are covered by
     test_scalar_modalities' manual-loss check.
     """
-    import torch.nn.functional as F
+    from astropt3.modalities import gmm_nll
+    from astropt3.modeling_astropt3 import left_shift_mask
 
     batch = collator([sequencer.build(full_record, include_scalars=False)])
     with torch.no_grad():
         out = tiny_model(**batch)
-    manual = []
-    for m in ("images", "spectra"):
-        manual.append(
-            F.huber_loss(
-                out.predictions[m],
-                batch["modality_values"][m],
-                delta=tiny_model.config.huber_delta,
-            )
-        )
+        manual = []
+        for m in ("images", "spectra"):
+            mask = batch["modality_masks"][m]
+            hidden = out.last_hidden_state[left_shift_mask(mask)]
+            z, logdet = tiny_model.flows[m](batch["modality_values"][m])
+            logits_pi, mu, log_sigma = tiny_model.decoders[m](hidden)
+            nll = gmm_nll(z, logits_pi, mu, log_sigma)
+            manual.append((nll - logdet).mean())
     expected = torch.stack(manual).mean()
     assert torch.allclose(out.loss, expected, atol=1e-6)
