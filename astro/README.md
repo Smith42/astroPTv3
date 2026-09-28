@@ -16,9 +16,9 @@ experiments, and the scaling/probing programme live there). Its
 JetFormer/GIVT tokeniser was ported from AstroPT's `sogol_branch`. The
 two projects co-evolve and share findings — normalization conventions,
 evaluation practice, checkpoint schedules — while their codebases stay
-separate; see
-[AstroPT's docs page for AstroPTv3](https://astropt.readthedocs.io)
-for the side-by-side.
+separate. The full AstroPTv3 docs (plan, experiments, guides, and ADRs)
+are hosted in the
+[AstroPTv3 section of AstroPT's Read the Docs site](https://astropt.readthedocs.io/en/latest/astropt3.html).
 
 ## Astronomy pilot
 
