@@ -37,7 +37,7 @@ dev = [
 [tool.uv.sources]
 nanotron = { path = "../nanotron", editable = true }
 # Tracks lsdb PR astronomy-commons/lsdb#1584 ("Filtering cross-match
-# stream", draft, unmerged as of 2026-09-03), branch selective-x-match,
+# stream", open, unmerged as of 2026-09-28), branch selective-x-match,
 # which adds streams.CrossMatchStream: an InfiniteStream/CatalogStream
 # subclass that does the left-join crossmatch(es) per drawn partition,
 # optionally skipping a right catalog for a pixel via precomputed skymap
