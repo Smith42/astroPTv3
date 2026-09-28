@@ -245,17 +245,21 @@ Steady state = steps 21–2000. The v3 arms are
 | v3 thr=0.5 r1 | paired | 77,006 | 2,342 | 16.4M | 15.6M | 58.4% |
 | v2 r2 | ~24% contended | 117,769 | 2,923 | 31.1M | 16.4M | 71.7% |
 | v3 thr=0.0 | solo | 110,584 | 2,715 | 29.5M | 15.1M | 72.2% |
+| v3 thr=0.0 + submit overlap | solo | 125,620 | 3,076 | 33.6M | 17.0M | 72.4% |
 
 Findings:
 
-1. **Mechanism tax ≥ 6% (floor; contention-corrected ~10%).** Even with
-   the skip off, CrossMatchStream is slower than streaming a pre-
-   crossmatched catalog: every drawn pixel pays `PixelSearch` + a fresh
-   crossmatch graph build + the density estimate synchronously on the
-   loader's critical path, where v2 builds the crossmatch graph once. The
-   record mix is identical (72.2% vs 71.7% image share; per-modality value
-   rates track) — pure overhead, semantics verified including
-   OuterKdTreeCrossmatch's unmatched-right recovery.
+1. **The upstream PR has a ≥6% mechanism tax, but submission overlap
+   removes it.** `CatalogIterator.__next__` waits for chunk N and only then
+   submits chunk N+1, putting every pixel's `PixelSearch` + crossmatch graph
+   construction on the consumer's critical path. A local lsdb patch submits
+   N+1 before waiting for N. In the same solo 2,000-step v3 arm it raised
+   non-pad throughput 110,584 → 125,620 tokens/s (+13.6%) and rows/s 2,715
+   → 3,076 (+13.3%), with the record mix unchanged (72.2% → 72.4% image
+   share). This validates overlap rather than graph caching: the planned
+   training regime is one epoch, so a cache would not hit. The generic
+   iterator change can also benefit v2; v2+overlap was not run, so the clean
+   claim is the v3 A/B, not optimized-v3 versus optimized-v2.
 2. **The skip at 0.5 is strictly harmful here.** Legacy bytes −31%, but
    tokens/s −~20% more and image share 72% → 58%: the loader is
    latency-bound, not bandwidth-bound, skipped pixels still pay the
@@ -265,13 +269,12 @@ Findings:
 3. **Repeatability**: v2-r2 rows/s 2,923 ≈ §8's solo 2,881–2,997.
    Pairing costs ~15% (v2 paired 100.6k vs r2 117.8k tokens/s).
 
-**Decision:** adopt v3 at thr=0.0 — for the multi-catalog capability and
-ADR 0015 upstream alignment — accepting the measured tax at 70M scale,
-where 0.36s steps leave the GPU maximally exposed to loader latency; at
-larger model sizes step time grows and the tax should shrink. Two asks
-filed upstream on #1584: precompute/reuse per-pixel crossmatch graphs, and
-move the skip decision off the critical path (which would make the skip a
-pure win whenever bytes bind).
+**Decision:** adopt v3 at thr=0.0 for multi-catalog capability and ADR 0015
+upstream alignment. The current #1584 implementation still carries the
+measured tax, but the validated submit-overlap patch removes it without a
+cache or API change; keep that patch local until the upstream author chooses
+how to integrate it. The threshold remains 0.0: overlap fixes graph latency,
+not the skip's loss of image-heavy rows.
 
 Reliability note from the same bench: a transient `HfHubHTTPError` can be
 swallowed by fsspec's parquet reader (cat_ranges results are gathered with
@@ -282,6 +285,37 @@ original v3 run at step 46,767; the second killed a bench arm at step 302.
 `_retryable` now classifies the whole family; regression tests cover both
 shapes plus a live-fsspec message canary. Upstream issue drafted against
 fsspec (root fix: check `is_exception` in `_transfer_ranges`).
+
+## 10. HSC leaf projection: real on disk, null on the wire (2026-09-28)
+
+ADR 0014 A7 measured from parquet footers that `image.ivar` is 46.96% of
+an HSC partition's compressed bytes, so requesting only `image.flux` +
+`image.band` "halves every HSC fetch" — *if* the reader range-reads column
+chunks. A leaf-projected `_hsc_columns` was wired and validated end to
+end: the projected `CrossMatchStream` join decoded a real (5,160,160)
+flux, with the schema arriving as nested-pandas `list<struct<flux,
+band>>`, suffixing and dotted map_rows access intact, live trimodal test
+green.
+
+Wire measurement said the fetch does NOT shrink:
+
+- `head(50)` through `open_catalog`: **1532.37 MB** with the full struct,
+  with leaf projection, and with leaf projection again — identical to the
+  byte.
+- Direct `pyarrow.ParquetFile(...).read(columns=["image.flux", ...])` on
+  one 1.47 MB partition: **1.53 MB** fetched in all four arms
+  (full/leaf × default/`pre_buffer=False`).
+
+The reader materializes the whole struct (or whole row-group buffers)
+before projecting, so A7's 47% exists only on disk through this path.
+**Decision: reverted to the simpler whole-struct request** — same wire
+bytes, one less special case. If hats/lsdb ever do leaf-level range
+reads, projecting to `image.flux` + `image.band` becomes a ~47% HSC wire
+cut overnight; reopen then. Until that lands, HSC-only recovery
+budgeting must assume full-struct bytes per row, and the p99 HSC stalls
+need the upstream reader fix — that fix belongs on the upstream list
+next to the fsspec exception-swallowing and the Arrow
+`empty_table()`×extension findings.
 
 ## Open items / not pursued
 
