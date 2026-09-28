@@ -1,3 +1,5 @@
+# TRIAL: trimodal DESI x HSC PDR3 Wide x Legacy (v3 + hsc_images).
+# Short wandb-online run to validate the third modality end to end.
 # 70M JETFORMER crossmatch spectra run, v3 (GH200-shaped, DP=2, ZeRO-1).
 # Same as astropt3-70m-jetformer-crossmatch-v2.yaml but the loader streams
 # via lsdb.streams.CrossMatchStream (astronomy-commons/lsdb#1584, branch
@@ -16,7 +18,7 @@
 # history is on CrossMatchStream, not a resume of v2.
 general:
   project: astropt3
-  run: astropt3-70m-jetformer-crossmatch-v3-xmatchstream-t01
+  run: astropt3-70m-v3-trimodal-trial
   seed: 42
   step: null
   consumed_train_samples: null
@@ -138,7 +140,7 @@ optimizer:
   zero_stage: 1
 tokens:
   sequence_length: 4096
-  train_steps: 60000
+  train_steps: 1000
   micro_batch_size: 16
   batch_accumulation_per_replica: 1
   val_check_interval: 100
@@ -146,11 +148,11 @@ tokens:
   limit_test_batches: 0
 checkpoints:
   checkpoints_path: >-
-    ../astroPTv3_checkpoints/astropt3-70m-jetformer-crossmatch-v3
+    ../astroPTv3_checkpoints/bench/astropt3-70m-v3-trimodal-trial
   checkpoint_interval: 1000
   save_initial_state: false
   save_final_state: true
-  checkpoint_schedule: pythia
+  checkpoint_schedule: null
 tokenizer:
   tokenizer_name_or_path: null
 profiler: null

@@ -24,6 +24,8 @@ import pandas as pd
 
 IMAGE_SIDE = 152
 IMAGE_BANDS = ["des-g", "des-r", "des-z"]
+HSC_IMAGE_SIDE = 160
+HSC_IMAGE_BANDS = ["hsc-g", "hsc-r", "hsc-i", "hsc-z", "hsc-y"]
 SPECTRUM_LENGTH = 7781
 LAMBDA_MIN = 3600.0
 LAMBDA_MAX = 9824.0
@@ -99,7 +101,7 @@ def make_record(
         # flattened here too — same keys the real adapter writes
         **{
             f"psf_fwhm_{band}": float(seeing * factor)
-            for band, factor in zip(IMAGE_BANDS, (1.10, 1.00, 0.78))
+            for band, factor in zip(IMAGE_BANDS, (1.10, 1.00, 0.78), strict=True)
         },
     }
 
@@ -230,6 +232,31 @@ def crossmatch_row(index: int, matched: bool = True) -> dict:
             "flux_g_legacy": record["flux_g"],
             "flux_r_legacy": record["flux_r"],
             "flux_z_legacy": record["flux_z"],
+        }
+    )
+    return row
+
+
+def trimodal_crossmatch_row(index: int) -> dict:
+    """One matched DESI + LegacySurvey + HSC Wide row.
+
+    HSC Wide is a source-distinct five-band image modality. Its published
+    schema is ``image.flux`` (5, 160, 160) plus ``image.band``; crossmatch
+    suffixing renames those columns to ``*_hsc``.
+    """
+    row = crossmatch_row(index, matched=True)
+    yy, xx = np.mgrid[0:HSC_IMAGE_SIDE, 0:HSC_IMAGE_SIDE].astype(np.float32)
+    blob = np.exp(-((xx - 80) ** 2 + (yy - 80) ** 2) / (2 * 24.0**2))
+    flux = np.stack([(band + 1) * blob for band in range(5)]).astype(np.float32)
+    row.update(
+        {
+            "object_id_hsc": f"hsc_{index:08d}",
+            "ra_hsc": row["ra"],
+            "dec_hsc": row["dec"],
+            "image_hsc": {
+                "band": HSC_IMAGE_BANDS,
+                "flux": flux.tolist(),
+            },
         }
     )
     return row
