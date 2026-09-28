@@ -15,6 +15,7 @@ import re
 import time
 import zlib
 from collections.abc import Mapping
+from contextlib import suppress
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
@@ -35,13 +36,18 @@ from .telemetry import install_byte_probe, instrument
 
 LEGACY_CATALOG = "hf://datasets/UniverseTBD/mmu_ssl_legacysurvey_north"
 DESI_CATALOG = "hf://datasets/UniverseTBD/mmu_desi_edr_sv3"
+HSC_WIDE_CATALOG = "hf://datasets/hugging-science/mmu_hsc_pdr3_wide_21"
 IMAGE_SHAPE = (3, 152, 152)
+HSC_IMAGE_SHAPE = (5, 160, 160)
 _MAX_NET_RETRIES = 60
 _MAX_NET_RETRY_WAIT = 120
 _MAX_REPLICA_ATTEMPTS = 32
 # PLAN.md's pilot crossmatch radius (mmu_desi_edr_sv3 x mmu_ssl_legacysurvey_north).
 _CROSSMATCH_RADIUS_ARCSEC = 1.0
 _CROSSMATCH_LEGACY_SUFFIX = "_legacy"
+# HSC Wide is a third catalog in the same CrossMatchStream (right-side
+# suffix "_hsc" comes from rename_catalog("hsc"), like "_legacy").
+_CROSSMATCH_HSC_SUFFIX = "_hsc"
 # CrossMatchStream (lsdb PR astronomy-commons/lsdb#1584, selective-x-match)
 # skips the Legacy crossmatch for a drawn pixel -- no right-partition fetch
 # at all, not even for OuterKdTreeCrossmatch to recover from -- when the
@@ -82,6 +88,7 @@ _LEGACY_NESTED = {"image": ("band", "flux", "psf_fwhm")}
 _CROSSMATCH_NESTED = {
     "spectrum": ("flux", "lambda", "mask"),
     f"image{_CROSSMATCH_LEGACY_SUFFIX}": ("band", "flux", "psf_fwhm"),
+    f"image{_CROSSMATCH_HSC_SUFFIX}": ("band", "flux"),
 }
 
 
@@ -313,6 +320,57 @@ def _desi_columns(config: AstroPT3Config) -> list[str] | None:
     return sorted(columns) if active else None
 
 
+def _unregister_hf_array2d_extension() -> None:
+    """Make HSC's Arrow schema readable after Hugging Face datasets import.
+
+    ``datasets`` registers its ``Array2DExtensionType`` globally. HSC Wide
+    stores that metadata inside image.flux/ivar/mask, and LSDB calls
+    ``Schema.empty_table()`` while building Dask metadata; pyarrow cannot
+    construct an empty extension array and raises ``ArrowNotImplementedError:
+    extension``. AstroPT workers do not consume HF extension arrays, so drop
+    this one registration and let Arrow deserialize the same fields as their
+    ordinary nested-list storage type.
+    """
+    import pyarrow as pa
+
+    with suppress(pa.ArrowKeyError):
+        pa.unregister_extension_type(
+            "datasets.features.features.Array2DExtensionType"
+        )
+
+
+def _hsc_columns(config: AstroPT3Config) -> list[str] | None:
+    """Project the HSC Wide catalog to active hsc-source fields.
+
+    Returns ``None`` when no modality sources from HSC. The whole ``image``
+    struct is requested (like Legacy): ADR 0014 A7's footer measurement
+    says the unread ``ivar`` plane is 47% of HSC bytes on disk, but the
+    hats/fsspec/pyarrow read path materializes the whole struct
+    regardless (EXPERIMENTS §10, 2026-09-28: identical wire bytes with
+    and without leaf projection), so the simpler whole-struct request is
+    kept.
+    """
+    columns = {"object_id", "ra", "dec"}
+    active = False
+    for name in config.modality_registry().names():
+        modality = config.modality_registry().get_config(name)
+        if modality.source != "hsc":
+            continue
+        active = True
+        if modality.family == "image":
+            if tuple(modality.record_keys) != ("hsc_image",):
+                raise ValueError(
+                    f"HSC image modality {name!r} must use record key 'hsc_image'"
+                )
+            columns.add("image")
+        else:
+            raise ValueError(
+                f"HSC modality {name!r}: only image modalities are wired; "
+                "HSC scalar fields need suffix-aware decode first"
+            )
+    return sorted(columns) if active else None
+
+
 def _decode_spectrum(value: Any) -> dict:
     if isinstance(value, pd.DataFrame):
         # A per-record spectrum arrives as one row per wavelength bin
@@ -371,16 +429,29 @@ def decode_crossmatch_row(row: Mapping) -> dict:
             record["image"] = {"flux": flux, "band": bands}
             fwhm_value = image.get("psf_fwhm")
 
+    hsc_value = row.get(f"image{_CROSSMATCH_HSC_SUFFIX}")
+    if hsc_value is not None:
+        hsc_image = _as_mapping(hsc_value)
+        hsc_bands = [str(band) for band in hsc_image.get("band", ())]
+        hsc_flux = _stack_nested(hsc_image.get("flux")).astype(np.float32, copy=False)
+        if hsc_flux.shape == HSC_IMAGE_SHAPE and len(hsc_bands) == HSC_IMAGE_SHAPE[0]:
+            record["hsc_image"] = {"flux": hsc_flux, "band": hsc_bands}
+
     skip = {
         "object_id",
         f"object_id{_CROSSMATCH_LEGACY_SUFFIX}",
         "spectrum",
         image_key,
+        f"image{_CROSSMATCH_HSC_SUFFIX}",
+        f"object_id{_CROSSMATCH_HSC_SUFFIX}",
         "ra",
         "dec",
         f"ra{_CROSSMATCH_LEGACY_SUFFIX}",
         f"dec{_CROSSMATCH_LEGACY_SUFFIX}",
+        f"ra{_CROSSMATCH_HSC_SUFFIX}",
+        f"dec{_CROSSMATCH_HSC_SUFFIX}",
         "_dist_arcsec",
+        "_dist_arcsec_hsc",
     }
     for key, value in row.items():
         if key in skip:
@@ -502,6 +573,12 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
             raise ValueError(
                 "crossmatch_desi=True but no active modality sources from DESI"
             )
+        self.hsc_columns = _hsc_columns(config)
+        if self.hsc_columns is not None and not crossmatch_desi:
+            raise ValueError(
+                "HSC modalities ride the DESI x Legacy CrossMatchStream; "
+                "enable crossmatch_desi to use them"
+            )
         self.columns = _catalog_columns(config, include_position=self.desi_columns is not None)
         self._epoch = 0  # InfiniteStream partition-draw nonce for span ordering
         self.sequencer = ObjectSequencer(config)
@@ -546,30 +623,54 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                     catalog = desi_catalog = open_catalog(
                         DESI_CATALOG, columns=self.desi_columns
                     )
+                    # One positional kwargs dict per right catalog;
+                    # order = sequential left-join order. HSC joins FIRST:
+                    # OuterKdTreeCrossmatch appends recovered Legacy-only
+                    # rows with null left-side coords, and any later join
+                    # would KD-tree over those NaNs (live probe
+                    # 2026-09-26: ValueError 'x' must be finite). The
+                    # plain KdTree HSC left join introduces no null rows,
+                    # so it is safe first; HSC-only row recovery is a
+                    # follow-up once the matched path is validated.
+                    if self.hsc_columns is not None:
+                        _unregister_hf_array2d_extension()
+                    crossmatches: list[dict[str, object]] = [
+                        {
+                            "other": open_catalog(
+                                HSC_WIDE_CATALOG, columns=self.hsc_columns
+                            ).rename_catalog("hsc"),
+                            "radius_arcsec": _CROSSMATCH_RADIUS_ARCSEC,
+                        }
+                    ] if self.hsc_columns is not None else []
+                    # CrossMatchStream derives its column suffix from
+                    # the right catalog's own .name ("_" + other.name),
+                    # not from a suffixes= kwarg (it overwrites that
+                    # unconditionally) -- rename to "legacy" so the
+                    # suffix lands on "_legacy", matching
+                    # _CROSSMATCH_LEGACY_SUFFIX and every decode function
+                    # keyed on it. Metadata-only, no data fetch.
+                    crossmatches.append(
+                        {
+                            "other": legacy_catalog.rename_catalog("legacy"),
+                            "algorithm": OuterKdTreeCrossmatch(
+                                radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC
+                            ),
+                        }
+                    )
                     catalog_desc = (
-                        f"{DESI_CATALOG} x {LEGACY_CATALOG} (CrossMatchStream, "
-                        f"count_fraction_threshold={_CROSSMATCH_COUNT_FRACTION_THRESHOLD})"
+                        f"{DESI_CATALOG} x {len(crossmatches)} catalogs "
+                        f"(CrossMatchStream, count_fraction_threshold="
+                        f"{_CROSSMATCH_COUNT_FRACTION_THRESHOLD})"
                     )
                     columns_desc = self.desi_columns + self.columns
+                    if self.hsc_columns is not None:
+                        columns_desc = columns_desc + self.hsc_columns
                     _log_provenance(
                         catalog, columns_desc, self.rank, worker_id, catalog_desc
                     )
                     stream = CrossMatchStream(
                         desi_catalog,
-                        {
-                            # CrossMatchStream derives its column suffix from
-                            # the right catalog's own .name ("_" +
-                            # other.name), not from a suffixes= kwarg (it
-                            # overwrites that unconditionally) -- rename to
-                            # "legacy" so the suffix lands on "_legacy",
-                            # matching _CROSSMATCH_LEGACY_SUFFIX and every
-                            # decode function keyed on it. Metadata-only, no
-                            # data fetch.
-                            "other": legacy_catalog.rename_catalog("legacy"),
-                            "algorithm": OuterKdTreeCrossmatch(
-                                radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC
-                            ),
-                        },
+                        *crossmatches,
                         client=dask_client,
                         partitions_per_chunk=_PARTITIONS_PER_CHUNK,
                         seed=consumer_seed(
@@ -655,11 +756,13 @@ class PackedMicroBatches(torch.utils.data.IterableDataset):
                     if self.desi_columns is not None
                     else decode_legacy_row
                 )
-                nested = (
-                    _CROSSMATCH_NESTED
-                    if self.desi_columns is not None
-                    else _LEGACY_NESTED
-                )
+                if self.desi_columns is None:
+                    nested = _LEGACY_NESTED
+                else:
+                    nested = dict(_CROSSMATCH_NESTED)
+                    if self.hsc_columns is None:
+                        # two-catalog join: no image_hsc column exists
+                        del nested[f"image{_CROSSMATCH_HSC_SUFFIX}"]
                 # map_rows delivers nested sub-columns as numpy arrays (no
                 # per-row DataFrame materialization), which is what makes
                 # this ~2.5-4x faster end to end than frame.iterrows() +

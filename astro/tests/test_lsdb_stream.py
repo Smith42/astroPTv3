@@ -20,7 +20,6 @@ def test_live_lsdb_stream_decodes_and_selects(tiny_config, tiny_model):
         _catalog_columns,
         decode_legacy_row,
     )
-
     from lsdb.loaders.hats.read_hats import open_catalog
     from lsdb.streams.catalog_streams import InfiniteStream
 
@@ -75,7 +74,6 @@ def test_live_desi_crossmatch_stream_decodes_and_selects(tiny_config, tiny_model
     )
     from astropt3.data.outer_crossmatch import OuterKdTreeCrossmatch
     from astropt3.data.packing import ObjectSequencer
-
     from lsdb.loaders.hats.read_hats import open_catalog
     from lsdb.streams.catalog_streams import CrossMatchStream
 
@@ -97,10 +95,19 @@ def test_live_desi_crossmatch_stream_decodes_and_selects(tiny_config, tiny_model
     frame = next(iter(stream))
     assert len(frame) > 0
 
-    columns = _map_rows_columns(frame, _CROSSMATCH_NESTED)
+    # this test's stream joins two catalogs; the loader drops the hsc
+    # nested entry when no hsc modality is active (see _open_records)
+    two_catalog_nested = {
+        key: fields
+        for key, fields in _CROSSMATCH_NESTED.items()
+        if key != "image_hsc"
+    }
+    columns = _map_rows_columns(frame, two_catalog_nested)
 
     def decode(mapped):
-        return {"record": decode_crossmatch_row(_row_from_map_rows(mapped, _CROSSMATCH_NESTED))}
+        return {
+            "record": decode_crossmatch_row(_row_from_map_rows(mapped, two_catalog_nested))
+        }
 
     decoded = frame.map_rows(decode, columns=columns, infer_nesting=False)
     records = list(itertools.islice(decoded["record"], ROWS_TO_CHECK))
@@ -124,3 +131,106 @@ def test_live_desi_crossmatch_stream_decodes_and_selects(tiny_config, tiny_model
         assert obj.input_ids[0] == 1
     # not asserting matched_images/image_only > 0: a single small partition
     # draw may legitimately contain zero of either
+
+
+def test_live_trimodal_crossmatch_stream_decodes_hsc(tiny_config):
+    """Three-catalog join: DESI x HSC PDR3 Wide x LegacySurvey, the
+    loader's HSC wiring end to end against the real hub. HSC joins FIRST
+    (plain KdTree left) and Legacy-outer LAST -- the reverse order KD-trees
+    over the NaN left coords of OuterKdTreeCrossmatch's recovered rows and
+    dies (live probe 2026-09-26). HSC's ~700 deg^2 footprint makes matched
+    rows sparse in arbitrary DESI draws, so the presence assertion is on
+    the schema contract (image_hsc columns exist), not per-draw matches."""
+    from astropt3.configuration_astropt3 import AstroPT3Config
+    from astropt3.data.nanotron_loader import (
+        DESI_CATALOG,
+        HSC_WIDE_CATALOG,
+        LEGACY_CATALOG,
+        _CROSSMATCH_COUNT_FRACTION_THRESHOLD,
+        _CROSSMATCH_NESTED,
+        _CROSSMATCH_RADIUS_ARCSEC,
+        _catalog_columns,
+        _desi_columns,
+        _hsc_columns,
+        _map_rows_columns,
+        _row_from_map_rows,
+        decode_crossmatch_row,
+    )
+    from astropt3.data.outer_crossmatch import OuterKdTreeCrossmatch
+    from astropt3.data.packing import ObjectSequencer
+    from lsdb.loaders.hats.read_hats import open_catalog
+    from lsdb.streams.catalog_streams import CrossMatchStream
+
+    raw = tiny_config.to_dict()
+    raw["modalities"] = [
+        dict(modality)
+        for modality in raw["modalities"]
+        if modality["name"] in {"images", "spectra"}
+    ] + [
+        {
+            "name": "hsc_images",
+            "input_size": 320,
+            "patch_size": 8,
+            "pos_type": "index",
+            "pos_input_size": 1,
+            "max_positions": 144,
+            "family": "image",
+            "source": "hsc",
+            "record_keys": ["hsc_image"],
+            "loss_weight": 1.0,
+        }
+    ]
+    config = AstroPT3Config(**raw)
+
+    legacy_cat = open_catalog(
+        LEGACY_CATALOG, columns=_catalog_columns(config, include_position=True)
+    ).rename_catalog("legacy")
+    desi_cat = open_catalog(DESI_CATALOG, columns=_desi_columns(config))
+    hsc_cat = open_catalog(
+        HSC_WIDE_CATALOG, columns=_hsc_columns(config)
+    ).rename_catalog("hsc")
+    stream = CrossMatchStream(
+        desi_cat,
+        {"other": hsc_cat, "radius_arcsec": _CROSSMATCH_RADIUS_ARCSEC},
+        {
+            "other": legacy_cat,
+            "algorithm": OuterKdTreeCrossmatch(
+                radius_arcsec=_CROSSMATCH_RADIUS_ARCSEC
+            ),
+        },
+        client=None,
+        partitions_per_chunk=1,
+        seed=0,
+        count_fraction_threshold=_CROSSMATCH_COUNT_FRACTION_THRESHOLD,
+    )
+    frame = next(iter(stream))
+    assert len(frame) > 0
+    assert "image_hsc.band" in _map_rows_columns(frame, _CROSSMATCH_NESTED)
+
+    columns = _map_rows_columns(frame, _CROSSMATCH_NESTED)
+
+    def decode(mapped):
+        return {
+            "record": decode_crossmatch_row(
+                _row_from_map_rows(mapped, _CROSSMATCH_NESTED)
+            )
+        }
+
+    decoded = frame.map_rows(decode, columns=columns, infer_nesting=False)
+    records = list(itertools.islice(decoded["record"], ROWS_TO_CHECK))
+    sequencer = ObjectSequencer(config)
+    for record in records:
+        assert "spectrum" in record or "image" in record  # never neither
+        if "hsc_image" in record:
+            flux = torch.as_tensor(record["hsc_image"]["flux"], dtype=torch.float32)
+            assert flux.shape == (5, 160, 160)
+            assert record["hsc_image"]["band"] == [
+                "hsc-g",
+                "hsc-r",
+                "hsc-i",
+                "hsc-z",
+                "hsc-y",
+            ]
+            obj = sequencer.build(record)
+            assert int(obj.masks["hsc_images"].sum()) == 144
+            assert tuple(obj.values["hsc_images"].shape) == (144, 320)

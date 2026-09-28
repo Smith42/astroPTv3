@@ -4,20 +4,13 @@ Contract honored by the nanotron fork's ``AstroPT3ForTraining.forward``;
 sources are faked — only the network-marked live check touches the hub.
 """
 
+from contextlib import suppress
 from itertools import islice
 
 import numpy as np
 import pytest
 import torch
-
-from legacy_fixture import (
-    crossmatch_row,
-    legacy_only_crossmatch_row,
-    legacy_row,
-    make_record,
-    nested_frame,
-)
-
+from astropt3.configuration_astropt3 import AstroPT3Config
 from astropt3.data import nanotron_loader
 from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
@@ -25,10 +18,16 @@ from astropt3.data.nanotron_loader import (
     decode_crossmatch_row,
     decode_legacy_row,
 )
-from astropt3.data.nanotron_loader import (
-    regroup_micro_batch as regroup,
-)
+from astropt3.data.nanotron_loader import regroup_micro_batch as regroup
 from astropt3.tokenization import BOS_ID, modality_token_ids
+from legacy_fixture import (
+    crossmatch_row,
+    legacy_only_crossmatch_row,
+    legacy_row,
+    make_record,
+    nested_frame,
+    trimodal_crossmatch_row,
+)
 
 MBS = 2
 SEQ_LEN = 896
@@ -172,6 +171,90 @@ def test_crossmatch_decoder_recovers_matched_row():
     assert isinstance(record["ebv"], float)
     for band in ("des-g", "des-r", "des-z"):
         assert isinstance(record[f"psf_fwhm_{band}"], float)
+
+
+def test_trimodal_crossmatch_loader_feeds_distinct_hsc_head(
+    tiny_config, monkeypatch
+):
+    raw_config = tiny_config.to_dict()
+    raw_config["modalities"] = [
+        dict(modality)
+        for modality in raw_config["modalities"]
+        if modality["name"] in {"images", "spectra"}
+    ] + [
+        {
+            "name": "hsc_images",
+            "input_size": 320,
+            "patch_size": 8,
+            "pos_type": "index",
+            "pos_input_size": 1,
+            "max_positions": 144,
+            "family": "image",
+            "source": "hsc",
+            "record_keys": ["hsc_image"],
+            "loss_weight": 1.0,
+        }
+    ]
+    config = AstroPT3Config(**raw_config)
+    frame = nested_frame(
+        [trimodal_crossmatch_row(i) for i in range(6)],
+        ("spectrum", "image_legacy", "image_hsc"),
+    )
+    opened = []
+    captured = {}
+
+    class FakeCatalog:
+        npartitions = 3
+
+        def __init__(self, path, columns):
+            self.path = path
+            self.columns = columns
+            self.name = path.rsplit("/", 1)[-1]
+
+        def rename_catalog(self, name):
+            self.name = name
+            return self
+
+    class FakeCrossMatchStream:
+        def __init__(self, catalog, *crossmatches, **kwargs):
+            captured["right_names"] = [item["other"].name for item in crossmatches]
+
+        def __iter__(self):
+            while True:
+                yield frame
+
+    def fake_open_catalog(path, columns):
+        opened.append((path, columns))
+        return FakeCatalog(path, columns)
+
+    monkeypatch.setattr(nanotron_loader, "open_catalog", fake_open_catalog)
+    monkeypatch.setattr(nanotron_loader, "CrossMatchStream", FakeCrossMatchStream)
+    monkeypatch.setattr(nanotron_loader, "_log_provenance", lambda *a, **k: None)
+
+    flat = next(
+        iter(
+            PackedMicroBatches(
+                config,
+                MBS,
+                SEQ_LEN,
+                crossmatch_desi=True,
+            )
+        )
+    )
+    assert captured["right_names"] == ["hsc", "legacy"]
+    assert any("mmu_hsc_pdr3_wide_21" in path for path, _ in opened)
+    assert flat["hsc_images_mask"].any()
+    assert flat["hsc_images_values"].shape[1] == 320
+    assert len(flat["hsc_images_values"]) % 144 == 0
+
+    torch.manual_seed(0)
+    from astropt3 import AstroPT3Model
+
+    model = AstroPT3Model(config).eval()
+    with torch.no_grad():
+        output = model(**regroup(flat, config.modality_registry().names()))
+    assert torch.isfinite(output.loss)
+    assert set(output.modality_losses) == {"images", "spectra", "hsc_images"}
 
 
 def test_crossmatch_decoder_handles_unmatched_row():
@@ -340,6 +423,39 @@ def test_swallowed_hub_error_signature_matches_real_fsspec_message():
     assert not nanotron_loader._retryable(
         TypeError("'str' object is not subscriptable")
     )
+
+
+def test_hf_array2d_extension_is_dropped_before_hsc_open():
+    """HF datasets registers Array2D as an Arrow extension type. HSC Wide
+    stores that metadata inside image.flux/ivar/mask; LSDB builds Dask meta
+    with Schema.empty_table(), which cannot construct empty extension arrays.
+    The worker must drop the registration so Arrow falls back to the nested
+    list storage type before reading HSC's schema."""
+    import pyarrow as pa
+    from datasets.features.features import Array2DExtensionType
+
+    extension = Array2DExtensionType((2, 2), "float32")
+    schema_bytes = pa.schema(
+        [
+            pa.field(
+                "image",
+                pa.struct([pa.field("flux", pa.list_(extension))]),
+            )
+        ]
+    ).serialize()
+    with pytest.raises(pa.ArrowNotImplementedError, match="extension"):
+        pa.ipc.read_schema(pa.BufferReader(schema_bytes)).empty_table()
+
+    try:
+        nanotron_loader._unregister_hf_array2d_extension()
+        storage_schema = pa.ipc.read_schema(pa.BufferReader(schema_bytes))
+        storage_schema.empty_table()
+        flux_type = storage_schema.field("image").type.field("flux").type
+        assert not isinstance(flux_type.value_type, pa.ExtensionType)
+    finally:
+        # Do not leak process-global Arrow registry state into later tests.
+        with suppress(pa.ArrowKeyError):
+            pa.register_extension_type(Array2DExtensionType((1, 1), "float32"))
 
 
 def test_non_retryable_error_fails_immediately(tiny_config, monkeypatch):
