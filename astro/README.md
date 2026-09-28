@@ -1,3 +1,11 @@
+<div align="center">
+
+<img src="assets/shoggoth_telescope_sticker_2.png" alt="astroPT_shoggoth" width="300"/>
+
+*There is some [deep lore about our logo](https://doi.org/10.4000/12m9y).*
+
+</div>
+
 # AstroPTv3
 
 AstroPTv3 is a from-scratch suite of astronomical foundation
