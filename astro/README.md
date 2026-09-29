@@ -7,6 +7,19 @@ continuous sky-survey measurements change as model size and training progress
 increase?** The size ladder is an experimental design, not a claim that every
 size has been trained or evaluated.
 
+## Lineage
+
+AstroPTv3 is the multimodal sister line of
+[AstroPT](https://github.com/Smith42/astroPT) (nanoGPT lineage; the
+[original paper](https://arxiv.org/abs/2405.14930), the AION tokeniser
+experiments, and the scaling/probing programme live there). Its
+JetFormer/GIVT tokeniser was ported from AstroPT's `sogol_branch`. The
+two projects co-evolve and share findings — normalization conventions,
+evaluation practice, checkpoint schedules — while their codebases stay
+separate. The full AstroPTv3 docs (plan, experiments, guides, and ADRs)
+are hosted in the
+[AstroPTv3 section of AstroPT's Read the Docs site](https://astropt.readthedocs.io/en/latest/astropt3.html).
+
 ## Astronomy pilot
 
 The current pilot draws from two [Multimodal Universe](https://huggingface.co/collections/UniverseTBD/multimodal-universe-hats)
