@@ -27,13 +27,21 @@ Summary:
 - Handle multiple images in a single conversation
 - Run efficiently on-device
 
+## 🔭 AstroPTv3 (Astronomical Foundation Model)
+[AstroPTv3](astro/README.md) is an experimental suite of 70M–12B models that adapts the SmolLM3 decoder to continuous astronomical measurements. It can:
+- Process optical images, spectra, and optional catalog measurements
+- Predict continuous patches with modality-specific flow and Gaussian-mixture heads
+- Mirror Pythia model sizes and checkpoints for astronomical scaling studies
+
 ## Repository Structure
 ```
 smollm/
+├── astro/              # AstroPTv3 code, configs, and documentation
+├── nanotron/           # AstroPTv3 pretraining fork (git submodule)
 ├── text/               # SmolLM3/2/1 related code and resources
-├── vision/            # SmolVLM related code and resources
-└── tools/             # Shared utilities and inference tools
-    ├── smol_tools/    # Lightweight AI-powered tools
+├── vision/             # SmolVLM related code and resources
+└── tools/              # Shared utilities and inference tools
+    ├── smol_tools/     # Lightweight AI-powered tools
     ├── smollm_local_inference/
     └── smolvlm_local_inference/
 ```
@@ -92,6 +100,16 @@ messages = [
 ]
 ```
 
+### AstroPTv3
+```bash
+cd astro
+uv sync --extra dev
+uv run pytest -m 'not gpu and not network'
+uv run python scripts/count_params.py
+```
+
+See the [AstroPTv3 training guide](astro/docs/training.md) for GPU setup, training, and checkpoint conversion.
+
 ## Ecosystem
 <div align="center">
 <img src="https://cdn-uploads.huggingface.co/production/uploads/61c141342aac764ce1654e43/RvHjdlRT5gGQt5mJuhXH9.png" width="700"/>
@@ -103,6 +121,7 @@ messages = [
 - [SmolLM3 Documentation](text/README.md)
 - [SmolLM2 paper](https://arxiv.org/abs/2502.02737v1)
 - [SmolVLM Documentation](vision/README.md)
+- [AstroPTv3 Documentation](astro/README.md)
 - [Local Inference Guide](tools/README.md)
 
 ### Pretrained Models
@@ -115,8 +134,4 @@ messages = [
 - [SmolTalk](https://huggingface.co/datasets/HuggingFaceTB/smoltalk) - Our instruction-tuning dataset
 - [FineMath](https://huggingface.co/datasets/HuggingFaceTB/finemath) - Mathematics pretraining dataset
 - [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) - Educational content pretraining dataset
-
-## AstroPTv3 (experimental)
-
-[AstroPTv3](astro/README.md) explores scaling SmolLM3-based models on
-astronomical images and spectra.
+- [Multimodal Universe](https://huggingface.co/collections/UniverseTBD/multimodal-universe-hats) - Astronomical images and spectra used by AstroPTv3
