@@ -1,9 +1,7 @@
 # AstroPTv3 lab book
 
 One document for the project: the charter and roadmap, the plan/phase
-history, and the experiment log. Formerly split between `PLAN.md` and
-this file; merged 2026-09-28 (`PLAN.md` is deleted — all references
-repoint here). Verification gates live in
+history, and the experiment log. Verification gates live in
 `AGENTS.md` (repo root and `astro/`); architecture detail in
 `docs/architecture.md`; decision records in `docs/adr/`.
 
@@ -70,12 +68,11 @@ Upstream asks already filed/queued on #1584: precompute/reuse per-pixel
 crossmatch graphs, and move the skip decision off the loader's critical
 path (§9). Re-pin lsdb to a release once #1584 ships.
 
-# Part I — Plan & phase history (formerly `PLAN.md`)
+# Part I — Plan & phase history
 
-Moved verbatim 2026-09-28. This is the historical project plan:
-decisions are fixed, and later ADRs (0006, 0011, 0013, 0014, 0015)
-supersede sections in place with banners — read top-down as a record, not
-as current-state documentation.
+The fixed project plan and phase record: decisions are final, and later
+ADRs (0006, 0011, 0013, 0014, 0015) supersede sections in place with
+banners — read top-down as a record, not as current-state documentation.
 
 
 ## Context
