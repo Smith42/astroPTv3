@@ -1,6 +1,6 @@
 """JetFormer-tokeniser GPU verification (gpu-marked; excluded from CPU runs).
 
-Covers the jetformer plan's J3 gates (astro/docs/jetformer_plan.md):
+Covers the jetformer GPU gates:
 
 1. HF <-> nanotron loss parity on a fixed synthetic batch after conversion,
    eval mode (noise off), both conversion directions;
@@ -26,7 +26,6 @@ from pathlib import Path
 import pytest
 import torch
 import yaml
-
 from test_nanotron_gpu import (
     REL_TOL,
     build_nt_model,
@@ -60,7 +59,6 @@ def tiny_jet_config(nt):
 def matched_jet_models(nt):
     """HF tiny jetformer model and a nanotron model carrying identical weights."""
     import astropt3  # noqa: F401 -- registers Auto classes
-
     from astropt3 import AstroPT3Model
 
     nt_config = tiny_jet_config(nt)
@@ -76,7 +74,7 @@ def matched_jet_models(nt):
 
 
 def test_forward_loss_parity(nt, matched_jet_models):
-    hf_model, nt_model, nt_config, hf_config = matched_jet_models
+    hf_model, nt_model, _nt_config, hf_config = matched_jet_models
     flat = micro_batch(hf_config)
     names = hf_config.modality_registry().names()
     with torch.no_grad():
@@ -123,6 +121,7 @@ def test_tp2_replicated_module_gradients_with_noise(nt):
         ],
         cwd=REPO_ROOT,
         env={**os.environ, "CUDA_DEVICE_MAX_CONNECTIONS": "1"},
+        check=False,
         capture_output=True,
         text=True,
         timeout=600,
@@ -160,6 +159,7 @@ def test_50step_synthetic_run_and_checkpoint_conversion(nt, tmp_path_factory):
             f"--save_path={save_path}",
         ],
         cwd=REPO_ROOT,
+        check=False,
         env={**os.environ, "CUDA_DEVICE_MAX_CONNECTIONS": "1"},
         capture_output=True,
         text=True,
@@ -167,10 +167,11 @@ def test_50step_synthetic_run_and_checkpoint_conversion(nt, tmp_path_factory):
     )
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
-    import astropt3  # noqa: F401
     import json
 
     from transformers import AutoModel
+
+    import astropt3  # noqa: F401
 
     hf_model = AutoModel.from_pretrained(save_path).cuda().to(torch.bfloat16).eval()
 

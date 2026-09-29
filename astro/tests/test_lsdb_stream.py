@@ -15,14 +15,14 @@ ROWS_TO_CHECK = 5
 
 
 def test_live_lsdb_stream_decodes_and_selects(tiny_config, tiny_model):
+    from lsdb.loaders.hats.read_hats import open_catalog
+    from lsdb.streams.catalog_streams import InfiniteStream
+
     from astropt3.data.nanotron_loader import (
         LEGACY_CATALOG,
         _catalog_columns,
         decode_legacy_row,
     )
-
-    from lsdb.loaders.hats.read_hats import open_catalog
-    from lsdb.streams.catalog_streams import InfiniteStream
 
     catalog = open_catalog(LEGACY_CATALOG, columns=_catalog_columns(tiny_config))
     stream = InfiniteStream(
@@ -61,12 +61,15 @@ def test_live_desi_crossmatch_stream_decodes_and_selects(tiny_config, tiny_model
     skips the Legacy fetch outright for low-density pixels
     (_CROSSMATCH_COUNT_FRACTION_THRESHOLD); a bounded single-partition draw
     may or may not hit one, so this isn't separately asserted here."""
+    from lsdb.loaders.hats.read_hats import open_catalog
+    from lsdb.streams.catalog_streams import CrossMatchStream
+
     from astropt3.data.nanotron_loader import (
-        DESI_CATALOG,
-        LEGACY_CATALOG,
         _CROSSMATCH_COUNT_FRACTION_THRESHOLD,
         _CROSSMATCH_NESTED,
         _CROSSMATCH_RADIUS_ARCSEC,
+        DESI_CATALOG,
+        LEGACY_CATALOG,
         _catalog_columns,
         _desi_columns,
         _map_rows_columns,
@@ -75,9 +78,6 @@ def test_live_desi_crossmatch_stream_decodes_and_selects(tiny_config, tiny_model
     )
     from astropt3.data.outer_crossmatch import OuterKdTreeCrossmatch
     from astropt3.data.packing import ObjectSequencer
-
-    from lsdb.loaders.hats.read_hats import open_catalog
-    from lsdb.streams.catalog_streams import CrossMatchStream
 
     legacy_cat = open_catalog(
         LEGACY_CATALOG, columns=_catalog_columns(tiny_config, include_position=True)

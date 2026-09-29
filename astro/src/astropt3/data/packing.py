@@ -54,7 +54,8 @@ from ..tokenization import (
 )
 from .band_registry import _DIV_FACTOR, physical_normalize
 from .scalar_registry import scalar_normalize
-from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR, spectral_normalize
+from .spectral import _DIV_FACTOR as _SPECTRA_DIV_FACTOR
+from .spectral import spectral_normalize
 
 # side of the central image crop applied before patchify, in pixels
 IMAGE_CROP = 96

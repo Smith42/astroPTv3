@@ -9,11 +9,10 @@ import math
 import numpy as np
 import pytest
 import torch
+from legacy_fixture import record_stream
 
 from astropt3.data.packing import ObjectSequencer, PackedCollator
 from astropt3.eval import linear_probe, scalar_head, val_loss
-
-from legacy_fixture import record_stream
 
 
 def _batches(tiny_config, n=2):

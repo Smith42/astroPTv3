@@ -83,9 +83,10 @@ def test_non_default_divisor_changes_output_and_roundtrips():
 
 def test_sequencer_uses_config_divisor(tiny_config):
     """config.image_norm_divisor must reach the sequencer's normalization."""
+    from legacy_fixture import make_record
+
     from astropt3 import AstroPT3Config
     from astropt3.data.packing import IMAGE_CROP, ObjectSequencer
-    from legacy_fixture import make_record
     from astropt3.tokenization import antispiralise, patchify_image
 
     record = make_record(3)

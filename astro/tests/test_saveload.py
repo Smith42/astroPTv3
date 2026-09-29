@@ -1,5 +1,4 @@
 import torch
-
 from legacy_fixture import record_stream
 
 

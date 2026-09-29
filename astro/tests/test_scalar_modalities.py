@@ -2,9 +2,9 @@
 
 import pytest
 import torch
+from legacy_fixture import make_record
 
 from astropt3.data.scalar_registry import scalar_inverse, scalar_normalize
-from legacy_fixture import make_record
 from astropt3.modalities import gmm_nll
 
 
@@ -164,9 +164,10 @@ def test_unconditional_generation_covers_scalars(tiny_config):
 
 def test_scalar_head_metrics(tiny_model):
     """Model-side: given objects whose Z span is pinned last, score the head."""
+    from legacy_fixture import record_stream
+
     from astropt3.data.packing import ObjectSequencer
     from astropt3.eval.scalar_head import scalar_head_metrics
-    from legacy_fixture import record_stream
 
     sequencer = ObjectSequencer(tiny_model.config)
     objects, targets = [], []

@@ -18,7 +18,6 @@ The token loop re-runs the full forward per generated token — no KV cache
 caching only if generation ever becomes a hot path.
 """
 
-from typing import Optional
 
 import torch
 
@@ -51,7 +50,7 @@ def generate(
     n: int = 1,
     temperature: float = 1.0,
     argmax: bool = False,
-    generator: Optional[torch.Generator] = None,
+    generator: torch.Generator | None = None,
 ) -> dict:
     """Sample ``n`` versions of the template's ``generate_modalities`` spans.
 

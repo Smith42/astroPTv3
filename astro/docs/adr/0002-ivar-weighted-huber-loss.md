@@ -308,4 +308,4 @@ Off by default (matching `galactiktok` ADR 0002), or mirror `spectrum_jeff`'s
   arrives with the DR10-south switch.
 - `astro/EXPERIMENTS.md` Part I user decision #4 — pilot pinned to north (reversed by this
   ADR as proposed).
-- `astro/docs/jetformer_noise_diagnosis.md` — the capacity-waste motivation.
+- `astro/EXPERIMENTS.md` §12 — the capacity-waste motivation.

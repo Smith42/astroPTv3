@@ -9,7 +9,6 @@ from itertools import islice
 import numpy as np
 import pytest
 import torch
-
 from legacy_fixture import (
     crossmatch_row,
     legacy_only_crossmatch_row,

@@ -212,7 +212,6 @@ def regroup(flat: dict, names) -> dict:
 def matched_models(nt):
     """HF tiny model and a nanotron model carrying identical weights."""
     import astropt3  # noqa: F401 -- registers Auto classes
-
     from astropt3 import AstroPT3Model
 
     nt_config = tiny_nt_config(nt)
@@ -347,8 +346,9 @@ def test_50step_synthetic_run_and_checkpoint_conversion(nt, tmp_path_factory):
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
     # the converted checkpoint loads through the Auto classes...
-    import astropt3  # noqa: F401
     from transformers import AutoModel
+
+    import astropt3  # noqa: F401
 
     hf_model = AutoModel.from_pretrained(save_path)
     torch.nn.Module.cuda(hf_model)

@@ -26,11 +26,10 @@ re-verify against lsdb's crossmatch test suite behavior if lsdb is upgraded.
 
 from __future__ import annotations
 
+import nested_pandas as npd
 import numpy as np
 import pandas as pd
 from hats.pixel_math.spatial_index import healpix_to_spatial_index
-
-import nested_pandas as npd
 from lsdb.core.crossmatch.abstract_crossmatch_algorithm import _na_series_for_dtype
 from lsdb.core.crossmatch.crossmatch_args import CrossmatchArgs
 from lsdb.core.crossmatch.kdtree_match import KdTreeCrossmatch
@@ -85,6 +84,11 @@ class OuterKdTreeCrossmatch(KdTreeCrossmatch):
         # spatial index, or a margin row would be double-emitted here AND
         # again when its own home partition is processed.
         healpix_order = crossmatch_args.right_catalog_info.healpix_order
+        if healpix_order is None:
+            raise ValueError(
+                "right catalog has no spatial_index_order; cannot identify "
+                "native rows for outer recovery"
+            )
         lower = healpix_to_spatial_index(
             crossmatch_args.right_order, crossmatch_args.right_pixel, spatial_index_order=healpix_order
         )

@@ -30,14 +30,13 @@ discards each patch's mean/std).
 
 import math
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
 
 from ..data.band_registry import physical_inverse
-from ..data.spectral import spectral_inverse
 from ..data.packing import ObjectSequencer
+from ..data.spectral import spectral_inverse
 from ..generation import generate, reconstruct
 from ..tokenization import antispiralise, unpatchify_image, unpatchify_spectrum
 
@@ -67,7 +66,7 @@ def save_image_png(
     values: np.ndarray,
     path: Path,
     title: str,
-    truth: Optional[np.ndarray] = None,
+    truth: np.ndarray | None = None,
     truth_label: str = "truth",
 ):
     """[n, C, H, W] -> one PNG grid (per-image normalized RGB).
@@ -82,7 +81,7 @@ def save_image_png(
     fig, axes = plt.subplots(
         1, len(panels), figsize=(3 * len(panels), 3.2), squeeze=False
     )
-    for ax, (label, img) in zip(axes[0], panels):
+    for ax, (label, img) in zip(axes[0], panels, strict=True):
         # Matplotlib accepts at most RGBA; source cubes such as five-band HSC
         # use their first three published bands for this qualitative panel.
         rgb = np.transpose(img[:3] if img.shape[0] > 4 else img, (1, 2, 0))
@@ -101,7 +100,7 @@ def save_spectra_png(
     lam: np.ndarray,
     path: Path,
     title: str,
-    truth: Optional[np.ndarray] = None,
+    truth: np.ndarray | None = None,
     truth_label: str = "truth",
 ):
     """[n, W] flux + [W] wavelength -> one subplot per spectrum, stacked.
@@ -122,7 +121,7 @@ def save_spectra_png(
         sharey=True,
         squeeze=False,
     )
-    for ax, (label, f) in zip(axes[:, 0], panels):
+    for ax, (label, f) in zip(axes[:, 0], panels, strict=True):
         color = "black" if truth is not None and f is truth else None
         ax.plot(lam, f, lw=0.7, color=color)
         ax.set_title(label, fontsize="small")
@@ -150,7 +149,7 @@ def sample_template(
     n: int = 4,
     temperature: float = 1.0,
     argmax: bool = False,
-    generator: Optional[torch.Generator] = None,
+    generator: torch.Generator | None = None,
 ) -> dict:
     """Run one sampling mode against a template: ``{name: [n, T, D]}``."""
     if mode == "reconstruct":
@@ -228,9 +227,16 @@ def render_sampled_tokens(
             # order the checkpoint trained in (ADR 0004)
             spiral = getattr(model.config, "spiral", True)
 
-            def to_pixels(t):
+            def to_pixels(
+                t,
+                *,
+                spiral=spiral,
+                patch_size=mod.patch_size,
+                channels=channels,
+                side=side,
+            ):
                 return unpatchify_image(
-                    antispiralise(t) if spiral else t, mod.patch_size, channels, side
+                    antispiralise(t) if spiral else t, patch_size, channels, side
                 )
 
             imgs = physical_inverse(
@@ -281,13 +287,13 @@ def sample_checkpoint(
     checkpoint,
     records: list[dict],
     *,
-    modes: Optional[list[str]] = None,
+    modes: list[str] | None = None,
     n: int = 4,
     temperature: float = 1.0,
     seed: int = 0,
     out_dir: Path,
     device=None,
-    step: Optional[int] = None,
+    step: int | None = None,
 ) -> dict:
     """Sample + render every (record, mode) pair from a converted checkpoint.
 
@@ -298,9 +304,9 @@ def sample_checkpoint(
     filenames are self-identifying across steps. Returns
     ``{"{mode}/{name}/{object_id}": str(png)}``.
     """
-    import astropt3  # noqa: F401  -- registers the Auto classes
-
     from transformers import AutoModel
+
+    import astropt3  # noqa: F401  -- registers the Auto classes
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
