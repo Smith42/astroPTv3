@@ -2,7 +2,8 @@
 
 This directory is the project labbook: durable notes recording what was
 planned, run, and learned on each part of AstroPTv3. The authoritative
-phase plan with all fixed decisions is [`../PLAN.md`](../PLAN.md); the
+phase history (formerly the plan) with all fixed decisions is
+[`../EXPERIMENTS.md`](../EXPERIMENTS.md) Part I; the
 agent-facing rules are in [`../../AGENTS.md`](../../AGENTS.md). Code-level
 architecture and the operational run guide live here as **reference** docs;
 everything else is a **workstream** entry.

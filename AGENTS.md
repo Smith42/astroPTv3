@@ -14,9 +14,10 @@ pretraining fork (`Smith42/nanotron`, branch `astropt3`).
 
 **Before working in `astro/`, read [`astro/AGENTS.md`](astro/AGENTS.md)** —
 it carries the commands, hard constraints, and the architecture contract
-for the project. The approved phase plan (decisions are fixed) is
-[`astro/PLAN.md`](astro/PLAN.md); the project README is
-[`astro/README.md`](astro/README.md).
+for the project. The lab book — charter/roadmap (MMU Streaming × AstroPT),
+phase history, and experiment log — is
+[`astro/EXPERIMENTS.md`](astro/EXPERIMENTS.md) (`PLAN.md` is a pointer);
+the project README is [`astro/README.md`](astro/README.md).
 
 Repo-wide constraints: this repo runs on several machines — do not assume
 GPU count, memory, or scheduler from any one of them. The CPU suite is
