@@ -306,6 +306,6 @@ Off by default (matching `galactiktok` ADR 0002), or mirror `spectrum_jeff`'s
   (`a79e4ff`); the `des-i` entry the DR10-south switch needs lands here.
 - `astro/src/astropt3/data/mmu.py` — `spectrum.ivar` already flows; image ivar
   arrives with the DR10-south switch.
-- `astro/PLAN.md` user decision #4 — pilot pinned to north (reversed by this
+- `astro/EXPERIMENTS.md` Part I user decision #4 — pilot pinned to north (reversed by this
   ADR as proposed).
 - `astro/docs/jetformer_noise_diagnosis.md` — the capacity-waste motivation.

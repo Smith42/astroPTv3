@@ -3,7 +3,7 @@
 - **Status:** Implemented
 - **Date:** 2026-07-16
 - **References:**
-  - `astro/PLAN.md` Phase 4 — "Eval is fully outside the trainer" (the hard
+  - `astro/EXPERIMENTS.md` Part I Phase 4 — "Eval is fully outside the trainer" (the hard
     principle this ADR inherits)
   - `astro/src/astropt3/generation.py` — the sampling machinery
     (`generate` jetformer-only, `reconstruct` both tokenisers)

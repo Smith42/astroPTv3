@@ -3,7 +3,7 @@
 - **Status:** Implemented
 - **Date:** 2026-07-16
 - **References:**
-  - `astro/PLAN.md` Phase 5 — the spectra-starved 70M/160M shakeout diagnosis motivating this decision
+  - `astro/EXPERIMENTS.md` Part I Phase 5 — the spectra-starved 70M/160M shakeout diagnosis motivating this decision
   - `astro/configs/data/pilot_images_spectra.yaml` — the `pilot_v1` crossmatch config this supersedes
   - `astro/scripts/prepare_pilot_data.py` — the LEFT-crossmatch the second pass extends
   - `astro/src/astropt3/data/mmu.py` — `PILOT_FEATURES`, `normalize_record`, `decode_record`, `assign_split`

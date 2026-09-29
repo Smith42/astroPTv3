@@ -7,7 +7,7 @@
 #   sbatch --nodes=4  astro/scripts/launch_slurm.sbatch astro/configs/nanotron/astropt3-160m.yaml
 #   sbatch --nodes=8  astro/scripts/launch_slurm.sbatch astro/configs/nanotron/astropt3-1b.yaml
 #
-# Node counts per size (recipe table in PLAN.md / docs/training.md, 8 GPUs/node):
+# Node counts per size (recipe table in EXPERIMENTS.md Part I / docs/training.md, 8 GPUs/node):
 #   70M/160M/410M: 4   |   1B/1.4B/2.8B: 8   |   6.9B: 16   |   12B: 32
 # The config's parallelism must satisfy dp*tp == nodes*8; to run on fewer
 # GPUs scale `parallelism.dp` down and `batch_accumulation_per_replica` up.

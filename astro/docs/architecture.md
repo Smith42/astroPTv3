@@ -2,7 +2,7 @@
 
 *Background for anyone picking up the project. The operational counterpart is
 [`training.md`](training.md); the historical phase plan is
-[`../PLAN.md`](../PLAN.md).*
+[`../EXPERIMENTS.md`](../EXPERIMENTS.md) Part I.*
 
 The pilot currently uses live LSDB access to LegacySurvey North images and
 DESI EDR SV3 spectra. [ADR 0015](adr/0015-lsdb-infinite-stream-training.md)
@@ -222,5 +222,5 @@ Pythia-style, adapted to a smaller corpus:
 Earlier phases established the model and training fork; the live LSDB
 cutover is explicitly experimental and does not yet satisfy the former
 synthetic smoke gate. Current work is on the 70M multimodal pilot, ahead of
-full size-ladder scale-up. See [`../PLAN.md`](../PLAN.md) for the historical
+full size-ladder scale-up. See [`../EXPERIMENTS.md`](../EXPERIMENTS.md) Part I for the historical
 phase log and [`../EXPERIMENTS.md`](../EXPERIMENTS.md) for loader measurements.

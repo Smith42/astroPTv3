@@ -249,7 +249,7 @@ synthetic if a real shard isn't available.
 - `docs/architecture.md` lines 39-59 — replace the PU asinh stretch
   description (step 2) with the physical-norm story (rescale → clamp →
   arcsinh/0.01); keep the per-patch standardization step.
-- `PLAN.md` lines 92, 98, 107, 139, 242, 266, 380 — update the file tree
+- `EXPERIMENTS.md` Part I (the plan sections) — update the file tree
   (remove `compute_norm_stats.py`, add `band_registry.py`; update
   `transforms.py` description) and the phase notes (asinh p1/p99 → physical
   norm).

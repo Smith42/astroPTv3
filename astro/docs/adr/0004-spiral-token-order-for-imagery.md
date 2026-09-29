@@ -10,7 +10,7 @@
   - `astro/src/astropt3/configuration_astropt3.py` — `image_norm_divisor`
     (the precedent for a checkpoint-self-describing field read on both the
     forward and inverse paths)
-  - `astro/PLAN.md` Phase 5 — the 70M / 160M 20k-step raster shakeout runs
+  - `astro/EXPERIMENTS.md` Part I Phase 5 — the 70M / 160M 20k-step raster shakeout runs
     whose saved configs must round-trip to `spiral=False`
   - [ADR 0001](0001-jetformer-inverse-variance-loss.md),
     [ADR 0002](0002-ivar-weighted-huber-loss.md),
@@ -286,7 +286,7 @@ to whichever PR implements it):
 - `astro/configs/model/astropt3-70m.yaml`, `test-tiny.yaml`,
   `test-tiny-jetformer.yaml` — the model YAMLs confirming every real config
   is `affine` or `jetformer`, none set `spiral`.
-- `astro/PLAN.md` Phase 5 (2026-07-08/09) — the 70M / 160M 20k-step raster
+- `astro/EXPERIMENTS.md` Part I Phase 5 (2026-07-08/09) — the 70M / 160M 20k-step raster
   shakeout runs the backfill contract must protect.
 - `astro/src/astropt3/train_smoke.py:47`,
   `astro/src/astropt3/eval/linear_probe.py:41`,

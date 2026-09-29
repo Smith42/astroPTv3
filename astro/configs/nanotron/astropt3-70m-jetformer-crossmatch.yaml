@@ -1,7 +1,8 @@
 # 70M JETFORMER crossmatch spectra test (GH200 node, DP=2, ZeRO-1).
 # Identical to astropt3-70m-jetformer.yaml except the data source: streams
 # the DESI-left crossmatch (mmu_desi_edr_sv3 x mmu_ssl_legacysurvey_north,
-# radius<=1", PLAN.md pilot decision #4) instead of the plain uncrossmatched
+# radius<=1", EXPERIMENTS.md Part I pilot decision #4) instead of the
+# plain uncrossmatched
 # LegacySurvey catalog, so `spectra`-modality tokens are actually populated
 # (ADR 0015 marks crossmatching "Deferred"; this is the interim experiment
 # that turns it on via nanotron_loader.decode_crossmatch_row). Three record

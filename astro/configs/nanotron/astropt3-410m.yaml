@@ -1,5 +1,5 @@
 # AstroPT3 410M pilot pretraining (Pythia-mirrored size; recipe: 32 GPUs,
-# TP=1, DP=32, ZeRO-1 — see astro/PLAN.md parallelism table).
+# TP=1, DP=32, ZeRO-1 — see astro/EXPERIMENTS.md Part I parallelism table).
 #
 #   sbatch --nodes=4 astro/scripts/launch_slurm.sbatch \
 #       astro/configs/nanotron/astropt3-410m.yaml
