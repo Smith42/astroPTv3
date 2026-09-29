@@ -32,11 +32,11 @@ Per-modality `TinyFlow1D` + `GMMHead`, exact patch-space likelihood
 map stays invertible. Tracked as `astro-phase5`; gates in
 `tests/test_jetformer_gpu.py`.
 
-| Entry | Kind | Status |
-| ------- | ------ | -------- |
-| [`jetformer_plan.md`](jetformer_plan.md) | Plan (J1–J4) | J1–J3 implemented & CPU-tested; J4 (GPU verify + test run) on the reserved GH200 node. |
-| [`jetformer_run_guide.md`](jetformer_run_guide.md) | Run record | First 70M run (`astropt3-70m-jetformer`, wandb `17k4i9n1`, 2×GH200, 20k steps) completed; image NLL +799→≈−38, reconstruction corr 0.69–0.90; grad-norm explosion + null-spectrum red flags flagged. |
-| [`jetformer_noise_diagnosis.md`](jetformer_noise_diagnosis.md) | Diagnosis | Measured 2026-07-14 on step-20000 ckpt of the low-LR follow-up (`y3oak0l0`): two independent problems — optimisation drift and uncalibrated per-pixel noise generation. |
+The plan/run-guide/diagnosis entries were deleted 2026-09-28 once their
+conclusions lived in the ADRs and the lab book: the noise/convergence
+diagnosis is [`../EXPERIMENTS.md`](../EXPERIMENTS.md) §12; the first 70M
+run and the low-LR follow-up are recorded in the lab book's phase notes.
+Recover the deleted files from git history if a derivation is needed.
 
 ### Physical image normalization (port of galactiktok `feat/norm`)
 
@@ -45,9 +45,9 @@ physical, band-registry-keyed normalization for the image modality.
 Spectra unchanged. Additive; gated on `uv run pytest` + the
 `train_smoke --assert-decrease` smoke gate.
 
-| Entry | Kind | Status |
-|-------|------|--------|
-| [`physical_norm_plan.md`](physical_norm_plan.md) | Plan (chunked, dependency-ordered) | Implemented — see `data/band_registry.py` and `docs/architecture.md`. Source of truth was `../galactiktok` branch `feat/norm`. |
+Implemented — see `data/band_registry.py` and `architecture.md`; the
+plan entry was deleted 2026-09-28 (git history has it). Source of truth
+was `../galactiktok` branch `feat/norm`.
 
 ---
 

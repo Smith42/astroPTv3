@@ -6,8 +6,8 @@
 #   bash astro/scripts/launch_jetformer_70m.sh [extra torchrun args]
 # Override the config with CONFIG=<path> (e.g. the physnorm shakeout).
 #
-# Environment: the module + .venv-train overlay (see
-# docs/jetformer_plan.md J4 status note); NOT the x86 $ASTROPT3_ENV recipe.
+# Environment: the module + .venv-train overlay (see docs/training.md);
+# NOT the x86 $ASTROPT3_ENV recipe.
 set -euo pipefail
 
 CONFIG=${CONFIG:-astro/configs/nanotron/astropt3-70m-jetformer.yaml}

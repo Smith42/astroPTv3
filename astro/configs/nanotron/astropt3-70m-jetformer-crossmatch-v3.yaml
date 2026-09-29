@@ -1,8 +1,8 @@
 # 70M JETFORMER crossmatch spectra run, v3 (GH200-shaped, DP=2, ZeRO-1).
-# Same as astropt3-70m-jetformer-crossmatch-v2.yaml but the loader streams
-# via lsdb.streams.CrossMatchStream (astronomy-commons/lsdb#1584, branch
-# selective-x-match) instead of a manual desi_catalog.crossmatch(...) +
-# InfiniteStream. Adopted 2026-09-24 after the v2-vs-v3 isolation bench
+# Streams the DESI-left crossmatch via lsdb.streams.CrossMatchStream
+# (astronomy-commons/lsdb#1584, branch selective-x-match); replaced the
+# retired v2-era manual desi_catalog.crossmatch(...) + InfiniteStream
+# path. Adopted 2026-09-24 after the v2-vs-v3 isolation bench
 # (EXPERIMENTS.md §9): the stream's semantics match the manual crossmatch
 # exactly (record mix and per-modality rates identical at threshold 0.0),
 # and it is kept for its multi-catalog capability and upstream alignment

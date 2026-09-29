@@ -243,8 +243,8 @@ vocabulary above 63.
 ### Modality tokenization (pinned to verified schemas)
 
 - **Images**: `image.flux` (3,152,152) float32 → physical band-registry
-  normalization (rescale → clamp → arcsinh; superseded the asinh stretch,
-  see `docs/physical_norm_plan.md`) → einops
+  normalization (rescale → clamp → arcsinh; superseded the asinh stretch —
+  `data/band_registry.py`, `docs/architecture.md`) → einops
   `"c (h p1) (w p2) -> (h w) (p1 p2 c)"` with **patch 8** → **361 tokens** of
   `input_size=192`; per-patch standardization; integer patch-index positions
   (spiral option ported). Patch 8 chosen because 152 = 8×19 (16 doesn't divide
@@ -358,7 +358,7 @@ launch time in the YAML.
   streaming=True)` + `HF_DATASETS_OFFLINE=1` — no network/lsdb on compute nodes.
 - Image normalization is physical (band-registry constants, no per-corpus
   calibration; superseded the original `compute_norm_stats.py` percentile
-  calibration — see `docs/physical_norm_plan.md`).
+  calibration — `data/band_registry.py`).
 - `synthetic.py` generates records matching the **verified schemas** above —
   all tests and the CPU smoke loop run networkless.
 
@@ -507,7 +507,7 @@ IN PROGRESS (2026-07-08, dev node, user's GPU reservation): real-data
   row-filtered and would poison the resume journal.
 - `compute_norm_stats.py` ran on 10k real images → asinh p1/p99 into
   the data yaml (historical: both retired when physical normalization
-  landed, see `docs/physical_norm_plan.md`). `check_pilot_data.py`: real images decode to exact
+  landed — `data/band_registry.py`). `check_pilot_data.py`: real images decode to exact
   N(0,1) patches, spectra to 31 patches λ 3702–9784 Å; dataloader ~1,000
   obj/s ≈ 400k tok/s per process at 8 workers (≥2× gate passes at DP=2).
 - Blocker found+fixed by the first 70M execution: upstream nanotron's
@@ -904,6 +904,39 @@ loading workers; checkpoints every 1000 steps.
 
 Configs: `configs/nanotron/astropt3-70m-v3-trimodal-trial{,-10k}.yaml`.
 Implementation and the Arrow fix: PR #33.
+
+## 12. JetFormer noise and convergence diagnosis (2026-07-14)
+
+Measured on the step-20000 checkpoint of the low-LR 70M run
+(`astropt3-70m-jetformer-lowlr`, wandb `y3oak0l0`, DeltaAI GH200), using
+the HF-converted checkpoint + real val shards. Two independent problems:
+
+1. **Optimisation drift.** `grad_norm` sat at 1000–1700 against
+   `clip_grad=1.0` for the entire second half; `images_loss` bottomed at
+   −0.76 (step 16k) then climbed back to +1.0 by 20k — the sampled
+   checkpoint was past the best point. Negative loss is a tell: the flow
+   can push `NLL_GMM(z) − logdet` below zero by inflating logdet without
+   improving samples (a plausible gradient-blow-up source; the
+   OLMo-style grad-norm growth persisted at 10× lower LR, so it is not an
+   LR-knob issue).
+2. **Uncalibrated noise generation at any temperature.** In model output
+   space (noise isolated by a 3×3 high-pass): per-channel noise std ~5×
+   too small at T=0.2 and ~15–20× too large at T=1.0 — no temperature
+   matches the real amplitude; T=1 noise is also spatially anti-correlated
+   where real noise is PSF-correlated. Teacher-forced `log_sigma` is NOT
+   saturated (0% at the ceiling) and the mixture is not collapsed — the
+   shallow 4-step flow reaches low z-space NLL while its inverse amplifies
+   and whitens noise; exact z-likelihood does not constrain sample quality.
+
+The transformer body was fine — teacher-forced GMM-mode reconstructions
+looked reasonable; the sampling/variance path was the broken part.
+Priorities recorded at the time: instrument the loss per term (GMM-NLL vs
+logdet separately) and regularise `|logdet|`; stop memorising sensor noise
+(whiten/down-weight by the known noise model, or denoise the target and
+re-add calibrated noise at sample time); do not expect temperature to
+produce realistic noise. Full detail (tables, spatial-texture stats,
+ruled-out head defects, reproduction): git history at
+`astro/docs/jetformer_noise_diagnosis.md` (deleted 2026-09-28).
 
 ## Open items / not pursued
 
