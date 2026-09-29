@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 import torch
+from legacy_fixture import record_stream
 
 from astropt3.config_io import load_model_config
 from astropt3.data.packing import ObjectSequencer
-from legacy_fixture import record_stream
 from astropt3.modeling_astropt3 import left_shift_mask
 from astropt3.tokenization import BOS_ID, PAD_ID, modality_token_ids
 
@@ -100,7 +100,7 @@ def test_begin_token_predicts_first_patch(sequencer, collator, full_record):
 
 def _per_band_config():
     """A tiny config whose ``images`` modality is factorised per band."""
-    from astropt3.configuration_astropt3 import AstroPT3Config, DEFAULT_MODALITIES
+    from astropt3.configuration_astropt3 import DEFAULT_MODALITIES, AstroPT3Config
 
     modalities = []
     for modality in DEFAULT_MODALITIES:
@@ -110,7 +110,7 @@ def _per_band_config():
                 input_size=64,  # 8*8*1 instead of 8*8*3
                 max_positions=432,  # 3 bands x 144 patches
                 channel_tokenization="per_band",
-                band_order=["des-g", "des-r", "des-z"],
+                band_order=("des-g", "des-r", "des-z"),
             )
         modalities.append(modality)
     return AstroPT3Config(
@@ -147,8 +147,8 @@ def test_per_band_positions_run_across_the_whole_concatenation(image_only_record
 def test_per_band_is_band_major_in_the_configured_order(image_only_record):
     """Band-major, fixed order: band g's 144 patches, then r, then z."""
     from astropt3.data.band_registry import physical_normalize
-    from astropt3.tokenization import patchify_image, spiralise
     from astropt3.data.packing import IMAGE_CROP
+    from astropt3.tokenization import patchify_image, spiralise
 
     config = _per_band_config()
     obj = ObjectSequencer(config).build(image_only_record)
@@ -178,19 +178,19 @@ def test_per_band_rejects_a_record_missing_a_named_band(image_only_record):
 def test_per_band_config_requires_a_band_order_and_a_matching_input_size():
     from astropt3.modalities import ModalityConfig
 
-    base = dict(
-        name="images",
-        patch_size=8,
-        family="image",
-        source="legacy",
-        record_keys=["image"],
-        token_ids=[2, 3, 4],
-        channel_tokenization="per_band",
-    )
+    base: dict = {
+        "name": "images",
+        "patch_size": 8,
+        "family": "image",
+        "source": "legacy",
+        "record_keys": ["image"],
+        "token_ids": [2, 3, 4],
+        "channel_tokenization": "per_band",
+    }
     with pytest.raises(ValueError, match="band_order"):
         ModalityConfig(input_size=64, **base)
     with pytest.raises(ValueError, match="input_size must be 64"):
-        ModalityConfig(input_size=192, band_order=["des-g"], **base)
+        ModalityConfig(input_size=192, band_order=("des-g",), **base)
     with pytest.raises(ValueError, match="only applies to images"):
         ModalityConfig(
             **{

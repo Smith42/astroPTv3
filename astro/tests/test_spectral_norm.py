@@ -25,7 +25,7 @@ def test_grid_and_conversion_constants():
     assert DESI_LAMBDA_GRID[-1] == 9824.0
     assert DESI_LAMBDA_STEP == 0.8
     # f_nu = f_lambda * lambda^2 / c in the AB/maggie system: ~9.19e-8 per A^2
-    assert FNU_NMGY_PER_FLAM == pytest.approx(9.19e-8, rel=1e-3)
+    assert pytest.approx(9.19e-8, rel=1e-3) == FNU_NMGY_PER_FLAM
     # unit sanity from the ADR: f_lambda = 1 DESI unit at 5500 A is ~2.8 nMgy,
     # i.e. m_AB ~ 21.4 — a typical DESI galaxy fiber magnitude
     fnu = 1.0 * 5500.0**2 * FNU_NMGY_PER_FLAM
@@ -88,9 +88,10 @@ def test_synthetic_tokens_land_in_the_o1_regime():
 
 def test_sequencer_uses_config_divisor(tiny_config):
     """config.spectra_norm_divisor must reach the sequencer's normalization."""
+    from legacy_fixture import make_record
+
     from astropt3 import AstroPT3Config
     from astropt3.data.packing import ObjectSequencer
-    from legacy_fixture import make_record
     from astropt3.tokenization import patchify_spectrum
 
     record = make_record(3, image_only_fraction=0.0, spectrum_only_fraction=1.0)

@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 import torch
+from legacy_fixture import record_stream
 
 from astropt3.config_io import load_model_config
 from astropt3.data.packing import ObjectSequencer, PackedCollator
-from legacy_fixture import record_stream
 from astropt3.modalities import GMMHead, TinyFlow1D, gmm_nll
 
 CONFIG = Path(__file__).resolve().parents[1] / "configs" / "model" / "test-tiny.yaml"
@@ -133,8 +133,9 @@ def test_save_load_roundtrip(tmp_path, jet_model, jet_batch):
 
 def test_jetformer_skips_per_patch_standardization(jet_config):
     """jetformer tokens must invert back to flux: no per-patch standardization."""
-    from astropt3.data.band_registry import physical_normalize
     from legacy_fixture import make_record
+
+    from astropt3.data.band_registry import physical_normalize
     from astropt3.tokenization import antispiralise, patchify_image
 
     record = make_record(3, image_only_fraction=0.0)

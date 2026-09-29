@@ -6,6 +6,7 @@ from typing import Any, cast
 
 import pytest
 import torch
+from legacy_fixture import make_record
 
 from astropt3.config_io import load_model_config
 from astropt3.data.packing import ObjectSequencer
@@ -15,7 +16,6 @@ from astropt3.eval.samples import (
     sample_template,
 )
 from astropt3.generation import generate, reconstruct, sample_gmm
-from legacy_fixture import make_record
 
 CONFIG = Path(__file__).resolve().parents[1] / "configs" / "model" / "test-tiny.yaml"
 
@@ -29,12 +29,11 @@ def jet_config():
 @pytest.fixture(scope="module")
 def smoke_model(jet_config, tmp_path_factory):
     """A briefly-trained tiny jetformer model, save/load-roundtripped."""
+    from legacy_fixture import record_stream
     from transformers import AutoModel
 
-    from astropt3.config_io import load_model_config as _load
-    from astropt3.modeling_astropt3 import AstroPT3Model
     from astropt3.data.packing import ObjectSequencer, PackedCollator
-    from legacy_fixture import record_stream
+    from astropt3.modeling_astropt3 import AstroPT3Model
 
     torch.manual_seed(0)
     model = AstroPT3Model(jet_config)

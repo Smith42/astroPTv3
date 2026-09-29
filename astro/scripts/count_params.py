@@ -13,8 +13,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from astropt3 import AstroPT3Model  # noqa: E402
-from astropt3.config_io import load_model_config  # noqa: E402
+from astropt3 import AstroPT3Model
+from astropt3.config_io import load_model_config
 
 
 def count_params(config) -> tuple[int, int]:

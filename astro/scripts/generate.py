@@ -60,17 +60,18 @@ def _draw_live_records(config, rows: list[int], stream_seed: int) -> list[dict]:
             raise ValueError(f"drew {len(frame)} rows, but --rows asked for index {max(rows)}")
         return [decode_legacy_row(dict(frame.iloc[i].items())) for i in rows]
 
+    from lsdb.streams.catalog_streams import CrossMatchStream
+
     from astropt3.data.nanotron_loader import (
-        DESI_CATALOG,
         _CROSSMATCH_COUNT_FRACTION_THRESHOLD,
         _CROSSMATCH_NESTED,
         _CROSSMATCH_RADIUS_ARCSEC,
+        DESI_CATALOG,
         _map_rows_columns,
         _row_from_map_rows,
         decode_crossmatch_row,
     )
     from astropt3.data.outer_crossmatch import OuterKdTreeCrossmatch
-    from lsdb.streams.catalog_streams import CrossMatchStream
 
     legacy_cat = open_catalog(
         LEGACY_CATALOG, columns=_catalog_columns(config, include_position=True)
@@ -139,9 +140,9 @@ def main():
     )
     args = parser.parse_args()
 
-    import astropt3  # noqa: F401  -- registers the Auto classes
     from transformers import AutoConfig
 
+    import astropt3  # noqa: F401  -- registers the Auto classes
     from astropt3.eval.samples import sample_checkpoint
 
     try:

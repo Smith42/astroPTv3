@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-import bench_report  # noqa: E402
+import bench_report  # pyright: ignore[reportMissingImports] -- sys.path above
 
 
 def _write(directory: Path, ranks=2, steps=None):

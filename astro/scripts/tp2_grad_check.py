@@ -27,8 +27,8 @@ import zlib
 from pathlib import Path
 from typing import cast
 
+import nanotron.models
 import torch
-
 from nanotron import distributed as dist
 from nanotron.config import (
     AstroPT3Config,
@@ -36,7 +36,6 @@ from nanotron.config import (
     ParallelismArgs,
     TensorParallelLinearMode,
 )
-import nanotron.models
 from nanotron.models.astropt3 import AstroPT3ForTraining
 from nanotron.parallel import ParallelContext
 from nanotron.random import (
@@ -47,7 +46,7 @@ from nanotron.random import (
 from nanotron.trainer import mark_tied_parameters
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from astropt3.data.nanotron_loader import (  # noqa: E402
+from astropt3.data.nanotron_loader import (
     PackedMicroBatches,
     hf_config_from_modalities,
 )

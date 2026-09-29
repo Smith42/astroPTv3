@@ -28,16 +28,16 @@ Sequence contract (built by data/packing.py):
 """
 
 from dataclasses import dataclass
-from typing import Optional, cast
+from typing import cast
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from transformers.utils.generic import ModelOutput
+from torch import nn
 from transformers.models.smollm3.modeling_smollm3 import (
     SmolLM3Model,
     SmolLM3PreTrainedModel,
 )
+from transformers.utils.generic import ModelOutput
 
 from .configuration_astropt3 import AstroPT3Config
 from .modalities import (
@@ -52,15 +52,15 @@ from .tokenization import PAD_ID
 
 @dataclass
 class AstroPT3Output(ModelOutput):
-    loss: Optional[torch.Tensor] = None
-    modality_losses: Optional[dict] = None
-    family_losses: Optional[dict] = None
-    predictions: Optional[dict] = None
-    last_hidden_state: Optional[torch.Tensor] = None
+    loss: torch.Tensor | None = None
+    modality_losses: dict | None = None
+    family_losses: dict | None = None
+    predictions: dict | None = None
+    last_hidden_state: torch.Tensor | None = None
     # per-layer states (embeddings first, HF convention), populated only
     # when forward(output_hidden_states=True); the linear probe pools the
     # central layer from here (astroPT convention)
-    hidden_states: Optional[tuple] = None
+    hidden_states: tuple | None = None
 
 
 def left_shift_mask(mask: torch.Tensor) -> torch.Tensor:
@@ -192,11 +192,11 @@ class AstroPT3Model(SmolLM3PreTrainedModel):
     def forward(
         self,
         input_ids: torch.LongTensor,
-        modality_values: Optional[dict] = None,
-        modality_masks: Optional[dict] = None,
-        modality_positions: Optional[dict] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
+        modality_values: dict | None = None,
+        modality_masks: dict | None = None,
+        modality_positions: dict | None = None,
+        position_ids: torch.LongTensor | None = None,
+        attention_mask: torch.Tensor | None = None,
         compute_loss: bool = True,
         output_hidden_states: bool = False,
         **kwargs,

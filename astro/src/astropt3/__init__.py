@@ -10,12 +10,12 @@ AutoConfig.register("astropt3", AstroPT3Config)
 AutoModel.register(AstroPT3Config, AstroPT3Model)
 
 __all__ = [
+    "DEFAULT_MODALITIES",
     "AstroPT3Config",
     "AstroPT3Model",
     "AstroPT3Output",
-    "DEFAULT_MODALITIES",
+    "Encoder",
     "ModalityConfig",
     "ModalityRegistry",
-    "Encoder",
     "PositionEmbedder",
 ]

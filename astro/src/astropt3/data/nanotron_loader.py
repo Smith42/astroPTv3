@@ -386,9 +386,7 @@ def decode_crossmatch_row(row: Mapping) -> dict:
         if key in skip:
             continue
         base_key = (
-            key[: -len(_CROSSMATCH_LEGACY_SUFFIX)]
-            if key.endswith(_CROSSMATCH_LEGACY_SUFFIX)
-            else key
+            key.removesuffix(_CROSSMATCH_LEGACY_SUFFIX)
         )
         number = _finite_scalar(value)
         if number is not None:
