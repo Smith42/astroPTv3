@@ -1,8 +1,9 @@
 # AstroPTv3 lab book
 
 One document for the project: the charter and roadmap, the plan/phase
-history, and the experiment log. Formerly split across `PLAN.md` (now a
-pointer) and this file; merged 2026-09-28. Verification gates live in
+history, and the experiment log. Formerly split between `PLAN.md` and
+this file; merged 2026-09-28 (`PLAN.md` is deleted — all references
+repoint here). Verification gates live in
 `AGENTS.md` (repo root and `astro/`); architecture detail in
 `docs/architecture.md`; decision records in `docs/adr/`.
 
