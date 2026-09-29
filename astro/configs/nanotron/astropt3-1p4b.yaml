@@ -1,5 +1,5 @@
 # AstroPT3 1.4B pilot pretraining (Pythia-mirrored size; recipe: 64 GPUs,
-# TP=1, DP=64, ZeRO-1 — see astro/PLAN.md parallelism table).
+# TP=1, DP=64, ZeRO-1 — see astro/EXPERIMENTS.md Part I parallelism table).
 #
 #   sbatch --nodes=8 astro/scripts/launch_slurm.sbatch \
 #       astro/configs/nanotron/astropt3-1p4b.yaml

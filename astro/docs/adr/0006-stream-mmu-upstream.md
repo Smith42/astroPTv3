@@ -14,7 +14,7 @@
   of the streaming decision it made, not a description of current code.
 - **Date:** 2026-07-17
 - **References:**
-  - `astro/PLAN.md` "Data pipeline" — the local-shard + `HF_DATASETS_OFFLINE=1`
+  - `astro/EXPERIMENTS.md` Part I "Data pipeline" — the local-shard + `HF_DATASETS_OFFLINE=1`
     design this ADR **supersedes**
   - `astro/src/astropt3/data/streaming.py` — the implementation
   - `astro/scripts/prepare_pilot_data.py` — the lsdb crossmatch → parquet

@@ -62,7 +62,7 @@ wandb history for `y3oak0l0`:
 - Negative loss is a tell: the objective is `NLL_GMM(z) − logdet`, and the flow
   can push loss below zero by **inflating logdet** without improving samples.
   That logdet-gaming is a plausible source of the gradient blow-up.
-- This is the OLMo-style grad-norm growth already flagged in `JETFORMER_PLAN.md`.
+- This is the OLMo-style grad-norm growth already flagged in `jetformer_plan.md`.
   It **persists at this 10×-lower LR**, so it is not just an LR-knob issue.
 
 ## Problem 2 — noise generation is uncalibrated at any temperature (measured)

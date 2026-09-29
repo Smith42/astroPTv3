@@ -102,7 +102,8 @@ checkpoints:
 ```
 
 Use the actual run YAML for batch sizes and parallelism; the historical
-recipe and size-ladder rationale live in [`../PLAN.md`](../PLAN.md).
+recipe and size-ladder rationale live in
+[`../EXPERIMENTS.md`](../EXPERIMENTS.md) Part I.
 
 ## 4. Launching
 

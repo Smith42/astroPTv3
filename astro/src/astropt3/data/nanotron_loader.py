@@ -39,7 +39,7 @@ IMAGE_SHAPE = (3, 152, 152)
 _MAX_NET_RETRIES = 60
 _MAX_NET_RETRY_WAIT = 120
 _MAX_REPLICA_ATTEMPTS = 32
-# PLAN.md's pilot crossmatch radius (mmu_desi_edr_sv3 x mmu_ssl_legacysurvey_north).
+# Lab book (EXPERIMENTS.md Part I) pilot crossmatch radius (mmu_desi_edr_sv3 x mmu_ssl_legacysurvey_north).
 _CROSSMATCH_RADIUS_ARCSEC = 1.0
 _CROSSMATCH_LEGACY_SUFFIX = "_legacy"
 # CrossMatchStream (lsdb PR astronomy-commons/lsdb#1584, selective-x-match)
