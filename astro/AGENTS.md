@@ -6,9 +6,12 @@ Repo-wide layout (fork of `huggingface/smollm`; `text/`, `vision/`, and
 
 ## Hard constraints
 
-- **GPU work and training runs are allowed here** (this box has 2×A100
-  80GB and slurm), but the CPU suite stays the fast gate and multi-day
-  runs belong on the training cluster by preference.
+- **Do not assume machine topology** — this repo runs on dev boxes and
+  training clusters with different GPU counts, memory, and schedulers.
+  The CPU suite is the fast gate and must pass with no GPUs present;
+  GPU-marked tests and training runs go wherever a suitable GPU
+  environment exists, and multi-day runs belong on the training cluster
+  by preference.
 - Tests may use the network, but only `network`-marked ones may require it
   (ADR 0015 streams the corpus live via LSDB; deselect with
   `-m 'not network'` when the HF hub is down).
@@ -28,8 +31,9 @@ uv run pytest -m network tests/test_lsdb_stream.py   # live hub stream check
 These two (pytest, count_params) are the phase verification gates and must
 pass before any phase is declared done; ADR 0015 retired the `train_smoke`
 gate together with the local-corpus path it exercised. `@pytest.mark.gpu`
-tests run here too (`uv run pytest -m gpu` in the GPU venv); the node is
-shared, so pin a device and check `nvidia-smi` before claiming one.
+tests run wherever a GPU environment exists (`uv run pytest -m gpu` in
+the GPU venv); on any shared node, pin a device
+(`CUDA_VISIBLE_DEVICES`) and check `nvidia-smi` before claiming one.
 
 ## Architecture
 

@@ -18,7 +18,9 @@ for the project. The approved phase plan (decisions are fixed) is
 [`astro/PLAN.md`](astro/PLAN.md); the project README is
 [`astro/README.md`](astro/README.md).
 
-Repo-wide constraints: GPU work and training runs are allowed on this box
-(2×A100 80GB and slurm), but the CPU suite stays the fast gate and
-multi-day runs belong on the training cluster by preference; dependencies
-are managed only through uv in `astro/pyproject.toml`.
+Repo-wide constraints: this repo runs on several machines — do not assume
+GPU count, memory, or scheduler from any one of them. The CPU suite is
+the fast gate and must pass with no GPUs present; GPU-marked tests and
+real training runs execute wherever a suitable GPU environment exists,
+and multi-day runs belong on the training cluster by preference.
+Dependencies are managed only through uv in `astro/pyproject.toml`.
